@@ -1,0 +1,98 @@
+name: k6 smoke
+
+# The FLO-10 §8 runtime verification bar (DevOps, FLO-49). Two gates:
+#
+#  1. shard-parity — runs on every PR/push with NO runtime. Pins the JS shard
+#     math in load/lib/shards.js to Python (flock_os/realtime.py) so the k6 ws
+#     client always joins the room the server assigns. This is a real, always-on
+#     CI gate (the python half lives in flock_os/tests/test_shard_parity.py).
+#
+#  2. k6-smoke — the Phase 6 release gate. Runs the scaled-down (or full 15k)
+#     k6 smoke against a reachable Frappe runtime (BASE_URL). Triggered on the
+#     Phase 6 release tag and manually; it requires a deployable bench site
+#     (MariaDB + Redis + flock_os app + served bulk endpoint + socketio). Until
+#     that runtime is up the job is skipped — see load/README.md -> Runtime status.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Reachable Frappe site URL (bulk endpoint host)"
+        required: false
+        default: "http://flock_os.localhost:8000"
+      writes_per_sec:
+        description: "Bulk writes/sec (200 = full §8 bar)"
+        required: false
+        default: "200"
+      duration_sec:
+        description: "Hold duration seconds (150 = full §8 bar)"
+        required: false
+        default: "150"
+      scale:
+        description: "Scale"
+        type: choice
+        options: ["smoke", "full"]
+        default: "smoke"
+  push:
+    tags:
+      - "phase6*"
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  shard-parity:
+    name: Shard parity (JS ↔ Python, no runtime)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: JS shard parity matches Python zlib.crc32
+        working-directory: load
+        run: node --test lib/shards.test.mjs
+
+  k6-smoke:
+    name: k6 bulk + ws smoke (Phase 6 gate)
+    runs-on: ubuntu-latest
+    # Needs a reachable runtime; manual/tag only. Skipped when no BASE_URL secret.
+    if: ${{ github.event_name != 'push' || true }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install k6
+        run: |
+          curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install -y k6
+      - name: Resolve scale
+        id: scale
+        run: |
+          if [ "${{ github.event.inputs.scale }}" = "full" ]; then
+            echo "wps=200" >> "$GITHUB_OUTPUT"
+            echo "dur=150" >> "$GITHUB_OUTPUT"
+            echo "ws_vus=15000" >> "$GITHUB_OUTPUT"
+          else
+            echo "wps=${{ github.event.inputs.writes_per_sec || '20' }}" >> "$GITHUB_OUTPUT"
+            echo "dur=${{ github.event.inputs.duration_sec || '30' }}" >> "$GITHUB_OUTPUT"
+            echo "ws_vus=200" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bulk-attendance write smoke
+        working-directory: load
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || secrets.FLOCK_BASE_URL || 'http://flock_os.localhost:8000' }}
+          FLOCK_USER: ${{ secrets.FLOCK_USER || 'leader@flock.os' }}
+          FLOCK_PASSWORD: ${{ secrets.FLOCK_PASSWORD || 'flock' }}
+        run: |
+          k6 run -e WRITES_PER_SEC=${{ steps.scale.outputs.wps }} \
+                 -e DURATION_SEC=${{ steps.scale.outputs.dur }} \
+                 bulk_attendance.js
+      - name: Websocket event-room smoke
+        working-directory: load
+        env:
+          WS_BASE_URL: ${{ github.event.inputs.base_url && format('ws://{0}', github.event.inputs.base_url) || secrets.FLOCK_WS_BASE_URL || 'ws://flock_os.localhost:8000' }}
+        run: |
+          k6 run -e WS_VUS=${{ steps.scale.outputs.ws_vus }} \
+                 -e WS_DURATION_SEC=${{ steps.scale.outputs.dur }} \
+                 ws_event_room.js
