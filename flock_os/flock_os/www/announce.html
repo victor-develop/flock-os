@@ -1,0 +1,158 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{#
+  Flock OS — admin announcement composer (FLO-60 / FLO-8 §8).
+  Mobile-first, touch-friendly. The scope <select>s are populated server-side
+  from the admin's targetable subtree (no cross-subtree leakage); the group
+  picker filters client-side by the chosen branch. Mutating actions call the
+  FLO-94 REST controller (preview_audience / publish / schedule) — the backend
+  re-validates scope as the source of truth.
+#}
+
+{% block page_content %}
+<style>
+  .flock-compose { max-width: 640px; margin: 0 auto; padding: 0 0 4rem; }
+  .flock-compose__head h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .flock-compose__org { margin: 0 0 1rem; font-size: .9rem; }
+  .flock-compose .form-section { border: 0; border-top: 1px solid #e5e7eb; padding-top: 1rem; margin-top: 1rem; }
+  .flock-compose .form-section legend { font-weight: 600; font-size: 1rem; padding: 0; margin: 0 0 .5rem; }
+  .flock-compose .req { color: #dc2626; }
+  .flock-channels { display: flex; flex-wrap: wrap; gap: .75rem 1.25rem; }
+  .flock-check { display: inline-flex; align-items: center; gap: .4rem; font-size: .95rem; }
+  .flock-preview { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: .85rem 1rem; margin: .5rem 0 1rem; }
+  .flock-preview__count strong { font-size: 1.15rem; }
+  .flock-preview__list { margin: .4rem 0 0; padding-left: 1.1rem; columns: 2; font-size: .85rem; color: #1e3a8a; }
+  .flock-status { min-height: 1.25rem; font-size: .92rem; }
+  .flock-status--success { color: #15803d; }
+  .flock-status--error { color: #b91c1c; }
+  .flock-status--loading { color: #475569; }
+  .flock-spinner { display: inline-block; width: .9rem; height: .9rem; border: 2px solid #cbd5e1; border-top-color: #2563eb; border-radius: 50%; animation: flock-spin .7s linear infinite; vertical-align: -2px; }
+  @keyframes flock-spin { to { transform: rotate(360deg); } }
+  .flock-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
+  .flock-actions .btn { min-height: 44px; } /* touch target */
+  @media (max-width: 480px) { .flock-preview__list { columns: 1; } }
+</style>
+
+<section class="flock-compose" aria-label="Compose announcement">
+  <form id="flock-compose-form"
+        data-endpoint-preview="{{ endpoints.preview_audience }}"
+        data-endpoint-publish="{{ endpoints.publish_announcement }}"
+        data-endpoint-schedule="{{ endpoints.schedule_announcement }}"
+        data-endpoint-insert="{{ endpoints.insert }}"
+        data-organization="{{ organization }}">
+
+    <header class="flock-compose__head">
+      <h1 class="flock-compose__title">{{ _("New Announcement") }}</h1>
+      <p class="flock-compose__org text-muted">
+        {{ _("Organization") }}: <strong>{{ organization or "—" }}</strong>
+      </p>
+    </header>
+
+    {# --- Content --- #}
+    <fieldset class="form-group">
+      <label class="form-label" for="flock-subject">{{ _("Subject") }} <span class="req">*</span></label>
+      <input class="form-control" id="flock-subject" name="subject" type="text" required
+             maxlength="240" autocomplete="off" placeholder="{{ _("Sunday service reminder") }}">
+    </fieldset>
+
+    <fieldset class="form-group">
+      <label class="label" for="flock-body">{{ _("Message") }} <span class="req">*</span></label>
+      <textarea class="form-control" id="flock-body" name="body" rows="4" required
+                placeholder="{{ _("Write your announcement…") }}"></textarea>
+    </fieldset>
+
+    <div class="row">
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-category">{{ _("Category") }}</label>
+        <select class="form-control" id="flock-category" name="category">
+          {% for opt in categories %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-priority">{{ _("Priority") }}</label>
+        <select class="form-control" id="flock-priority" name="priority">
+          {% for opt in priorities %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+
+    {# --- Audience scope (the no-leakage picker) --- #}
+    <fieldset class="form-section">
+      <legend>{{ _("Audience Scope") }}</legend>
+
+      <div class="form-group">
+        <label class="form-label" for="flock-branch">{{ _("Target branch (subtree)") }} <span class="req">*</span></label>
+        <select class="form-control" id="flock-branch" name="branch" required>
+          <option value="" disabled selected>{{ _("Select a branch…") }}</option>
+          {% for b in branches %}
+          <option value="{{ b.name }}">{{ b.label }}</option>
+          {% endfor %}
+        </select>
+        <small class="form-text text-muted">
+          {{ _("Recipients = this branch and every branch beneath it.") }}
+        </small>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="flock-group">{{ _("Narrow to a group (optional)") }}</label>
+        <select class="form-control" id="flock-group" name="group" disabled>
+          <option value="">{{ _("All groups in subtree") }}</option>
+          {# All offered groups rendered; JS filters by the selected branch. #}
+          {% for g in groups %}
+          <option value="{{ g.name }}" data-branch="{{ g.branch }}">{{ g.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="flock-audience-role">{{ _("Audience") }}</label>
+        <select class="form-control" id="flock-audience-role" name="audience_role">
+          {% for opt in audience_roles %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+      </div>
+    </fieldset>
+
+    {# --- Channels --- #}
+    <fieldset class="form-section">
+      <legend>{{ _("Delivery Channels") }}</legend>
+      <div class="flock-channels">
+        {% for ch in channels %}
+        <label class="flock-check">
+          <input type="checkbox" name="channel" value="{{ ch }}" {{ "checked" if ch == "In-App" else "" }}>
+          <span>{{ ch }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+
+    {# --- Audience preview (delivery target) --- #}
+    <aside class="flock-preview" id="flock-preview" hidden aria-live="polite"></aside>
+
+    {# --- Schedule (optional) --- #}
+    <fieldset class="form-group">
+      <label class="form-label" for="flock-scheduled-at">{{ _("Schedule for later (optional)") }}</label>
+      <input class="form-control" id="flock-scheduled-at" name="scheduled_at" type="datetime-local">
+    </fieldset>
+
+    {# --- Status / actions --- #}
+    <div class="flock-status" id="flock-status" role="status" aria-live="polite"></div>
+
+    <div class="flock-actions">
+      <button type="button" class="btn btn-secondary" id="flock-preview-btn" disabled>
+        {{ _("Preview audience") }}
+      </button>
+      <button type="button" class="btn btn-default" id="flock-schedule-btn" disabled>
+        {{ _("Schedule") }}
+      </button>
+      <button type="submit" class="btn btn-primary" id="flock-send-btn" disabled>
+        {{ _("Send now") }}
+      </button>
+    </div>
+  </form>
+</section>
+
+{# Client interactivity: scope filter, audience preview, send/schedule (FLO-60). #}
+<script src="/assets/flock_os/js/announce.js"></script>
+{% endblock %}
