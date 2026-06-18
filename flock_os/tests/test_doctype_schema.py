@@ -446,7 +446,166 @@ def test_flock_attendance_record_branch_admin_can_report(attendance_schemas):
 
 
 # --------------------------------------------------------------------------- #
-# Naming + composite-index contract. FLO-64's `add_attendance_indexes` patch
+# --------------------------------------------------------------------------- #
+# Gathering DocTypes (FLO-54, materializing the event/gathering layer from
+# [FLO-6](/FLO/issues/FLO-6) §3.1/§3.2 + ADR-0001 §3/§4.2). `Flock Gathering`
+# is the canonical event entity (routine + one-time); `Flock Gathering Type` is
+# its config master. Both are Flock-prefixed, in the flock_os module, and carry
+# the ADR §3 scoping contract (`branch` + `group` + `organization`).
+# --------------------------------------------------------------------------- #
+
+GATHERING_DOCTYPES = (
+	"Flock Gathering",
+	"Flock Gathering Type",
+)
+
+
+@pytest.fixture(scope="module")
+def gathering_schemas() -> dict[str, dict]:
+	return {name: _load(name) for name in GATHERING_DOCTYPES}
+
+
+@pytest.mark.parametrize("name", GATHERING_DOCTYPES)
+def test_gathering_doctypes_use_flock_prefix_and_module(gathering_schemas, name):
+	doc = gathering_schemas[name]
+	assert doc["doctype"] == "DocType"
+	assert doc["name"] == name
+	assert name.startswith("Flock ")
+	assert doc["module"] == "flock_os"
+	assert doc["engine"] == "InnoDB"
+
+
+def test_flock_gathering_is_submittable_transactional_doc(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering"]
+	assert doc["is_submittable"] == 1
+	assert doc["autoname"] == "naming_series:"
+	assert doc["naming_rule"] == "By naming series"
+
+
+def test_flock_gathering_scoping_contract(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering"]
+	branch = _field(doc, "branch")
+	assert branch["fieldtype"] == "Link"
+	assert branch["options"] == "Flock Branch"
+	assert branch.get("reqd") == 1
+	assert branch.get("search_index") == 1
+	group = _field(doc, "group")
+	assert group["fieldtype"] == "Link"
+	assert group["options"] == "Flock Group"
+	assert group.get("reqd") == 1
+	assert group.get("search_index") == 1
+	assert _field(doc, "organization")["options"] == "Flock Organization"
+
+
+def test_flock_gathering_group_path_is_denorm_rollup_helper(gathering_schemas):
+	path = _field(gathering_schemas["Flock Gathering"], "group_path")
+	assert path["fieldtype"] == "Data"
+	assert path.get("read_only") == 1
+	assert path.get("search_index") == 1
+
+
+def test_flock_gathering_identity_fields(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering"]
+	assert _field(doc, "gathering_type")["options"] == "Flock Gathering Type"
+	assert _field(doc, "title").get("reqd") == 1
+	starts = _field(doc, "starts_on")
+	assert starts["fieldtype"] == "Datetime"
+	assert starts.get("reqd") == 1
+	assert starts.get("search_index") == 1
+	assert _field(doc, "ends_on")["fieldtype"] == "Datetime"
+	for fld in ("location", "description"):
+		_field(doc, fld)
+	capacity = _field(doc, "capacity")
+	assert capacity["fieldtype"] == "Int"
+	assert capacity.get("non_negative") == 1
+
+
+def test_flock_gathering_status_select_matches_state_machine(gathering_schemas):
+	from flock_os.gatherings import GATHERING_STATUSES
+
+	status = _field(gathering_schemas["Flock Gathering"], "status")
+	assert status["fieldtype"] == "Select"
+	assert status.get("reqd") == 1
+	assert status["options"].split("\n") == list(GATHERING_STATUSES)
+	assert status["default"] == "Scheduled"
+
+
+def test_flock_gathering_rollup_counters_are_permlevel_2_readonly(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering"]
+	for fld in (
+		"member_attendance_count",
+		"visitor_attendance_count",
+		"total_attendance_count",
+		"first_time_count",
+	):
+		counter = _field(doc, fld)
+		assert counter["fieldtype"] == "Int"
+		assert counter.get("read_only") == 1
+		assert counter.get("permlevel") == 2
+	assert _field(doc, "reported_by").get("permlevel") == 1
+	assert _field(doc, "confirmed_by").get("permlevel") == 2
+
+
+def test_flock_gathering_role_permissions(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering"]
+	# The gathering carries field-level perms (permlevel 0/1/2), so a role may
+	# have several perm rows. CRUD/submit/cancel rights live on the permlevel 0
+	# row — select that one explicitly rather than collapsing by role name.
+	leader_pl0 = next(
+		p for p in doc["permissions"] if p["role"] == "Flock Group Leader" and p.get("permlevel", 0) == 0
+	)
+	assert leader_pl0.get("create") == 1 and leader_pl0.get("write") == 1
+	assert leader_pl0.get("submit") == 1 and leader_pl0.get("cancel") == 1
+	assert leader_pl0.get("if_owner") == 1
+	# Branch Admin manages (permlevel 0 row carries write).
+	ba_pl0 = next(
+		p for p in doc["permissions"] if p["role"] == "Flock Branch Admin" and p.get("permlevel", 0) == 0
+	)
+	assert ba_pl0.get("write") == 1
+	by_role = {p["role"]: p for p in doc["permissions"]}
+	assert by_role["Flock Member"]["read"] == 1
+	assert by_role["Flock Auditor"]["read"] == 1
+	assert by_role["Flock Auditor"].get("write", 0) == 0
+
+
+def test_flock_gathering_type_config_master(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering Type"]
+	assert doc["autoname"] == "field:gathering_type_name"
+	assert doc["title_field"] == "gathering_type_name"
+	name = _field(doc, "gathering_type_name")
+	assert name.get("reqd") == 1
+	assert name.get("unique") == 1
+	branch = _field(doc, "branch")
+	assert branch["options"] == "Flock Branch"
+	assert branch.get("reqd", 0) == 0
+	for fld in (
+		"organization",
+		"is_recurring_default",
+		"default_duration_min",
+		"capture_methods",
+		"requires_confirmation",
+		"is_active",
+	):
+		_field(doc, fld)
+
+
+def test_flock_gathering_type_leader_read_admin_write(gathering_schemas):
+	doc = gathering_schemas["Flock Gathering Type"]
+	by_role = {p["role"]: p for p in doc["permissions"]}
+	assert by_role["Flock Group Leader"]["read"] == 1
+	assert by_role["Flock Group Leader"].get("write", 0) == 0
+	assert by_role["Flock Branch Admin"]["write"] == 1
+	assert by_role["Flock Auditor"]["read"] == 1
+
+
+def test_flock_gathering_registered_in_scoped_doctypes(gathering_schemas):
+	from flock_os.permissions import MEMBER_ANCHORED_DOCTYPES, SCOPED_DOCTYPES
+
+	assert "Flock Gathering" in SCOPED_DOCTYPES
+	assert "Flock Gathering" not in MEMBER_ANCHORED_DOCTYPES
+
+
+# # Naming + composite-index contract. FLO-64's `add_attendance_indexes` patch
 # materializes the composite UNIQUE indexes the bulk gateway depends on
 # (FLO-10 §4.1); these tests pin (a) the autoincrement naming on the bulk
 # tables and (b) that index contract against the gateway's own DocType
