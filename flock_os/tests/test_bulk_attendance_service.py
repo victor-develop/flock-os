@@ -367,10 +367,37 @@ class _RecordingFrappeDB:
 	def sql(self, query: str, values: object = None, **_kwargs: object) -> None:  # noqa: ARG002
 		self.calls.append((query, values))
 
+	def commit(self) -> None:  # noqa: PLR6301 - no-op stand-in for the real db.commit
+		return None
+
+	def rollback(self) -> None:  # noqa: PLR6301 - no-op stand-in for the real db.rollback
+		return None
+
 
 class _RecordingFrappe:
 	def __init__(self) -> None:
 		self.db = _RecordingFrappeDB()
+
+
+def test_bulk_write_transaction_runs_at_read_committed(monkeypatch) -> None:
+	"""FLO-100: the persistence transaction runs at READ COMMITTED so the
+	contended summary UPDATE never trips MariaDB 1020 ("record has changed since
+	last read" under REPEATABLE READ's stale snapshot), and restores the default
+	isolation afterward so the worker's other jobs are unaffected."""
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _RecordingFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	with FrappeBulkAttendanceGateway().transaction():
+		pass
+
+	sqls = [query.upper() for query, _ in fake.db.calls]
+	rc = [i for i, q in enumerate(sqls) if "READ COMMITTED" in q]
+	rr = [i for i, q in enumerate(sqls) if "REPEATABLE READ" in q]
+	assert rc, "expected SET SESSION ... READ COMMITTED"
+	assert rr, "expected default isolation restored to REPEATABLE READ"
+	assert rc[0] < rr[0], "READ COMMITTED set before the body, REPEATABLE READ restored after"
 
 
 def test_increment_aggregate_avoids_iodku_contention(monkeypatch) -> None:
