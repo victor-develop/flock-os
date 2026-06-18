@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = [
+	"bench",
+	"sites",
+	"logs",
+	"apps/frappe",
+	"apps/frappe_framework",
+]
+
+[tool.ruff.lint]
+# Keep the gate meaningful but pragmatic for a Frappe app scaffold.
+select = ["E", "F", "W", "I", "UP", "B"]
+# Frappe conventionally uses tabs for Python; ignore E111/E117/tab-vs-space friction.
+ignore = ["E111", "E114", "E117", "W191"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/doctype/**" = ["F401"]
+"**/{__init__,hooks,modules,patches}.py" = ["F401"]
+
+[tool.ruff.format]
+indent-style = "tab"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["flock_os/tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint + Unit Tests (py3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install linters/test runner
+        run: pip install ruff pytest
+
+      # Install the flock_os package WITHOUT pulling frappe (heavy, needs a
+      # full bench + MariaDB). Unit tests here assert app identity/metadata and
+      # do not import frappe. Frappe-level integration tests run locally via
+      # `bench run-tests` (see README -> Runbook).
+      - name: Install app package (no-deps)
+        run: pip install -e . --no-deps
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Unit tests
+        run: pytest

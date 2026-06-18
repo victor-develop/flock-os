@@ -1,0 +1,6 @@
+# Versioned patches registry for flock_os.
+#
+# Format: <flock_os.module>.<relative_patch_path>
+# Patches live under flock_os/patches/<semver>/ and run in listed order during
+# `bench migrate`. Sprint 0 ships no patches yet; the data model (FLO-3+) will
+# add the first entries here.

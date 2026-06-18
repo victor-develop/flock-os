@@ -42,15 +42,68 @@ design approach.
 ## Layout
 
 ```
-flock-os/                       # this repo (Paperclip project workspace)
+flock-os/                       # this repo == the flock_os Frappe app source
   AGENTS.md                     # project-wide instructions + conventions
+  setup.py                      # flock_os app packaging (this repo IS the app)
+  flock_os/                     # the Frappe custom app package
+    hooks.py                    # Frappe integration surface (events, fixtures, jobs)
+    flock_os/                   # default module (DocTypes land here in FLO-3+)
+    tests/                      # project-level unit tests (run in plain pytest)
+  scripts/
+    bootstrap.sh                # reproducible full local setup (bench + site + app)
+    bootstrap-db.sh             # one-time MariaDB TCP-auth prep
+  .github/workflows/ci.yml      # lint (ruff) + unit-test gate
+  .env.example                  # copy to .env (gitignored) for local secrets
   .paperclip/
     manifest.json               # the Paperclip company/org design (human-readable)
     agents/                     # per-role instruction files (fed to each agent)
 ```
 
-The Frappe site + the `flock_os` custom app are scaffolded under this repo by the
-agents (see the `flock_os/` app directory once Sprint 0 lands).
+The Frappe **bench runtime** (`apps/`, `sites/`, `env/`, built assets) lives
+**outside** the repo at `$BENCH_DIR` (see `.env`), so the tracked tree holds
+only the app source + CI + scripts. The `flock_os` app is installed into the
+bench as an editable (`pip -e`) package from this repo, so edits here are live.
+
+## Local setup runbook (macOS / Homebrew)
+
+Prerequisites (already on this Mac): Homebrew **MariaDB** + **Redis** running as
+launchd services, **Python 3.12** (`python@3.12`), **Node** via `mise`,
+**frappe-bench**, and **uv** (`brew install uv`).
+
+```bash
+# 1. One-time: create local secrets (NEVER committed — .env is gitignored).
+cp .env.example .env
+#    fill MARIADB_ROOT_PASSWORD and SITE_ADMIN_PASSWORD with generated values, e.g.
+python3 -c "import secrets; print(secrets.token_urlsafe(18))"
+
+# 2. Reproducible setup: preps MariaDB, bench-inits Frappe v15 (py3.12),
+#    installs the flock_os app, and creates the site. Re-runnable / idempotent.
+./scripts/bootstrap.sh
+
+# 3. Run the dev server (from the bench dir):
+cd "$(grep ^BENCH_DIR= .env | cut -d= -f2)"
+bench --site flock_os.localhost serve      # http://flock_os.localhost:8000
+#    (add `flock_os.localhost` -> 127.0.0.1 to /etc/hosts for the web URL)
+```
+
+### Tests
+
+```bash
+# Fast project-level unit tests (no bench/Frappe needed) — this is the CI gate:
+pip install ruff pytest && pip install -e . --no-deps
+ruff check . && ruff format --check . && pytest
+
+# Frappe-level integration tests (need a running bench + site):
+cd "$BENCH_DIR" && bench --site flock_os.localhost run-tests --app flock_os
+```
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push/PR: installs the app package
+(`--no-deps`), runs **ruff lint + format check**, then **pytest**. The unit
+suite asserts app identity/metadata and does not import Frappe, so the gate is
+fast and self-contained. Frappe DocType integration tests run locally via
+`bench run-tests` (and will join CI once a headless Frappe image is wired up).
 
 ## Operating model
 

@@ -1,0 +1,10 @@
+recursive-include flock_os *.json
+recursive-include flock_os *.csv
+recursive-include flock_os *.md
+recursive-include flock_os *.html
+recursive-include flock_os *.js
+recursive-include flock_os *.css
+recursive-include flock_os *.svg
+include requirements.txt
+include license.txt
+include MANIFEST.in
