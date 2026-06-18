@@ -18,4 +18,11 @@ else
 	PY="$(command -v python3 || command -v python)"
 fi
 
+# Determinism guard (FLO-81): never leave stale bytecode behind for the next
+# process to load. Each `exec` is already a fresh interpreter (so no in-process
+# module-global gateway state can leak between runs); disabling bytecode writes
+# removes the stale-`.pyc` environmental suspect entirely — the same `--no-cache`
+# discipline the QA gate applies to `ruff`.
+export PYTHONDONTWRITEBYTECODE=1
+
 exec "$PY" "$HERE/demo_phase1.py" "$@"
