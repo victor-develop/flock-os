@@ -1,7 +1,16 @@
 from setuptools import find_packages, setup
 
-with open("requirements.txt") as f:
-	install_requires = f.read().strip().split("\n")
+
+def _read_requirements(path):
+	"""Parse requirements.txt, skipping comments and blank lines."""
+	with open(path) as f:
+		deps = []
+		for line in f:
+			line = line.strip()
+			if line and not line.startswith("#"):
+				deps.append(line)
+	return deps
+
 
 setup(
 	name="flock_os",
@@ -14,6 +23,6 @@ setup(
 	packages=find_packages(),
 	include_package_data=True,
 	zip_safe=False,
-	install_requires=install_requires,
+	install_requires=_read_requirements("requirements.txt"),
 	entry_points={"bench.utils": ["flock_os = flock_os.utils.bench_helper"]},
 )
