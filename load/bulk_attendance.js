@@ -90,7 +90,9 @@ export default function () {
 		"bulk_submit returns 200": (r) => r.status === 200,
 		"receipt accepted": (r) => {
 			try {
-				const body = r.json();
+				// Frappe wraps a whitelisted dict return in {"message": {...}}.
+				const raw = r.json();
+				const body = (raw && raw.message) || raw;
 				return body && body.accepted === true && body.queued === items.length;
 			} catch {
 				return false;

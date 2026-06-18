@@ -58,8 +58,23 @@ BULK_BATCH_SIZE = 500
 ATTENDANCE_IMPORT_ERROR_QUEUE = "attendance_import_error"
 """Visible dead-letter queue for failed attendance batches (FLO-10 §3.3)."""
 
-BULK_ATTENDANCE_JOB_QUEUE = "flock_attendance"
-"""Dedicated RQ queue for bulk attendance jobs (isolated from default queue)."""
+BULK_ATTENDANCE_JOB_QUEUE = "long"
+"""Standard RQ queue for bulk attendance jobs (FLO-76).
+
+This is deliberately a **stock Frappe queue** (``short`` / ``default`` / ``long``)
+rather than a custom queue name. Frappe validates the requested queue against
+``get_queues_timeout()``, which is ``@lru_cache``-d and reads the ``workers`` key
+from ``common_site_config.json`` once per process. A long-running *web* process
+that first resolved the queue list before a custom queue was registered (or whose
+cache predates a config edit) permanently rejects the custom name with
+``ValidationError: Queue should be one of short, default, long`` -- even though a
+fresh console/worker process accepts it. That runtime-context fragility cannot be
+reliably fixed from app code (it lives in Frappe's internal cache), so the bulk
+path rides the stock ``long`` queue (1500s timeout -- ample for a 500-row batch),
+and queue isolation is achieved by **RQ worker binding** instead of a custom name
+(i.e. run a dedicated worker that drains ``long``), exactly as FLO-10 S3.3
+allows. See [FLO-76](/FLO/issues/FLO-76).
+"""
 
 BULK_ATTENDANCE_MAX_RETRY = 5
 """Max retries with exponential backoff before dead-lettering a batch."""
