@@ -4,9 +4,12 @@
 # local pre-merge gate a developer/agent runs before declaring code shippable.
 #
 # Checks:
-#   [1/4] ruff check .            (--no-cache: a stale .ruff_cache must never
-#                                  produce a false green — proven hazard)
-#   [2/4] ruff format --check .   (formatting gate; CI enforces the same)
+#   [1/4] ruff check               (--no-cache + TRACKED files only: a stale
+#                                  .ruff_cache must never produce a false green
+#                                  — proven hazard; and untracked WIP / a tracked
+#                                  file deleted mid-refactor must never produce a
+#                                  false red while CI is green — FLO-89/FLO-95)
+#   [2/4] ruff format --check      (formatting gate over TRACKED files; CI parity)
 #   [3/4] pytest flock_os/tests/  (project-level, SQL-light, no Frappe site)
 #   [4/4] coverage gate           (branch-coverage ratchet over the pure domain
 #                                  logic; bench-integration surface omitted —
@@ -53,9 +56,15 @@ tracked_tests() {
 # the shared tree and intermittently reds the gate on code CI will never see
 # (a transient doctype scratch file already produced a false format-red that
 # mis-diagnosed fixtures.py — FLO-89). Same parity gap FLO-21 closed for the
-# pytest/coverage steps below. (FLO-89)
+# pytest/coverage steps below. A tracked .py deleted from the worktree mid-
+# refactor is skipped rather than fed to ruff as a missing path (E902 false red)
+# — CI's checkout still has the file, so a local deletion must not red the gate
+# while CI is green; mirrors the [ -f ] guard tracked_tests() already has.
+# (FLO-89 scoped ruff to tracked files; FLO-95 added the deleted-file guard.)
 tracked_py() {
-	git ls-files -z '*.py'
+	git ls-files -z '*.py' | while IFS= read -r -d '' f; do
+		[ -f "$f" ] && printf '%s\0' "$f"
+	done
 }
 
 echo "==> [1/4] ruff check (--no-cache, TRACKED files only — CI parity)"
