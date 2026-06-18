@@ -37,6 +37,16 @@ fail=0
 echo "Phase-1 QA gate (FLO-21)"
 echo "------------------------"
 
+# Foundation gate scope = tracked test files that still exist on disk. Shared
+# working tree is churny: untracked WIP tests are excluded (CI parity), and a
+# tracked test deleted from the worktree mid-refactor is skipped rather than
+# aborting the whole suite's collection. (Architect directive, FLO-21.)
+tracked_tests() {
+	git ls-files -z 'flock_os/tests/test_*.py' | while IFS= read -r -d '' f; do
+		[ -f "$f" ] && printf '%s\0' "$f"
+	done
+}
+
 echo "==> [1/4] ruff check (--no-cache)"
 if ruff check . --no-cache; then
 	echo "[1/4] OK"
@@ -60,7 +70,7 @@ echo "==> [3/4] pytest — foundation unit tests (TRACKED files only, no cache)"
 # a slice's tests enter the gate when their owner commits them green
 # (Architect directive: no forward-looking tests in the shared gate until their
 # implementation imports and passes). Stale-cache-proofed (-p no:cacheprovider).
-if git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest -p no:cacheprovider -q; then
+if tracked_tests | xargs -0 pytest -p no:cacheprovider -q; then
 	echo "[3/4] OK"
 else
 	echo "[3/4] FAIL"; fail=1
@@ -96,7 +106,7 @@ COVRC="$(mktemp -t flock_covrc.XXXXXX)"
 	echo "show_missing = True"
 	echo "fail_under = 80"
 } > "$COVRC"
-if git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest -p no:cacheprovider -q \
+if tracked_tests | xargs -0 pytest -p no:cacheprovider -q \
 	--cov=flock_os --cov-config="$COVRC" --cov-branch --cov-report=term-missing; then
 	echo "[4/4] OK"
 else
