@@ -142,14 +142,8 @@ def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 	try:
 		service = BulkAttendanceService(FrappeBulkAttendanceGateway())
 		outcome = service.submit(items, scope, batch_id)
-	except Exception as _diag_exc:
-		# FLO-53 DIAGNOSTIC (temporary): capture the swallowed initial exception.
-		frappe.log_error(
-			title=f"FLO53_DIAG batch={batch_id} attempt={payload.get('_attempt', 0)}",
-			reference_doctype="Flock Attendance Record",
-			method="flock_os.attendance.process_bulk_batch",
-			error=frappe.utils.get_traceback(),
-		)
+	except Exception:
+		# Unique-index backstop / transient DB error: idempotent retry is safe.
 		_deadletter_or_retry(payload)
 		return
 
