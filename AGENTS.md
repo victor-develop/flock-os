@@ -77,6 +77,29 @@ the company goal in mind — every task traces back to it.
 
 ## Repo status
 
-Sprint 0 (environment + data model) is bootstrapped by the agents. If `bench`/the
-Frappe site is not yet initialized, the DevOps Engineer + Architect own setting it
-up (see the seeded Sprint 0 issues).
+**Phase 1 (org-tree + permission spine) is shipped and QA-green** — verified by
+the QA gate ([FLO-21](/FLO/issues/FLO-21)) and signed off at the
+[FLO-52](/FLO/issues/FLO-52) exit gate. The spine every later feature builds on:
+
+- **DocTypes** in `flock_os/flock_os/doctype/`: `Flock Organization`,
+  `Flock Branch` (tree), `Flock Group` (tree, branch-bound), `Flock Group Member`,
+  `Flock Member`, `Flock Branch Admin Scope`, `Flock Audit Log`.
+- **Traversal** — `flock_os.traversal.TreeTraversalService`
+  (`branch_subtree` / `group_subtree` / `branch_path_to_root` / leader chain) +
+  `@frappe.whitelist()` REST endpoints.
+- **Permissions** — `flock_os.permissions`: the single row-level-scoping
+  chokepoint (`assert_branch_scope` / `assert_group_scope` /
+  `resolve_leader_scope` / `get_group_scoped_conditions` /
+  `compute_branch_subtree`). Never check perms via ad-hoc SQL — go through these.
+- **Demo** — `./scripts/demo-phase1.sh` reproduces the spine's isolation
+  guarantees over an in-memory multi-branch world (no bench needed).
+
+Both services are hexagonal: pure domain logic over a gateway port, Frappe
+adapter imported lazily, so the unit gate runs under plain `pytest`. Phase 2
+features extend the spine — append transactional DocTypes to
+`permissions.SCOPED_DOCTYPES` and reuse the traversal/permission entry points
+rather than re-implementing scoping.
+
+Sprint 0 (environment + data model) was bootstrapped by the agents. If
+`bench`/the Frappe site is not yet initialized, the DevOps Engineer + Architect
+own setting it up (see the seeded Sprint 0 issues).

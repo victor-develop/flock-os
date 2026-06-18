@@ -64,6 +64,39 @@ The Frappe **bench runtime** (`apps/`, `sites/`, `env/`, built assets) lives
 only the app source + CI + scripts. The `flock_os` app is installed into the
 bench as an editable (`pip -e`) package from this repo, so edits here are live.
 
+## Phase 1 spine — org tree + permissions
+
+Phase 1 ships the **org-tree + permission spine** every later feature builds on.
+It is verified green by the QA gate ([FLO-21](/FLO/issues/FLO-21)) and signed
+off as a unit at the [FLO-52](/FLO/issues/FLO-52) exit gate.
+
+**Domain DocTypes** (`flock_os/flock_os/doctype/`):
+
+- `Flock Organization` — the root org (tenant root).
+- `Flock Branch` (`is_tree=1`) — the administrative org tree / branch axis.
+- `Flock Group` (`is_tree=1`) — the ministry/cell tree, **branch-bound**
+  (a group subtree lives within exactly one branch).
+- `Flock Group Member` — the leadership roster / membership edge.
+- `Flock Member` — a person (linked 1:1 to a Frappe User via `linked_user`).
+- `Flock Branch Admin Scope` — materializes a Branch Admin's subtree.
+- `Flock Audit Log` — full audit trail (every cross-scope read is recorded).
+
+**Traversal + permission entry points** (domain logic, Frappe-agnostic):
+
+- `flock_os.traversal` — `TreeTraversalService`: `branch_subtree`,
+  `branch_descendants`, `group_subtree`, `branch_path_to_root`, the
+  "member leads 1..N groups" lookups, and the approval-routing leader chain.
+  Exposed at REST via `@frappe.whitelist()` endpoints (`get_branch_subtree`,
+  `get_group_descendants`, …).
+- `flock_os.permissions` — the single row-level-scoping chokepoint:
+  `assert_branch_scope` / `assert_group_scope` (guards),
+  `resolve_leader_scope`, `get_group_scoped_conditions` (the one
+  `permission_query_conditions` hook), and `compute_branch_subtree`.
+
+Both services are hexagonal: pure domain logic over a gateway port, with the
+Frappe adapter imported lazily so the full suite runs under plain `pytest`
+without a bench.
+
 ## Local setup runbook (macOS / Homebrew)
 
 Prerequisites (already on this Mac): Homebrew **MariaDB** + **Redis** running as
@@ -96,6 +129,21 @@ ruff check . && ruff format --check . && pytest
 # Frappe-level integration tests (need a running bench + site):
 cd "$BENCH_DIR" && bench --site flock_os.localhost run-tests --app flock_os
 ```
+
+### Phase-1 spine demo (FLO-52 sign-off)
+
+A reproducible demo of the org-tree + permission spine — drives the **real**
+`TreeTraversalService` and the permissions scoping API over an in-memory
+multi-branch world (no Frappe bench needed), asserting all four DoD #5
+guarantees (Branch Admin isolation, Group Leader scoping, Org Admin full tree,
+Auditor read-only across branches). Exits non-zero if any guarantee fails:
+
+```bash
+./scripts/demo-phase1.sh        # or: python scripts/demo_phase1.py
+```
+
+The demo is also exercised by the unit gate (`test_demo_phase1.py`), so it
+cannot rot behind a merge.
 
 ### CI
 
