@@ -34,6 +34,7 @@ class _FakeFrappe:
 		self.permissions = _FakePermissions()
 		self.enqueue_calls: list[dict[str, Any]] = []
 		self.log_error_calls: list[dict[str, Any]] = []
+		self.utils = types.SimpleNamespace(get_traceback=lambda: "TRACEBACK")
 
 	def reset(self) -> None:
 		self.enqueue_calls.clear()
@@ -157,3 +158,31 @@ def test_process_bulk_batch_deadlettered_guard_short_circuits(fake_frappe) -> No
 	attendance.process_bulk_batch({**_payload(), "_deadlettered": True})
 	assert fake_frappe.enqueue_calls == []
 	assert len(fake_frappe.log_error_calls) == 1
+
+
+def test_process_bulk_batch_surfaces_failure_traceback_before_retry(fake_frappe, monkeypatch) -> None:
+	"""FLO-100: a persistence failure logs its real traceback before the retry.
+
+	The prior bare ``except: _deadletter_or_retry`` swallowed the cause, making
+	the 200-wps concurrency failure (InnoDB lock-wait on the shared summary row)
+	invisible. Now the class + message land in the Error Log ``error`` field,
+	and the idempotent retry is still scheduled.
+	"""
+
+	def _boom_service(*_args: Any, **_kwargs: Any) -> Any:
+		raise RuntimeError("lock wait timeout simulated")
+
+	monkeypatch.setattr(attendance, "BulkAttendanceService", _boom_service)
+
+	attendance.process_bulk_batch(_payload(attempt=0))
+
+	# The real exception is surfaced with its traceback…
+	assert len(fake_frappe.log_error_calls) == 1
+	entry = fake_frappe.log_error_calls[0]
+	assert "persistence failed" in entry["title"]
+	assert entry["message"] == "TRACEBACK"
+	# …and the idempotent retry is still scheduled on the stock long queue.
+	assert len(fake_frappe.enqueue_calls) == 1
+	call = fake_frappe.enqueue_calls[0]
+	assert call["queue"] == "long"
+	assert call["payload"]["_attempt"] == 1
