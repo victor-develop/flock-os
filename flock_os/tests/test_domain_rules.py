@@ -133,26 +133,29 @@ def test_core_doc_events_target_the_canonical_catalog():
 	# FLO-17 wires the core DocTypes to the single sanctioned emitter
 	# (`flock_os.events`, shipped by FLO-14). Every mapped event must exist in the
 	# canonical catalog and follow the flock.<aggregate>.<verb-past> convention.
+	catalog = {
+		value
+		for name, value in vars(flock_events).items()
+		if not name.startswith("_") and isinstance(value, str) and value.startswith("flock.")
+	}
+	assert catalog
+	aggregate_by_doctype = {
+		"Flock Branch": "branch",
+		"Flock Group": "group",
+		"Flock Group Member": "group_member",
+		"Flock Member": "member",
+		"Flock Gathering": "gathering",
+		"Flock Announcement": "announcement",
+	}
 	assert hooks._FLOCK_DOC_EVENTS  # wired
 	for (doctype, hook), event in hooks._FLOCK_DOC_EVENTS.items():
-		assert event in {
-			flock_events.BRANCH_CREATED,
-			flock_events.GROUP_CREATED,
-			flock_events.GROUP_MEMBER_ADDED,
-			flock_events.MEMBER_CREATED,
-		}
+		assert event in catalog, f"{doctype} wires uncataloged event {event!r}"
 		assert event.startswith("flock.")
 		assert doctype.startswith("Flock ")
 		# catalog name: flock.<aggregate>.<verb-past>; aggregate tracks the doctype
 		aggregate = event.removeprefix("flock.").split(".")[0]
-		assert (
-			aggregate
-			== {
-				"Flock Branch": "branch",
-				"Flock Group": "group",
-				"Flock Group Member": "group_member",
-				"Flock Member": "member",
-			}[doctype]
+		assert aggregate_by_doctype[doctype] == aggregate, (
+			f"{doctype} aggregate {aggregate!r} != expected {aggregate_by_doctype[doctype]!r}"
 		)
 		assert hook in {"after_insert", "on_update"}
 

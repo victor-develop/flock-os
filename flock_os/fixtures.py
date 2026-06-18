@@ -42,3 +42,15 @@ FLOCK_GROUP_TYPES: tuple[dict[str, str | int], ...] = (
 )
 
 FLOCK_GROUP_TYPE_NAMES: tuple[str, ...] = tuple(t["group_type_name"] for t in FLOCK_GROUP_TYPES)
+
+
+FLOCK_GATHERING_TYPES: tuple[dict[str, str | int], ...] = (
+	{"gathering_type_name": "Sunday Service", "is_active": 1, "requires_confirmation": 1},
+	{"gathering_type_name": "Cell Group", "is_active": 1},
+	{"gathering_type_name": "Bible Study", "is_active": 1},
+	{"gathering_type_name": "Prayer Meeting", "is_active": 1},
+	{"gathering_type_name": "Youth Gathering", "is_active": 1},
+	{"gathering_type_name": "Special Event", "is_active": 1},
+)
+
+FLOCK_GATHERING_TYPE_NAMES: tuple[str, ...] = tuple(t["gathering_type_name"] for t in FLOCK_GATHERING_TYPES)

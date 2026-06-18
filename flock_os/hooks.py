@@ -33,13 +33,21 @@ default_app_module = "flock_os"
 # idempotently by the versioned patch flock_os.patches.v0_1.seed_core_fixtures
 # (see flock_os/patches.txt). The export config below mirrors the same records so
 # `bench export-fixtures` keeps shipped fixtures in sync with the patch.
-from flock_os.fixtures import FLOCK_GROUP_TYPE_NAMES, FLOCK_ROLES
+from flock_os.fixtures import (
+	FLOCK_GATHERING_TYPE_NAMES,
+	FLOCK_GROUP_TYPE_NAMES,
+	FLOCK_ROLES,
+)
 
 fixtures = [
 	{"doctype": "Role", "filters": [["name", "in", list(FLOCK_ROLES)]]},
 	{
 		"doctype": "Flock Group Type",
 		"filters": [["name", "in", list(FLOCK_GROUP_TYPE_NAMES)]],
+	},
+	{
+		"doctype": "Flock Gathering Type",
+		"filters": [["name", "in", list(FLOCK_GATHERING_TYPE_NAMES)]],
 	},
 ]
 
@@ -58,6 +66,7 @@ _FLOCK_DOC_EVENTS: dict[tuple[str, str], str] = {
 	("Flock Group", "after_insert"): flock_events.GROUP_CREATED,
 	("Flock Group Member", "on_update"): flock_events.GROUP_MEMBER_ADDED,
 	("Flock Member", "after_insert"): flock_events.MEMBER_CREATED,
+	("Flock Gathering", "after_insert"): flock_events.GATHERING_CREATED,
 }
 
 
@@ -79,6 +88,7 @@ doc_events = {
 	"Flock Group": {"after_insert": "flock_os.hooks._dispatch_flock_doc_event"},
 	"Flock Group Member": {"on_update": "flock_os.hooks._dispatch_flock_doc_event"},
 	"Flock Member": {"after_insert": "flock_os.hooks._dispatch_flock_doc_event"},
+	"Flock Gathering": {"after_insert": "flock_os.hooks._dispatch_flock_doc_event"},
 }
 scheduled_jobs = []
 

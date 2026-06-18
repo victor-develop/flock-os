@@ -1,0 +1,374 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "is_submittable": 1,
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "GATH-.#####",
+   "default": "GATH-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1,
+   "description": "Tenant floor (ADR §3)."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Primary row-level permission anchor — scoped natively by Frappe User Permissions on Flock Branch (ADR §6.2)."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Group-axis hook surface — the nested-set permission_query_conditions hook narrows a leader to their led subtree (ADR §6.3)."
+  },
+  {
+   "fieldname": "group_path",
+   "fieldtype": "Data",
+   "label": "Group Path",
+   "search_index": 1,
+   "read_only": 1,
+   "translatable": 0,
+   "description": "Denormalized group-subtree path (root-first slash-delimited). Roll-up helper ONLY — carries no permission semantics (ADR §9)."
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "gathering_type",
+   "fieldtype": "Link",
+   "label": "Gathering Type",
+   "options": "Flock Gathering Type",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "reqd": 1,
+   "in_list_view": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "starts_on",
+   "fieldtype": "Datetime",
+   "label": "Starts On",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "ends_on",
+   "fieldtype": "Datetime",
+   "label": "Ends On"
+  },
+  {
+   "fieldname": "location",
+   "fieldtype": "Data",
+   "label": "Location",
+   "translatable": 0
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Scheduled\nHeld\nReported\nConfirmed\nCancelled",
+   "default": "Scheduled",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Reporting lifecycle (FLO-6 §4): Scheduled -> Held -> Reported -> Confirmed; Cancelled is terminal from Scheduled/Held."
+  },
+  {
+   "fieldname": "capacity",
+   "fieldtype": "Int",
+   "label": "Capacity",
+   "non_negative": 1,
+   "description": "For planning / registration caps (FLO-7)."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text Editor",
+   "label": "Description",
+   "translatable": 1
+  },
+  {
+   "fieldname": "reporting_section",
+   "fieldtype": "Section Break",
+   "label": "Reporting (permlevel 1 — Group Leader)",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reported_by",
+   "fieldtype": "Link",
+   "label": "Reported By",
+   "options": "Flock Member",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reported_at",
+   "fieldtype": "Datetime",
+   "label": "Reported At",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "confirmation_section",
+   "fieldtype": "Section Break",
+   "label": "Confirmation + Roll-up Counters (permlevel 2 — Branch/Org Admin)",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "confirmed_by",
+   "fieldtype": "Link",
+   "label": "Confirmed By",
+   "options": "Flock Member",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "confirmed_at",
+   "fieldtype": "Datetime",
+   "label": "Confirmed At",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "member_attendance_count",
+   "fieldtype": "Int",
+   "label": "Member Attendance Count",
+   "default": "0",
+   "non_negative": 1,
+   "read_only": 1,
+   "permlevel": 2,
+   "description": "System-maintained roll-up counter (incremented by flock.attendance.* event subscribers, ADR §8)."
+  },
+  {
+   "fieldname": "visitor_attendance_count",
+   "fieldtype": "Int",
+   "label": "Visitor Attendance Count",
+   "default": "0",
+   "non_negative": 1,
+   "read_only": 1,
+   "permlevel": 2
+  },
+  {
+   "fieldname": "total_attendance_count",
+   "fieldtype": "Int",
+   "label": "Total Attendance Count",
+   "default": "0",
+   "non_negative": 1,
+   "read_only": 1,
+   "permlevel": 2,
+   "description": "member + visitor (system-maintained)."
+  },
+  {
+   "fieldname": "first_time_count",
+   "fieldtype": "Int",
+   "label": "First Time Count",
+   "default": "0",
+   "non_negative": 1,
+   "read_only": 1,
+   "permlevel": 2
+  },
+  {
+   "fieldname": "provenance_section",
+   "fieldtype": "Section Break",
+   "label": "Scale / Provenance (permlevel 2)",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "attendance_source",
+   "fieldtype": "Multi-Select",
+   "label": "Attendance Source",
+   "options": "Manual\nSelf\nGame\nQuestionnaire",
+   "permlevel": 2,
+   "description": "Which methods captured attendance for this gathering (FLO-6 §3.2)."
+  },
+  {
+   "fieldname": "bulk_job",
+   "fieldtype": "Data",
+   "label": "Bulk Job",
+   "permlevel": 2,
+   "translatable": 0,
+   "description": "Ref to the bulk ingest background job for large events (FLO-10)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Gathering",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "if_owner": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1,
+   "submit": 1,
+   "cancel": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Org Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Branch Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Auditor"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Org Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Branch Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Group Leader"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "starts_on",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}
