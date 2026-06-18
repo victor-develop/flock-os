@@ -90,6 +90,7 @@ SCOPED_DOCTYPES: tuple[str, ...] = (
 	"Flock Group Member",
 	"Flock Gathering",
 	"Flock Announcement",
+	"Flock Event Approval",
 )
 """DocTypes the group-axis ``permission_query_conditions`` hook narrows.
 
@@ -473,6 +474,98 @@ def assert_group_scope(
 			return
 	raise FlockPermissionError(
 		f"User {user!r} lacks group-axis scope for group={doc_group!r} member={doc_member!r}."
+	)
+
+
+# ---------------------------------------------------------------------------- #
+# Approval-authority guard (FLO-7 §4.2 / §6.2 — `assert_approval_scope`).
+#
+# The custom guard that makes "approved up the tree by the scoped leaders" real:
+# a user may decide an approval step only if they are that step's resolved
+# approver AND the gathering's group lies in their led subtree AND they share
+# the gathering's branch. This is intentionally NOT a bypass-role short-circuit
+# — approval authority is chain membership, so even an Org Admin who is not the
+# resolved approver cannot decide someone else's step (DoD #4: "a non-chain
+# leader, or a cross-branch user, cannot approve/reject"). The step is taken as
+# a structural type (duck-typed attrs) so this module need not import
+# :mod:`flock_os.approvals` — avoiding an import cycle (the approval actions
+# import this guard lazily).
+# ---------------------------------------------------------------------------- #
+#: The approver-level label for the terminal Branch-Admin step (FLO-7 §3.3).
+APPROVAL_LEVEL_BRANCH_ADMIN = "Branch Admin"
+
+
+def can_decide_approval_step(
+	*,
+	step,
+	user: str,
+	gateway: PermissionGateway,  # type: ignore[valid-type]
+) -> bool:
+	"""True iff ``user`` may approve/reject this approval step (§4.2 / §6.2).
+
+	Three checks, all must pass. Identity: ``user`` is the step's resolved
+	approver (``approver_user`` matches, or ``approver_member`` matches the
+	user's linked ``Flock Member``); for a Branch-Admin step, any ``Flock Branch
+	Admin`` scoped to the step's branch qualifies (the terminator is a role, not
+	a single person). Branch axis: the step's ``doc_branch`` is in the user's
+	allowed branch set (or the user is a global-branch role). Group axis: for a
+	non-Branch-Admin step, the step's ``doc_group`` falls inside the user's led
+	subtree (the dual of the nested-set predicate the
+	``permission_query_conditions`` hook applies), so a leader of an ancestor
+	group may decide a descendant gathering's step; bypass roles skip this axis.
+	"""
+	roles = gateway.get_user_roles(user)
+	member = gateway.resolve_member_for_user(user)
+	allowed_branches = gateway.list_branch_user_permissions(user)
+	doc_branch = getattr(step, "doc_branch", None)
+	doc_group = getattr(step, "doc_group", None)
+
+	# 1. Identity.
+	is_resolved_approver = False
+	approver_user = getattr(step, "approver_user", None)
+	approver_member = getattr(step, "approver_member", None)
+	if approver_user and approver_user == user:
+		is_resolved_approver = True
+	if approver_member and member and approver_member == member:
+		is_resolved_approver = True
+	if getattr(step, "approver_level", None) == APPROVAL_LEVEL_BRANCH_ADMIN:
+		# The terminal step is a role: any Branch Admin scoped to the branch.
+		if ROLE_BRANCH_ADMIN in roles and can_access_branch(
+			branch=doc_branch, allowed_branches=allowed_branches, roles=roles
+		):
+			is_resolved_approver = True
+	if not is_resolved_approver:
+		return False
+
+	# 2. Branch axis.
+	if not can_access_branch(branch=doc_branch, allowed_branches=allowed_branches, roles=roles):
+		return False
+
+	# 3. Group axis (subtree containment) — skipped for the branch-admin
+	# terminator (no group) and for bypass roles (scoped natively).
+	if doc_group and getattr(step, "approver_level", None) != APPROVAL_LEVEL_BRANCH_ADMIN:
+		if is_bypass_user(roles):
+			return True
+		doc_bounds = gateway.fetch_group_bounds(doc_group)
+		if doc_bounds is None:
+			return False
+		scope = resolve_leader_scope(gateway, user=user, roles=roles)
+		return any(led.lft <= doc_bounds.lft and doc_bounds.rgt <= led.rgt for led in scope.led_bounds)
+	return True
+
+
+def assert_approval_scope(*, step, user: str, gateway: PermissionGateway) -> None:  # type: ignore[valid-type]
+	"""Guard: raise :class:`FlockPermissionError` if ``user`` may not decide ``step``.
+
+	The single sanctioned approval-authority assertion every approval
+	``@frappe.whitelist()`` endpoint calls before applying a decision (§6.2).
+	"""
+	if can_decide_approval_step(step=step, user=user, gateway=gateway):
+		return
+	raise FlockPermissionError(
+		f"User {user!r} is not the resolved approver for this step "
+		f"(member={getattr(step, 'approver_member', None)!r}) or lacks scope "
+		f"(branch={getattr(step, 'doc_branch', None)!r}, group={getattr(step, 'doc_group', None)!r})."
 	)
 
 

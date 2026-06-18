@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "is_submittable": 1,
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "EVAPPR-.#####",
+   "default": "EVAPPR-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1,
+   "description": "Tenant floor (ADR \u00a73). Denormalized from the branch."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Scoping key (FLO-5 contract). Native UP surface \u2014 scoped by Frappe User Permissions on Flock Branch (ADR \u00a76.2)."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Originating group. Group-axis hook surface (ADR \u00a76.3). Branch-bound to the gathering's group."
+  },
+  {
+   "fieldname": "gathering_section",
+   "fieldtype": "Section Break",
+   "label": "One-time Event"
+  },
+  {
+   "fieldname": "gathering",
+   "fieldtype": "Link",
+   "label": "Gathering",
+   "options": "Flock Gathering",
+   "reqd": 1,
+   "unique": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "description": "1:1 with the one-time Flock Gathering (event_category = One-time). Unique so one gathering has at most one approval request (FLO-7 \u00a73.2)."
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "Requested By",
+   "options": "Flock Member",
+   "reqd": 1,
+   "search_index": 1,
+   "description": "The authoring leader (validated as an active leader of the gathering's group, FLO-7 \u00a74.1)."
+  },
+  {
+   "fieldname": "requested_at",
+   "fieldtype": "Datetime",
+   "label": "Requested At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Lifecycle"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPending Approval\nApproved\nRejected\nCancelled\nWithdrawn",
+   "default": "Draft",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "Approval state machine (FLO-7 \u00a73.2): Draft \u2192 Pending Approval \u2192 {Approved | Rejected | Cancelled | Withdrawn}, with a Rejected/Withdrawn \u2192 Draft resubmit path."
+  },
+  {
+   "fieldname": "approval_policy",
+   "fieldtype": "Link",
+   "label": "Approval Policy",
+   "options": "Flock Event Approval Policy",
+   "description": "Chain rules. The nearest policy to the gathering's branch wins (FLO-7 \u00a73.4)."
+  },
+  {
+   "fieldname": "current_step",
+   "fieldtype": "Int",
+   "label": "Current Step",
+   "default": "0",
+   "non_negative": 1,
+   "read_only": 1,
+   "description": "Index into the chain currently pending (0-based, FLO-7 \u00a73.2). Auto-advances past Skipped steps."
+  },
+  {
+   "fieldname": "proposed_registration_scope",
+   "fieldtype": "Select",
+   "label": "Proposed Registration Scope",
+   "options": "None\nOwn Group\nGroup Subtree\nBranch\nBranch Subtree\nOrg-wide\nInvited Only",
+   "default": "Own Group",
+   "permlevel": 1,
+   "description": "Leader's requested scope; confirmed at final approval (FLO-7 \u00a74.2)."
+  },
+  {
+   "fieldname": "decision_section",
+   "fieldtype": "Section Break",
+   "label": "Decision"
+  },
+  {
+   "fieldname": "final_decision_by",
+   "fieldtype": "Link",
+   "label": "Final Decision By",
+   "options": "User",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "final_decision_at",
+   "fieldtype": "Datetime",
+   "label": "Final Decision At",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "rejection_reason",
+   "fieldtype": "Text",
+   "label": "Rejection Reason",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "steps_section",
+   "fieldtype": "Section Break",
+   "label": "Approval Chain"
+  },
+  {
+   "fieldname": "steps",
+   "fieldtype": "Table",
+   "label": "Steps",
+   "options": "Flock Event Approval Step",
+   "reqd": 1,
+   "description": "One row per approver, materialized at submit by walking parent_group up to the branch-root (FLO-7 \u00a73.3 / \u00a74.1)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Event Approval",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "if_owner": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "gathering",
+ "track_changes": 1
+}

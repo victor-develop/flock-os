@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "approver_level",
+   "fieldtype": "Select",
+   "label": "Approver Level",
+   "options": "Parent Group Leader\nAncestor Group Leader\nBranch Admin",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Relationship of this step's group to the gathering's group (FLO-7 \u00a73.3). The terminal Branch-Admin step is tagged 'Branch Admin'."
+  },
+  {
+   "fieldname": "approver_member",
+   "fieldtype": "Link",
+   "label": "Approver Member",
+   "options": "Flock Member",
+   "in_list_view": 1,
+   "description": "The resolved leader at submit time (FLO-7 \u00a73.3)."
+  },
+  {
+   "fieldname": "approver_user",
+   "fieldtype": "Link",
+   "label": "Approver User",
+   "options": "User"
+  },
+  {
+   "fieldname": "approver_group",
+   "fieldtype": "Link",
+   "label": "Approver Group",
+   "options": "Flock Group",
+   "description": "The ancestor group node whose leader is this approver (null for the Branch-Admin terminator)."
+  },
+  {
+   "fieldname": "step_status",
+   "fieldtype": "Select",
+   "label": "Step Status",
+   "options": "Pending\nApproved\nRejected\nSkipped\nRecused",
+   "default": "Pending",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Per-step lifecycle (FLO-7 \u00a73.3). 'Skipped' = self-approval skipped at submit; 'Recused' = displaced by a tree move."
+  },
+  {
+   "fieldname": "decided_by",
+   "fieldtype": "Link",
+   "label": "Decided By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "decided_at",
+   "fieldtype": "Datetime",
+   "label": "Decided At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "comment",
+   "fieldtype": "Small Text",
+   "label": "Comment"
+  },
+  {
+   "fieldname": "is_current",
+   "fieldtype": "Check",
+   "label": "Is Current",
+   "default": "0",
+   "read_only": 1,
+   "description": "UI highlight convenience (FLO-7 \u00a73.3)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Event Approval Step",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

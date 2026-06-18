@@ -70,7 +70,17 @@ ANNOUNCEMENT_SCHEDULED = "flock.announcement.scheduled"
 ANNOUNCEMENT_PUBLISHED = "flock.announcement.published"
 NOTIFICATION_SENT = "flock.notification.sent"
 APPROVAL_REQUESTED = "flock.approval.requested"
-APPROVAL_DECIDED = "flock.approval.decided"
+APPROVAL_STEP_APPROVED = "flock.approval.step_approved"
+APPROVAL_STEP_REJECTED = "flock.approval.step_rejected"
+APPROVAL_APPROVED = "flock.approval.approved"
+APPROVAL_REJECTED = "flock.approval.rejected"
+"""One-time-event approval lifecycle (FLO-7 §7, materialized by [FLO-61]).
+Granular per-step + terminal events so notification fan-out ([FLO-8](/FLO/issues/FLO-8))
+and the registration gate ([FLO-62](/FLO/issues/FLO-62)) react to the exact
+transition: ``requested`` on submit, ``step_approved``/``step_rejected`` per
+approver, ``approved``/``rejected`` on the terminal decision. Replaces the
+earlier coarse ``flock.approval.decided`` placeholder with the spec's canonical
+granular set."""
 
 #: Redis pub/sub channel prefix for domain events (ADR-0001 §5.1).
 PUBSUB_CHANNEL_PREFIX = "flock"
