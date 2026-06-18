@@ -1,0 +1,256 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "MEM-.#####",
+   "default": "MEM-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "first_name",
+   "fieldtype": "Data",
+   "label": "First Name",
+   "in_list_view": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "last_name",
+   "fieldtype": "Data",
+   "label": "Last Name",
+   "translatable": 0
+  },
+  {
+   "fieldname": "full_name",
+   "fieldtype": "Data",
+   "label": "Full Name",
+   "in_list_view": 1,
+   "read_only": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Member\nPre-Member\nVisitor",
+   "default": "Member",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Home Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The member's home/default branch (the row-level permission anchor, ADR §3.5)."
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1"
+  },
+  {
+   "fieldname": "contact_section",
+   "fieldtype": "Section Break",
+   "label": "Contact (permlevel 1 — Leader+)",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email",
+   "options": "Email",
+   "permlevel": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "phone",
+   "fieldtype": "Data",
+   "label": "Phone",
+   "permlevel": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "date_joined",
+   "fieldtype": "Date",
+   "label": "Date Joined"
+  },
+  {
+   "fieldname": "gender",
+   "fieldtype": "Select",
+   "label": "Gender",
+   "options": "Male\nFemale\nOther\nPrefer not to say"
+  },
+  {
+   "fieldname": "dob",
+   "fieldtype": "Date",
+   "label": "Date of Birth",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "linked_user",
+   "fieldtype": "Link",
+   "label": "Linked User",
+   "options": "User"
+  },
+  {
+   "fieldname": "admin_section",
+   "fieldtype": "Section Break",
+   "label": "Admin (permlevel 2 — Branch Admin+)",
+   "permlevel": 2
+  },
+  {
+   "fieldname": "admin_note",
+   "fieldtype": "Small Text",
+   "label": "Admin Note",
+   "permlevel": 2
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Member",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "if_owner": 1,
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Org Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Branch Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Org Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Flock Branch Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "full_name",
+ "track_changes": 1
+}
