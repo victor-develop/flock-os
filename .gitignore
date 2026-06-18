@@ -15,6 +15,11 @@ node_modules/
 .env
 .env.*
 !.env.example
+# python tooling venv (FLO-88: worktree .venv is a symlink -> shows as
+# untracked without this; main-repo .venv hides via its internal .gitignore)
+.venv
+# per-slice worktree park (FLO-88) — never tracked, lives as a repo sibling
+/flock-os-worktrees/
 # os
 .DS_Store
 # test/coverage artifacts (FLO-21 coverage gate)
