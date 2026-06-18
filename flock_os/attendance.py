@@ -31,7 +31,6 @@ from typing import Any
 import frappe
 
 from flock_os.reporting import (
-	ATTENDANCE_IMPORT_ERROR_QUEUE,
 	BULK_ATTENDANCE_JOB_QUEUE,
 	BULK_ATTENDANCE_MAX_RETRY,
 	EVENT_IMPORT_FAILED,
@@ -113,8 +112,15 @@ def process_bulk_batch(payload: dict[str, Any]) -> None:
 
 	Idempotent by construction (per-item ``client_req_id`` dedupe), so RQ retries
 	are always safe. On failure after :data:`BULK_ATTENDANCE_MAX_RETRY`, the batch
-	is dead-lettered to the visible :data:`ATTENDANCE_IMPORT_ERROR_QUEUE` queue.
+	is dead-lettered to Frappe's ``Error Log`` + a ``flock.attendance.import_failed``
+	event (FLO-76) -- no separate dead-letter queue, so there is no re-drain loop.
 	"""
+	# Defensive guard: a stale dead-lettered job still sitting in a queue must not
+	# re-enter the write path -- just log + return (FLO-76 loop-safety).
+	if payload.get("_deadlettered"):
+		_log_deadletter(payload, reason="stale_deadletter_drained")
+		return
+
 	items = [
 		AttendanceItem(
 			event=raw["event"],
@@ -201,7 +207,15 @@ def _resolve_caller_branch_scope() -> AttendanceScope:
 
 
 def _deadletter_or_retry(payload: dict[str, Any]) -> None:
-	"""Dead-letter a batch after max retries, else re-enqueue with backoff (FLO-10 §3.3)."""
+	"""Retry a failed batch with exponential backoff, or dead-letter it (FLO-10 §3.3).
+
+	Retries re-enqueue on the stock ``long`` queue (BULK_ATTENDANCE_JOB_QUEUE) with
+	backoff. Once retries are exhausted the batch is dead-lettered: a
+	``flock.attendance.import_failed`` event is emitted and the payload is recorded
+	in Frappe's ``Error Log`` for inspection/replay (FLO-76). There is deliberately
+	no separate dead-letter queue re-enqueue -- a queue a worker drains would re-run
+	the failing batch forever; the Error Log + failure event are the durable surface.
+	"""
 	attempt = int(payload.get("_attempt", 0)) + 1
 	batch_id = payload["batch_id"]
 	if attempt > BULK_ATTENDANCE_MAX_RETRY:
@@ -211,11 +225,7 @@ def _deadletter_or_retry(payload: dict[str, Any]) -> None:
 				{"batch_id": batch_id, "attempts": attempt - 1, "reason": "max_retry_exceeded"},
 			)
 		)
-		frappe.enqueue(
-			"flock_os.attendance.process_bulk_batch",
-			queue=ATTENDANCE_IMPORT_ERROR_QUEUE,
-			payload={**payload, "_attempt": attempt, "_deadlettered": True},
-		)
+		_log_deadletter(payload, reason="max_retry_exceeded")
 		return
 	payload["_attempt"] = attempt
 	frappe.enqueue(
@@ -224,6 +234,17 @@ def _deadletter_or_retry(payload: dict[str, Any]) -> None:
 		payload=payload,
 		at=_now_seconds() + with_exponential_backoff(attempt - 1),
 	)
+
+
+def _log_deadletter(payload: dict[str, Any], *, reason: str) -> None:
+	"""Record a dead-lettered batch in Frappe's Error Log (the durable surface)."""
+	try:
+		frappe.log_error(
+			title=f"flock_os.attendance dead-letter ({reason}): {payload.get('batch_id')}",
+			message=str(payload),
+		)
+	except Exception:  # noqa: BLE001 - dead-letter logging must never mask the failure
+		pass
 
 
 def _now_seconds() -> int:

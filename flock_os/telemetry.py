@@ -204,8 +204,9 @@ class RedisMetrics:
 	* ``pubsub_messages_per_sec`` — Redis pub/sub throughput; sustained high
 		rates push the single-node ceiling that triggers the D3 cluster shard.
 	* ``connected_clients`` — subscribers + workers; the fan-out fan-in load.
-	* ``rq_depth`` — backlog across the Flock RQ queues (e.g.
-		``flock_attendance``); a non-draining backlog is the queue-budget trigger.
+	* ``rq_depth`` — backlog across the bulk-attendance RQ queue (``long``, per
+		FLO-76) + the general ``default`` queue; a non-draining backlog is the
+		queue-budget trigger.
 	"""
 
 	pubsub_messages_per_sec: float = 0.0
@@ -339,10 +340,16 @@ class FrappeMariaDBMetricsSource:
 
 
 def _frappe_rq_depth(frappe: Any) -> int:  # type: ignore[no-untyped-def]
-	"""Sum started + queued jobs across Flock RQ queues (FLO-10 §3.3)."""
+	"""Sum started + queued jobs across the bulk-attendance RQ queues (FLO-10 §3.3).
+
+	The bulk path rides the stock ``long`` queue (FLO-76), so the depth signal
+	covers ``long`` (bulk attendance) + ``default`` (general Frappe jobs).
+	"""
 	from frappe.utils.background_jobs import get_redis_conn  # type: ignore
 
-	queue_names = ("flock_attendance", "default", ATTENDANCE_IMPORT_ERROR_QUEUE_NAME)
+	from flock_os.reporting import BULK_ATTENDANCE_JOB_QUEUE
+
+	queue_names = (BULK_ATTENDANCE_JOB_QUEUE, "default")
 	conn = get_redis_conn() if callable(get_redis_conn) else None
 	if conn is None:
 		return 0
@@ -350,14 +357,6 @@ def _frappe_rq_depth(frappe: Any) -> int:  # type: ignore[no-untyped-def]
 	for name in queue_names:
 		depth += int(conn.llen(f"rq:queue:{name}") or 0)
 	return depth
-
-
-# Late import of the queue name keeps the module import side-effect-free; the
-# constant is only needed inside the production RQ-depth path.
-try:  # pragma: no cover - exercised only inside a bench
-	from flock_os.reporting import ATTENDANCE_IMPORT_ERROR_QUEUE as ATTENDANCE_IMPORT_ERROR_QUEUE_NAME
-except Exception:  # noqa: BLE001 - reporting may be unavailable in isolation
-	ATTENDANCE_IMPORT_ERROR_QUEUE_NAME = "attendance_import_error"
 
 
 # ---------------------------------------------------------------------------- #
