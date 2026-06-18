@@ -1,0 +1,252 @@
+{
+ "actions": [],
+ "autoname": "format:ANN-{#####}",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "subject",
+   "fieldtype": "Data",
+   "label": "Subject",
+   "reqd": 1,
+   "in_list_view": 1,
+   "translatable": 1
+  },
+  {
+   "fieldname": "body",
+   "fieldtype": "Text Editor",
+   "label": "Body",
+   "reqd": 1
+  },
+  {
+   "fieldname": "content_section",
+   "fieldtype": "Section Break",
+   "label": "Content"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "label": "Category",
+   "options": "General\nUrgent\nEvent\nPastoral\nAdministrative\nOther",
+   "default": "General",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "pinned",
+   "fieldtype": "Check",
+   "label": "Pinned",
+   "default": "0"
+  },
+  {
+   "fieldname": "scope_section",
+   "fieldtype": "Section Break",
+   "label": "Audience Scope"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "reqd": 1,
+   "search_index": 1,
+   "description": "Tenant floor (ADR-0001 §3 scoping contract)."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "permlevel": 1,
+   "in_standard_filter": 1,
+   "description": "Audience scope anchor / admin axis (FLO-8 §3). Admin-only write."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "search_index": 1,
+   "permlevel": 1,
+   "in_standard_filter": 1,
+   "description": "Set only for group-scoped announcements; otherwise the audience is the branch subtree (FLO-8 §3). Admin-only write."
+  },
+  {
+   "fieldname": "audience_role",
+   "fieldtype": "Select",
+   "label": "Audience Role",
+   "options": "Everyone\nLeaders Only\nAdmins Only\nMembers Only",
+   "default": "Leaders Only",
+   "permlevel": 1,
+   "description": "Intersect with scope (FLO-8 §3). Admin-only write."
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Low\nNormal\nHigh\nCritical",
+   "default": "Normal",
+   "permlevel": 1,
+   "in_standard_filter": 1,
+   "description": "Drives delivery batching/SLA (FLO-8 §3). Admin-only write."
+  },
+  {
+   "fieldname": "channels",
+   "fieldtype": "Table",
+   "label": "Channels",
+   "options": "Flock Announcement Channel",
+   "permlevel": 1,
+   "description": "In-App / Push / Email / SMS delivery channels. Admin-only write."
+  },
+  {
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Lifecycle"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nScheduled\nPublishing\nPublished\nArchived",
+   "default": "Draft",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "scheduled_at",
+   "fieldtype": "Datetime",
+   "label": "Scheduled At"
+  },
+  {
+   "fieldname": "published_at",
+   "fieldtype": "Datetime",
+   "label": "Published At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "label": "Expires At"
+  },
+  {
+   "fieldname": "links_section",
+   "fieldtype": "Section Break",
+   "label": "Links"
+  },
+  {
+   "fieldname": "linked_gathering",
+   "fieldtype": "Data",
+   "label": "Linked Gathering",
+   "description": "Raw ref — links to Flock Gathering once that DocType lands (FLO-8 §3)."
+  },
+  {
+   "fieldname": "notification",
+   "fieldtype": "Data",
+   "label": "Notification",
+   "read_only": 1,
+   "description": "Raw ref — the dispatch job created on publish (Flock Notification, FLO-8 §4.1)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Announcement",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "if_owner": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Org Admin",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Flock Branch Admin",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "subject",
+ "track_changes": 1
+}
