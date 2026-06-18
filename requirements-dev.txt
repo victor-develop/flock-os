@@ -1,0 +1,9 @@
+# Dev / CI tooling for the Phase-1 QA merge gate (FLO-21 → scripts/qa-gate.sh).
+# These are NOT app runtime deps (see requirements.txt — frappe is provided by
+# bench). They are the lint + test + coverage tools the gate and CI run.
+ruff>=0.6
+pytest>=7.0
+# Coverage ratchet for the project-testable pure domain logic
+# ([tool.coverage.*] in pyproject.toml). The bench-integration surface is
+# omitted from the floor; it is covered by `bench run-tests`.
+pytest-cov>=4.0

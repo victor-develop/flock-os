@@ -4,10 +4,14 @@
 # local pre-merge gate a developer/agent runs before declaring code shippable.
 #
 # Checks:
-#   [1/3] ruff check .            (--no-cache: a stale .ruff_cache must never
+#   [1/4] ruff check .            (--no-cache: a stale .ruff_cache must never
 #                                  produce a false green — proven hazard)
-#   [2/3] ruff format --check .   (formatting gate; CI enforces the same)
-#   [3/3] pytest flock_os/tests/  (project-level, SQL-light, no Frappe site)
+#   [2/4] ruff format --check .   (formatting gate; CI enforces the same)
+#   [3/4] pytest flock_os/tests/  (project-level, SQL-light, no Frappe site)
+#   [4/4] coverage gate           (branch-coverage ratchet over the pure domain
+#                                  logic; bench-integration surface omitted —
+#                                  fail_under configured in pyproject.toml). A
+#                                  drop below the floor blocks the merge.
 #
 # Frappe-level integration tests (doctype test_*.py that import frappe) are out
 # of scope here — they run via `bench run-tests` against a real site, matching
@@ -33,25 +37,37 @@ fail=0
 echo "Phase-1 QA gate (FLO-21)"
 echo "------------------------"
 
-echo "==> [1/3] ruff check (--no-cache)"
+echo "==> [1/4] ruff check (--no-cache)"
 if ruff check . --no-cache; then
-	echo "[1/3] OK"
+	echo "[1/4] OK"
 else
-	echo "[1/3] FAIL"; fail=1
+	echo "[1/4] FAIL"; fail=1
 fi
 
-echo "==> [2/3] ruff format --check"
+echo "==> [2/4] ruff format --check"
 if ruff format --check .; then
-	echo "[2/3] OK"
+	echo "[2/4] OK"
 else
-	echo "[2/3] FAIL"; fail=1
+	echo "[2/4] FAIL"; fail=1
 fi
 
-echo "==> [3/3] pytest flock_os/tests/ (no cache, deterministic)"
+echo "==> [3/4] pytest flock_os/tests/ (no cache, deterministic)"
 if pytest flock_os/tests/ -p no:cacheprovider -q; then
-	echo "[3/3] OK"
+	echo "[3/4] OK"
 else
-	echo "[3/3] FAIL"; fail=1
+	echo "[3/4] FAIL"; fail=1
+fi
+
+echo "==> [4/4] coverage gate (branch-coverage ratchet, pure domain logic)"
+# pytest-cov reads [tool.coverage.*] from pyproject.toml. The gate fails when
+# scoped branch coverage drops below `fail_under`. The bench-integration
+# surface is omitted via config so the floor measures only the project-testable
+# logic this gate is the authority on.
+if pytest flock_os/tests/ -p no:cacheprovider -q \
+	--cov=flock_os --cov-branch --cov-report=term-missing; then
+	echo "[4/4] OK"
+else
+	echo "[4/4] FAIL"; fail=1
 fi
 
 echo "------------------------"

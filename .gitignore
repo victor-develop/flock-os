@@ -17,4 +17,10 @@ node_modules/
 !.env.example
 # os
 .DS_Store
+# test/coverage artifacts (FLO-21 coverage gate)
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
 # paperclip local artifacts (keep tracked: .paperclip/)

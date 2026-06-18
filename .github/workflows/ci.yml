@@ -25,8 +25,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install linters/test runner
-        run: pip install ruff pytest
+      - name: Install gate tooling (lint + test + coverage)
+        run: pip install -r requirements-dev.txt
 
       # Install the flock_os package WITHOUT pulling frappe (heavy, needs a
       # full bench + MariaDB). Unit tests here assert app identity/metadata and
@@ -35,11 +35,16 @@ jobs:
       - name: Install app package (no-deps)
         run: pip install -e . --no-deps
 
-      - name: Ruff lint
-        run: ruff check .
+      # Mirror scripts/qa-gate.sh so "green here == green in CI". `--no-cache`
+      # is load-bearing: a stale .ruff_cache was proven to mask real E101
+      # errors (FLO-21).
+      - name: Ruff lint (--no-cache)
+        run: ruff check . --no-cache
 
       - name: Ruff format check
         run: ruff format --check .
 
-      - name: Unit tests
-        run: pytest
+      # Coverage ratchet over the project-testable pure domain logic
+      # ([tool.coverage.*] in pyproject.toml; bench-integration surface omitted).
+      - name: Unit tests + coverage gate
+        run: pytest --cov=flock_os --cov-branch --cov-report=term-missing

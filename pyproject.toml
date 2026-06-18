@@ -28,3 +28,38 @@ minversion = "7.0"
 testpaths = ["flock_os/tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+# --------------------------------------------------------------------------- #
+# Coverage gate (FLO-21) — a regression ratchet over the project-testable
+# pure domain logic. The bench-integration surface (Frappe doctype controllers,
+# hooks, fixtures, patches, the smoke runtime, bench helpers) needs a live
+# `bench run-tests` site and is intentionally omitted here; it is covered by
+# Frappe-level integration tests, not the SQL-light project gate.
+#
+# Branch coverage is on (catches untested conditional branches). The floor
+# (`--cov-fail-under`) is enforced by scripts/qa-gate.sh; lower it only with a
+# documented justification, raise it as the ratchet advances.
+# --------------------------------------------------------------------------- #
+[tool.coverage.run]
+source = ["flock_os"]
+branch = true
+omit = [
+	# Frappe doctype controllers — exercised via `bench run-tests`, not pytest.
+	"flock_os/flock_os/doctype/*",
+	# Frappe wiring — only meaningful inside a bench site.
+	"flock_os/hooks.py",
+	"flock_os/fixtures.py",
+	# Frappe patches — executed by the patch runner against a real site.
+	"flock_os/patches/*",
+	# Live-site smoke probe (FLO-53) — runtime, not unit.
+	"flock_os/_smoke_runtime.py",
+	# Bench-only helper.
+	"flock_os/utils/*",
+]
+
+[tool.coverage.report]
+# Show what is uncovered so a red gate points straight at the gap.
+show_missing = true
+skip_covered = false
+# The project-testable pure-logic floor (FLO-21 ratchet).
+fail_under = 80
