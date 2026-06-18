@@ -226,8 +226,10 @@ class BulkAttendanceGateway(Protocol):
 	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
 		"""Atomically bump the ``Event Attendance Summary`` counter (FLO-10 §3.3).
 
-		Production uses ``UPDATE … SET count = count + n`` under ``FOR UPDATE`` or
-		``INSERT … ON DUPLICATE KEY UPDATE`` — never a scan-then-write.
+		Production uses ``INSERT IGNORE`` (seed) + ``UPDATE … SET total = total + n``
+		— never ``INSERT … ON DUPLICATE KEY UPDATE`` (which races on the shared
+		row and raises MariaDB 1020 under concurrency, FLO-100) and never a
+		scan-then-write.
 		"""
 		...
 
@@ -519,15 +521,32 @@ class FrappeBulkAttendanceGateway:
 
 	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
 		frappe = self._frappe
-		# Atomic upsert — never scan-then-write. ON DUPLICATE KEY UPDATE keeps the
-		# counter correct under concurrent batches (FLO-10 §3.3/§4.2).
+		# Atomic increment — never scan-then-write. We deliberately AVOID
+		# ``INSERT ... ON DUPLICATE KEY UPDATE`` here: under the full 200-wps bar
+		# that form races on the single shared ``(branch, event)`` summary row and
+		# MariaDB raises error 1020 ("Record has changed since last read in
+		# table") — surfaced as ``QueryDeadlockError`` — on ~70% of concurrent
+		# batches (FLO-100). The 1020 comes from IODKU's internal read-of-existing
+		# -row consistency check under MVCC: a concurrent transaction commits the
+		# same row between our snapshot and the upsert. ``INSERT IGNORE`` (seed,
+		# idempotent via the UNIQUE(branch, event) index, never races) followed by
+		# a plain ``UPDATE total = total + n`` takes a brief X-lock and serializes
+		# cleanly without the consistency-check failure, so concurrent batches
+		# never error and never flood retries (FLO-10 §3.3/§4.2).
 		frappe.db.sql(
 			f"""
-			INSERT INTO `tab{self.SUMMARY_DOCTYPE}` (branch, event, total)
-			VALUES (%s, %s, %s)
-			ON DUPLICATE KEY UPDATE total = total + VALUES(total)
+			INSERT IGNORE INTO `tab{self.SUMMARY_DOCTYPE}` (branch, event, total)
+			VALUES (%s, %s, 0)
 			""",
-			values=(scope.branch, event, delta),
+			values=(scope.branch, event),
+		)
+		frappe.db.sql(
+			f"""
+			UPDATE `tab{self.SUMMARY_DOCTYPE}`
+			SET total = total + %s
+			WHERE branch = %s AND event = %s
+			""",
+			values=(delta, scope.branch, event),
 		)
 
 	def aggregate(self, scope: AttendanceScope, event: str | None = None) -> int:

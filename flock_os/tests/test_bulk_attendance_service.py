@@ -356,6 +356,52 @@ def test_failed_data_write_rolls_back_and_does_not_emit() -> None:
 
 
 # ---------------------------------------------------------------------------- #
+# Concurrent summary increment: avoid MariaDB 1020 (FLO-100)
+# ---------------------------------------------------------------------------- #
+class _RecordingFrappeDB:
+	"""Captures every ``sql`` call issued by the Frappe gateway (query + values)."""
+
+	def __init__(self) -> None:
+		self.calls: list[tuple[str, object]] = []
+
+	def sql(self, query: str, values: object = None, **_kwargs: object) -> None:  # noqa: ARG002
+		self.calls.append((query, values))
+
+
+class _RecordingFrappe:
+	def __init__(self) -> None:
+		self.db = _RecordingFrappeDB()
+
+
+def test_increment_aggregate_avoids_iodku_contention(monkeypatch) -> None:
+	"""FLO-100: the summary increment must NOT use ``INSERT ... ON DUPLICATE KEY
+	UPDATE``.
+
+	That form races on the single shared ``(branch, event)`` summary row under the
+	full 200-wps bar and raises MariaDB error 1020 ("Record has changed since
+	last read in table") — surfaced as ``QueryDeadlockError`` — on ~70% of
+	concurrent batches, dropping persistence and flooding retries. The fix is
+	``INSERT IGNORE`` (idempotent seed via the UNIQUE index) + a plain atomic
+	``UPDATE total = total + n`` (brief X-lock, no consistency-check failure).
+	"""
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _RecordingFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	FrappeBulkAttendanceGateway().increment_aggregate(SCOPE_A, "gathering-1", 50)
+
+	blob = " ".join(query for query, _ in fake.db.calls).upper()
+	assert "INSERT IGNORE" in blob
+	assert "TOTAL = TOTAL +" in blob.replace("\n", " ")
+	# The contention-prone form must be gone for good.
+	assert "ON DUPLICATE KEY UPDATE" not in blob
+	# The increment delta is applied on the UPDATE, not seeded into the INSERT.
+	update_call = next(query for query, _ in fake.db.calls if "UPDATE" in query.upper())
+	assert "TOTAL = TOTAL +" in update_call.replace("\n", " ").upper()
+
+
+# ---------------------------------------------------------------------------- #
 # QA-conformance adapter: production service satisfies the FLO-16 contract layer
 # ---------------------------------------------------------------------------- #
 class QABulkAttendanceAdapter:
