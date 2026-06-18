@@ -319,3 +319,193 @@ def test_flock_branch_admin_scope_branch_admin_can_manage(perm_schemas):
 	assert by_role["Flock Branch Admin"]["create"] == 1
 	assert by_role["Flock Branch Admin"]["write"] == 1
 	assert by_role["Flock Branch Admin"]["delete"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Bulk-attendance backing DocTypes (FLO-65, materializing the schema locked in
+# `flock_os.reporting` §4.1 / FLO-10). The two tables back the queue-based bulk
+# write path; the columns are pinned *exactly* to `reporting.py` so the raw-SQL
+# gateway writes land on a schema that matches its assumptions. The composite
+# UNIQUE indexes that gateway depends on are owned by FLO-64's
+# `add_attendance_indexes` patch — the last test pins that contract tuple too.
+# --------------------------------------------------------------------------- #
+
+ATTENDANCE_DOCTYPES = (
+	"Flock Attendance Record",
+	"Event Attendance Summary",
+)
+
+
+@pytest.fixture(scope="module")
+def attendance_schemas() -> dict[str, dict]:
+	return {name: _load(name) for name in ATTENDANCE_DOCTYPES}
+
+
+@pytest.mark.parametrize("name", ATTENDANCE_DOCTYPES)
+def test_attendance_doctypes_use_flock_prefix_and_module(attendance_schemas, name):
+	doc = attendance_schemas[name]
+	assert doc["doctype"] == "DocType"
+	assert doc["name"] == name
+	assert doc["module"] == "flock_os"
+	# `Event Attendance Summary` is intentionally Flock-domain even though it is
+	# not `Flock `-prefixed (it is the maintained rollup table named in the
+	# locked reporting schema). Both live in the flock_os module + InnoDB.
+	assert doc["engine"] == "InnoDB"
+
+
+def test_flock_attendance_record_columns_pinned_to_reporting(attendance_schemas):
+	# FLO-65 DoD: columns pinned exactly to reporting.py §4.1
+	# (event, attendee_ref, branch, status, source, client_req_id). The
+	# FrappeBulkAttendanceGateway.bulk_insert writes exactly these six fields.
+	doc = attendance_schemas["Flock Attendance Record"]
+	fields = {f["fieldname"] for f in doc["fields"]}
+	assert fields >= {
+		"event",
+		"attendee_ref",
+		"branch",
+		"status",
+		"source",
+		"client_req_id",
+	}
+	# `event`/`attendee_ref` are raw string refs (no Gathering DocType yet).
+	assert _field(doc, "event")["fieldtype"] == "Data"
+	assert _field(doc, "event").get("reqd") == 1
+	assert _field(doc, "attendee_ref")["fieldtype"] == "Data"
+	assert _field(doc, "attendee_ref").get("reqd") == 1
+
+
+def test_flock_attendance_record_branch_is_permission_anchor(attendance_schemas):
+	# Row-level scope rides native Frappe User Permissions on the `branch` Link
+	# (ADR §6.2) — same substrate as Flock Audit Log / Flock Branch Admin Scope.
+	doc = attendance_schemas["Flock Attendance Record"]
+	branch = _field(doc, "branch")
+	assert branch["fieldtype"] == "Link"
+	assert branch["options"] == "Flock Branch"
+	assert branch.get("reqd") == 1
+	assert branch.get("search_index") == 1
+
+
+def test_flock_attendance_record_query_indexes(attendance_schemas):
+	# Hot-path query indexes for 15k-scale reads (per-event lookups,
+	# idempotency probes, branch-scoped reads).
+	doc = attendance_schemas["Flock Attendance Record"]
+	for fld in ("event", "attendee_ref", "branch", "client_req_id"):
+		assert _field(doc, fld).get("search_index") == 1
+
+
+def test_event_attendance_summary_columns_and_key(attendance_schemas):
+	# FLO-65 DoD: one row per (branch, event) + atomically maintained `total`.
+	# The gateway's `increment_aggregate` upserts (branch, event, total) and
+	# `aggregate` reads `total` — these are the only columns it touches.
+	doc = attendance_schemas["Event Attendance Summary"]
+	branch = _field(doc, "branch")
+	assert branch["fieldtype"] == "Link"
+	assert branch["options"] == "Flock Branch"
+	assert branch.get("reqd") == 1
+	assert branch.get("search_index") == 1
+	event = _field(doc, "event")
+	assert event["fieldtype"] == "Data"
+	assert event.get("reqd") == 1
+	assert event.get("search_index") == 1
+	total = _field(doc, "total")
+	assert total["fieldtype"] == "Int"
+	# System-maintained counter: the field is read-only so the UI never
+	# diverges the rollup from the raw-SQL write path.
+	assert total.get("read_only") == 1
+
+
+def test_attendance_doctypes_define_role_permissions(attendance_schemas):
+	# Every DocType ships a DocPerm matrix incl. System Manager (baseline) and
+	# the Flock roles that the native branch-axis User Permissions scope.
+	for name, doc in attendance_schemas.items():
+		perm_roles = {p["role"] for p in doc["permissions"]}
+		assert "System Manager" in perm_roles
+		assert {"Flock Org Admin", "Flock Branch Admin", "Flock Auditor"} & perm_roles, (
+			f"{name} has no Flock roles in its permission matrix"
+		)
+
+
+def test_event_attendance_summary_is_read_only_for_branch_admin(attendance_schemas):
+	# The rollup is system-maintained (raw upsert); Branch Admin reads it within
+	# their branch scope but must not write/delete it (count integrity).
+	doc = attendance_schemas["Event Attendance Summary"]
+	by_role = {p["role"]: p for p in doc["permissions"]}
+	assert by_role["Flock Branch Admin"]["read"] == 1
+	assert by_role["Flock Branch Admin"].get("write", 0) == 0
+	assert by_role["Flock Branch Admin"].get("delete", 0) == 0
+
+
+def test_flock_attendance_record_branch_admin_can_report(attendance_schemas):
+	# Branch Admin + Group Leader report attendance (create/write) within scope.
+	doc = attendance_schemas["Flock Attendance Record"]
+	by_role = {p["role"]: p for p in doc["permissions"]}
+	assert by_role["Flock Branch Admin"]["create"] == 1
+	assert by_role["Flock Branch Admin"]["write"] == 1
+	assert by_role["Flock Group Leader"]["create"] == 1
+	assert by_role["Flock Group Leader"]["write"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Naming + composite-index contract. FLO-64's `add_attendance_indexes` patch
+# materializes the composite UNIQUE indexes the bulk gateway depends on
+# (FLO-10 §4.1); these tests pin (a) the autoincrement naming on the bulk
+# tables and (b) that index contract against the gateway's own DocType
+# constants + an independent expected set, so drift fails this gate (no bench).
+# --------------------------------------------------------------------------- #
+
+# Independent oracle for the migrate-patch's composite UNIQUE indexes. Drift
+# between the patch and this set fails the gate (no missing/extra index).
+EXPECTED_ATTENDANCE_INDEXES = {
+	("Flock Attendance Record", ("event", "attendee_ref")),
+	("Flock Attendance Record", ("event", "attendee_ref", "client_req_id")),
+	("Event Attendance Summary", ("branch", "event")),
+}
+
+
+def _columns_of(columns_sql: str) -> tuple[str, ...]:
+	return tuple(c.strip().strip("`") for c in columns_sql.strip("()").split(","))
+
+
+@pytest.mark.parametrize("name", ATTENDANCE_DOCTYPES)
+def test_attendance_doctypes_use_autoincrement_naming(attendance_schemas, name):
+	# Append-only bulk-loaded tables use a sequence-backed surrogate PK. The
+	# exact Frappe token is "autoincrement" (no underscore) — that is the string
+	# `MariaDBTable.create` checks to switch `name` to `bigint` + create a
+	# SEQUENCE. `autoincrement` does NOT auto-fill `name` on a raw
+	# `frappe.db.bulk_insert` (Frappe gives the column no default; the SEQUENCE
+	# is consumed only in the app-layer naming path, which raw SQL bypasses), so
+	# the reporting gateway supplies `name` itself by drawing from the same
+	# SEQUENCE (``frappe.db.get_next_sequence_val``) — pinned by
+	# `test_frappe_bulk_attendance_gateway` (FLO-64). The live round-trip is
+	# exercised by FLO-53's k6 scale gate.
+	doc = attendance_schemas[name]
+	assert doc["autoname"] == "autoincrement"
+	assert doc["naming_rule"] == "Autoincrement"
+
+
+def test_composite_unique_index_contract_matches_gateway(attendance_schemas):
+	"""The migrate patch's INDEXES must target the gateway's exact DocTypes and
+	reference real columns; the (doctype, columns) set must match the expected
+	contract exactly (no missing/extra composite unique index)."""
+	from flock_os.patches.v0_1.add_attendance_indexes import INDEXES
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	gateway_doctypes = {
+		FrappeBulkAttendanceGateway.ATTENDANCE_DOCTYPE,
+		FrappeBulkAttendanceGateway.SUMMARY_DOCTYPE,
+	}
+
+	declared = set()
+	for doctype, _index_name, columns_sql in INDEXES:
+		# Each index targets a DocType the gateway actually writes/reads.
+		assert doctype in gateway_doctypes, f"patch index targets unknown doctype {doctype!r}"
+		assert doctype in attendance_schemas, f"missing schema for {doctype!r}"
+		columns = _columns_of(columns_sql)
+		declared.add((doctype, columns))
+		# Each index column is a real field on that DocType (else the patch
+		# would fail on `bench migrate`).
+		field_names = {f["fieldname"] for f in attendance_schemas[doctype]["fields"]}
+		for col in columns:
+			assert col in field_names, f"{doctype}: index column {col!r} is not a field"
+
+	assert declared == EXPECTED_ATTENDANCE_INDEXES

@@ -1,7 +1,27 @@
 # Versioned patches registry for flock_os.
 #
-# Format: <flock_os.module>.<relative_patch_path>
-# Patches live under flock_os/patches/<semver>/ and run in listed order during
-# `bench migrate`. Sprint 0 ships no patches yet; the data model (FLO-3+) will
-# add the first entries here.
+# Patches live under flock_os/patches/<semver>/ and run during `bench migrate`.
+# Section markers (configparser ini format) split the run order so Frappe syncs
+# DocType tables *between* the two phases:
+#
+#   1. [pre_model_sync]  — run before DocType tables are created/synced.
+#   2. sync_all()        — DocType JSON → tabDocType + table DDL.
+#   3. [post_model_sync] — run after tables exist (needed by any patch that
+#                          touches a Flock DocType or its data/indexes).
+#
+# Both flock_os patches below read/write Flock DocType tables, so they MUST be
+# post_model_sync (a headerless file defaults every patch to pre_model_sync and
+# crashes seed_core_fixtures before `tabFlock Group Type` exists).
+
+[pre_model_sync]
+
+[post_model_sync]
 flock_os.patches.v0_1.seed_core_fixtures
+# FLO-64: composite UNIQUE indexes consumed by the bulk-attendance gateway
+# (FLO-15/53). Declared here because DocType JSON cannot express composite
+# unique indexes. Runs after the attendance DocType tables are synced.
+flock_os.patches.v0_1.add_attendance_indexes
+# FLO-53: wire the autoincrement sequence as the `name` column DEFAULT so the
+# raw-SQL bulk-write path (bulk_insert + upsert) works. Frappe's autoincrement
+# naming is sequence-based + Python-side, so it sets no DB DEFAULT on `name`.
+flock_os.patches.v0_1.ensure_attendance_name_sequence_default
