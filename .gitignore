@@ -1,0 +1,20 @@
+# --- Frappe / bench ---
+bench/
+sites/common_site_config.json
+sites/*/private.pem
+sites/*/public.pem
+sites/assets/
+logs/
+*.pyc
+__pycache__/
+*.egg-info/
+.frappe/
+# node
+node_modules/
+# env
+.env
+.env.*
+!.env.example
+# os
+.DS_Store
+# paperclip local artifacts (keep tracked: .paperclip/)

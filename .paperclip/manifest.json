@@ -1,0 +1,32 @@
+{
+  "$schema": "flock-os.paperclip.manifest/v1",
+  "company": {
+    "name": "Flock OS",
+    "description": "Autonomous AI company building a multi-branch organization / mega-church management SaaS on Frappe. Agents run on GLM-5.2 via the local opencode (opencode_local) adapter. The CEO wakes every 15 minutes to push the product forward iteratively.",
+    "adapter": "opencode_local",
+    "model": "zai-coding-plan/glm-5.2",
+    "repo": "git@github.com:victor-develop/flock-os.git",
+    "workspace": "/Users/mac/opencode-workspace-default/flock-os",
+    "heartbeat": "CEO @ */15 * * * * (coalesce_if_active, skip_missed)"
+  },
+  "org": [
+    { "role": "ceo",                  "title": "Chief Executive Officer",        "reportsTo": null,            "budgetCents": 4000, "instructions": ".paperclip/agents/ceo.md" },
+    { "role": "product_manager",      "title": "Product Manager",                "reportsTo": "ceo",           "budgetCents": 3000, "instructions": ".paperclip/agents/product-manager.md" },
+    { "role": "project_manager",      "title": "Project Manager",                "reportsTo": "ceo",           "budgetCents": 2000, "instructions": ".paperclip/agents/project-manager.md" },
+    { "role": "software_architect",   "title": "Software Architect (Frappe)",    "reportsTo": "ceo",           "budgetCents": 5000, "instructions": ".paperclip/agents/software-architect.md" },
+    { "role": "engagement_designer",  "title": "Engagement Designer (PM Asst.)", "reportsTo": "product_manager","budgetCents": 2000, "instructions": ".paperclip/agents/engagement-designer.md" },
+    { "role": "devops_engineer",      "title": "DevOps Engineer",                "reportsTo": "software_architect", "budgetCents": 4000, "instructions": ".paperclip/agents/devops-engineer.md" },
+    { "role": "backend_engineer",     "title": "Backend Engineer (Frappe)",      "reportsTo": "software_architect", "budgetCents": 5000, "instructions": ".paperclip/agents/backend-engineer.md" },
+    { "role": "frontend_engineer",    "title": "Frontend Engineer",              "reportsTo": "software_architect", "budgetCents": 5000, "instructions": ".paperclip/agents/frontend-engineer.md" },
+    { "role": "qa_engineer",          "title": "QA Engineer",                    "reportsTo": "software_architect", "budgetCents": 3000, "instructions": ".paperclip/agents/qa-engineer.md" }
+  ],
+  "phases": [
+    "Sprint 0: Frappe/bench/MariaDB/Redis env + flock_os app scaffold",
+    "Phase 1: Canonical data model + org/group tree + enterprise permissions",
+    "Phase 2: Group-level event/gathering tracking + leader reporting",
+    "Phase 3: One-time events + tree-based approval + scoped registration",
+    "Phase 4: Org-level scheduling, announcements, scoped push notifications",
+    "Phase 5: Fun attendance (live games + live questionnaires)",
+    "Phase 6: Scale hardening (15k attendees), CI, polish"
+  ]
+}
