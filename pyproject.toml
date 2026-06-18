@@ -17,7 +17,8 @@ ignore = ["E111", "E114", "E117", "W191"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/doctype/**" = ["F401"]
-"**/{__init__,hooks,modules,patches}.py" = ["F401"]
+"**/{__init__,modules,patches}.py" = ["F401"]
+"**/hooks.py" = ["F401", "E402"]
 
 [tool.ruff.format]
 indent-style = "tab"
