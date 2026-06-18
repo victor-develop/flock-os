@@ -1,0 +1,168 @@
+{
+ "actions": [],
+ "autoname": "field:approval_policy_name",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "approval_policy_name",
+   "fieldtype": "Data",
+   "label": "Approval Policy Name",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "translatable": 0,
+   "description": "e.g. Default Branch Policy (configurable chain rules, FLO-7 \u00a73.4)."
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1,
+   "description": "Tenant floor (ADR \u00a73). Null = org-wide default."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "search_index": 1,
+   "description": "Branch-specific override. The nearest policy to the gathering's branch wins (FLO-7 \u00a73.4)."
+  },
+  {
+   "fieldname": "chain_section",
+   "fieldtype": "Section Break",
+   "label": "Chain Rules"
+  },
+  {
+   "fieldname": "require_branch_admin_final",
+   "fieldtype": "Check",
+   "label": "Require Branch Admin (Final)",
+   "default": "1",
+   "description": "Branch Admin is always the terminal approver (FLO-7 \u00a73.3 #4)."
+  },
+  {
+   "fieldname": "max_approval_levels",
+   "fieldtype": "Int",
+   "label": "Max Approval Levels",
+   "non_negative": 1,
+   "description": "Cap on chain depth; null = full walk. The Branch-Admin terminator is always kept (FLO-7 \u00a73.3 #5)."
+  },
+  {
+   "fieldname": "allow_self_approval",
+   "fieldtype": "Check",
+   "label": "Allow Self Approval",
+   "default": "0",
+   "description": "If set, a leader who is the requester still gets a step (FLO-7 \u00a73.3 #6). Default off."
+  },
+  {
+   "fieldname": "auto_approve_below_capacity",
+   "fieldtype": "Int",
+   "label": "Auto-approve Below Capacity",
+   "non_negative": 1,
+   "description": "Events under this capacity skip the chain (small-group convenience, FLO-7 \u00a73.4)."
+  },
+  {
+   "fieldname": "registration_section",
+   "fieldtype": "Section Break",
+   "label": "Registration Defaults"
+  },
+  {
+   "fieldname": "default_registration_scope",
+   "fieldtype": "Select",
+   "label": "Default Registration Scope",
+   "options": "None\nOwn Group\nGroup Subtree\nBranch\nBranch Subtree\nOrg-wide\nInvited Only",
+   "default": "Own Group",
+   "description": "Default if approvers don't override (confirmed at final approval, FLO-7 \u00a73.4)."
+  },
+  {
+   "fieldname": "enable_waitlist",
+   "fieldtype": "Check",
+   "label": "Enable Waitlist",
+   "default": "1"
+  },
+  {
+   "fieldname": "approval_timeout_hours",
+   "fieldtype": "Int",
+   "label": "Approval Timeout (hours)",
+   "non_negative": 1,
+   "description": "Remind/escalate after N hours (consumed by FLO-8 notifications)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Event Approval Policy",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "approval_policy_name",
+ "track_changes": 1
+}
