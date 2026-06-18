@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "format:{user}-{branch}",
+ "autoname": "hash",
  "color": "",
  "creation": "2026-06-19 00:00:00.000000",
  "default_view": "List",
@@ -94,7 +94,7 @@
  "modified_by": "Administrator",
  "module": "flock_os",
  "name": "Flock Audit Log",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

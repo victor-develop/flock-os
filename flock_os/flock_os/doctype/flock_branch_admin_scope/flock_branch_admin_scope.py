@@ -24,17 +24,19 @@ class FlockBranchAdminScope(Document):
 		self._withdraw_user_permissions()
 
 	def _resolve_subtree(self) -> list[str]:
-		# The allowed set = the configured branch + its descendant branches. The
-		# subtree is computed live from the current nested set (ADR §6.2) so a
-		# move is reflected on the next sync without a stale cache.
+		# The allowed set = the configured branch + its descendant branches,
+		# computed live from the current tree (ADR §6.2) via the canonical pure
+		# subtree fn. Tree math lives in flock_os.trees / permissions only (DRY);
+		# this controller just materializes the adjacency once and delegates.
+		# Delegating (rather than a raw nested-set query) guarantees the *upper*
+		# bound is enforced, so a sibling branch ordered after this root can
+		# never leak into the admin's allowed set (ADR §6.2 tenant isolation).
 		if not self.branch:
 			return []
-		rows = frappe.get_all(
-			"Flock Branch",
-			filters={"lft": [">=", frappe.db.get_value("Flock Branch", self.branch, "lft")]},
-			pluck="name",
+		parent_of, children_of = _materialize_branch_adjacency()
+		return list(
+			permissions.compute_branch_subtree(self.branch, parent_of=parent_of, children_of=children_of)
 		)
-		return list(rows)
 
 	def _sync_user_permissions(self):
 		syncer = permissions.FrappeUserPermissionSyncer()
@@ -50,3 +52,20 @@ class FlockBranchAdminScope(Document):
 			"User Permission",
 			{"user": self.user, "allow": permissions.BRANCH_DOCTYPE},
 		)
+
+
+def _materialize_branch_adjacency() -> tuple[dict[str, str | None], dict[str, list[str]]]:
+	# One read of the branch tree; the pure traversal primitives in
+	# flock_os.flock_os.trees consume the adjacency views (parent_of /
+	# children_of). Ordered by lft so children_of lists follow tree order.
+	rows = frappe.get_all("Flock Branch", fields=["name", "parent_branch"], order_by="lft")
+	parent_of: dict[str, str | None] = {}
+	children_of: dict[str, list[str]] = {}
+	for row in rows:
+		name = row["name"]
+		parent = row.get("parent_branch")
+		parent_of[name] = parent
+		children_of.setdefault(name, [])
+		if parent:
+			children_of.setdefault(parent, []).append(name)
+	return parent_of, children_of
