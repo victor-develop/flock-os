@@ -98,6 +98,7 @@ class RecordingPermissionGateway(PermissionGateway):
 	led_bounds_by_member: dict[str, tuple[GroupBounds, ...]] = field(default_factory=dict)
 	joined_by_member: dict[str, tuple[str, ...]] = field(default_factory=dict)
 	branch_ups_by_user: dict[str, tuple[str, ...]] = field(default_factory=dict)
+	group_bounds_by_name: dict[str, GroupBounds] = field(default_factory=dict)
 
 	def get_user_roles(self, user: str) -> frozenset[str]:
 		return self.roles_by_user.get(user, frozenset())
@@ -110,6 +111,9 @@ class RecordingPermissionGateway(PermissionGateway):
 
 	def fetch_joined_group_names(self, member: str) -> tuple[str, ...]:
 		return self.joined_by_member.get(member, ())
+
+	def fetch_group_bounds(self, name: str) -> GroupBounds | None:
+		return self.group_bounds_by_name.get(name)
 
 	def list_branch_user_permissions(self, user: str) -> tuple[str, ...]:
 		return self.branch_ups_by_user.get(user, ())
@@ -188,6 +192,30 @@ def test_self_predication_for_flock_group_doctype():
 	# No `.group` link reference on the self-doctype.
 	assert ".`group`" not in sql
 	assert "`tabFlock Group`.`name` IN ('G3')" in sql
+
+
+def test_group_only_doctype_omits_member_clause():
+	# FLO-54: Flock Gathering carries `group` but NO `member` column. The group-
+	# axis fragment must narrow on the led subtree + joined groups, but MUST NOT
+	# emit a `.member = self` clause — that column does not exist, so emitting it
+	# would yield invalid SQL on every leader's gathering list. Only DocTypes in
+	# MEMBER_ANCHORED_DOCTYPES (rows about a person) get the self-membership
+	# branch (Flock Group Member does; Flock Gathering does not).
+	assert "Flock Gathering" in perms.SCOPED_DOCTYPES
+	assert "Flock Gathering" not in perms.MEMBER_ANCHORED_DOCTYPES
+	assert "Flock Group Member" in perms.MEMBER_ANCHORED_DOCTYPES
+
+	scope = LeaderScope(
+		member="M1",
+		led_bounds=(_gb("G0", 1, 8),),
+		joined_groups=("G3",),
+	)
+	sql = perms.build_group_scope_sql(doctype="Flock Gathering", scope=scope, escape=_passthrough)
+	# Led-subtree + joined-group narrowing are present.
+	assert "`tabFlock Gathering`.`group` IN (SELECT name FROM `tabFlock Group`" in sql
+	assert "`tabFlock Gathering`.`group` IN ('G3')" in sql
+	# The self-membership clause is suppressed (no member column on a gathering).
+	assert "member" not in sql
 
 
 def test_empty_scope_returns_no_op_fragment():
@@ -429,9 +457,35 @@ def test_assert_group_scope_passes_for_led_subtree():
 		roles_by_user={"lead@flock": frozenset({perms.ROLE_GROUP_LEADER})},
 		member_by_user={"lead@flock": "M1"},
 		led_bounds_by_member={"M1": (_gb("G0", 1, 8),)},
+		group_bounds_by_name={"G0": _gb("G0", 1, 8)},
 	)
 	# A row anchored at a group inside the leader's led subtree.
 	perms.assert_group_scope(doc_group="G0", doc_member=None, user="lead@flock", gateway=gw)
+
+
+def test_assert_group_scope_passes_for_descendant_of_led_subtree():
+	# ADR §6.3: the guard must agree with the list hook. A leader of G0 (subtree
+	# ⊇ G1, G2) sees a row anchored at descendant G2 via the nested-set hook, so
+	# the guard must also pass for G2 — not raise as a direct-membership check
+	# would (G2 ∉ {G0}). This is the consistency gap between guard and hook.
+	gw = RecordingPermissionGateway(
+		roles_by_user={"lead@flock": frozenset({perms.ROLE_GROUP_LEADER})},
+		member_by_user={"lead@flock": "M1"},
+		led_bounds_by_member={"M1": (_gb("G0", 1, 8),)},
+		group_bounds_by_name={"G2": _gb("G2", 3, 4)},
+	)
+	perms.assert_group_scope(doc_group="G2", doc_member=None, user="lead@flock", gateway=gw)
+
+
+def test_assert_group_scope_passes_for_joined_group():
+	# §4.1: a plain member may act on a row anchored at a group they belong to.
+	gw = RecordingPermissionGateway(
+		roles_by_user={"mem@flock": frozenset({perms.ROLE_MEMBER})},
+		member_by_user={"mem@flock": "M2"},
+		joined_by_member={"M2": ("G3",)},
+		group_bounds_by_name={"G3": _gb("G3", 6, 7)},
+	)
+	perms.assert_group_scope(doc_group="G3", doc_member=None, user="mem@flock", gateway=gw)
 
 
 def test_assert_group_scope_passes_for_self_member():
@@ -509,3 +563,70 @@ def test_null_gateway_is_import_clean_without_frappe():
 	assert null.get_user_roles("anyone") == frozenset()
 	assert null.resolve_member_for_user("anyone") is None
 	assert null.fetch_led_group_bounds("M1") == ()
+
+
+# --------------------------------------------------------------------------- #
+# Flock Gathering — group-axis scoping (FLO-54 / FLO-6 §6). The gathering is a
+# group-level transactional DocType; it must be registered in SCOPED_DOCTYPES so
+# the single `permission_query_conditions` hook narrows a leader to their led
+# subtree (a leader can read/create gatherings only for groups they lead), while
+# bypass roles (Org/Branch Admin, Auditor) see all. These pin the DoD: "leader
+# can create/read gatherings in-scope only".
+# --------------------------------------------------------------------------- #
+
+
+def test_flock_gathering_is_registered_as_group_scoped():
+	# The hook + audit gate consult SCOPED_DOCTYPES; the gathering must be in it.
+	assert "Flock Gathering" in perms.SCOPED_DOCTYPES
+
+
+def test_flock_gathering_hook_narrows_leader_to_led_subtree():
+	# A leader (M1 leads G0, lft/rgt 1..8) viewing the gathering list gets a
+	# non-empty OR-fragment that predicates on `.group` IN the leader's led
+	# subtree — i.e. they only see gatherings anchored under a group they lead.
+	gw = RecordingPermissionGateway(
+		roles_by_user={"lead@flock": frozenset({perms.ROLE_GROUP_LEADER})},
+		member_by_user={"lead@flock": "M1"},
+		led_bounds_by_member={"M1": (_gb("G0", 1, 8),)},
+	)
+	perms.install_gateway(gw)
+	try:
+		sql = perms.get_group_scoped_conditions("Flock Gathering", "lead@flock")
+		assert sql.startswith(" AND (")
+		# The gathering scopes via its `.group` link (not self-predication).
+		assert "`tabFlock Gathering`.`group` IN (SELECT name FROM `tabFlock Group`" in sql
+		assert "`tabFlock Group`.`lft` >= 1 AND `tabFlock Group`.`rgt` <= 8" in sql
+		assert perms.has_group_scope("Flock Gathering", "lead@flock") is True
+	finally:
+		perms.install_gateway(perms.NullPermissionGateway())
+
+
+def test_flock_gathering_hook_is_noop_for_bypass_role():
+	# A Branch/Org Admin / Auditor sees all gatherings (no group-axis fragment).
+	gw = RecordingPermissionGateway(
+		roles_by_user={"ba@flock": frozenset({perms.ROLE_BRANCH_ADMIN})},
+		member_by_user={"ba@flock": "M9"},
+		led_bounds_by_member={"M9": (_gb("G0", 1, 8),)},
+	)
+	perms.install_gateway(gw)
+	try:
+		assert perms.get_group_scoped_conditions("Flock Gathering", "ba@flock") == ""
+		assert perms.has_group_scope("Flock Gathering", "ba@flock") is False
+	finally:
+		perms.install_gateway(perms.NullPermissionGateway())
+
+
+def test_flock_gathering_assert_group_scope_uses_subtree_containment():
+	# The write/create guard agrees with the list hook: a leader of G0 may act
+	# on a gathering anchored at descendant G2, but not at a foreign group.
+	gw = RecordingPermissionGateway(
+		roles_by_user={"lead@flock": frozenset({perms.ROLE_GROUP_LEADER})},
+		member_by_user={"lead@flock": "M1"},
+		led_bounds_by_member={"M1": (_gb("G0", 1, 8),)},
+		group_bounds_by_name={"G2": _gb("G2", 3, 4), "G-foreign": _gb("G-foreign", 100, 101)},
+	)
+	# Descendant of the led subtree → allowed.
+	perms.assert_group_scope(doc_group="G2", doc_member=None, user="lead@flock", gateway=gw)
+	# Foreign group → denied.
+	with pytest.raises(perms.FlockPermissionError):
+		perms.assert_group_scope(doc_group="G-foreign", doc_member=None, user="lead@flock", gateway=gw)

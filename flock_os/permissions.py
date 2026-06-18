@@ -88,12 +88,38 @@ GROUP_SCOPED_ROLES: frozenset[str] = frozenset({ROLE_GROUP_LEADER, ROLE_MEMBER, 
 SCOPED_DOCTYPES: tuple[str, ...] = (
 	"Flock Group",
 	"Flock Group Member",
+	"Flock Gathering",
+	"Flock Announcement",
 )
 """DocTypes the group-axis ``permission_query_conditions`` hook narrows.
 
 Adding a group-level DocType = appending its name here + wiring the hook in
-``hooks.py``. The self-predication special case (``Flock Group``) is handled
-inside :func:`build_group_scope_sql` (ADR §6.3 edit #2)."""
+``hooks.py`` (already driven from this list, so no per-DocType wiring). The
+self-predication special case (``Flock Group``) is handled inside
+:func:`build_group_scope_sql` (ADR §6.3 edit #2).
+
+DocTypes whose ``group`` link is **nullable** (e.g. ``Flock Announcement``,
+primarily branch-subtree-scoped — FLO-8 §6.2) are supported via the NULL-
+``group`` passthrough in :func:`build_group_scope_sql`: rows whose ``group`` is
+NULL fall through to the branch axis (native User Permissions), rows with a
+group get the nested-set predicate. Required-``group`` DocTypes
+(``Flock Group Member``) never hit the passthrough — the ``group IS NULL``
+clause is a no-op for them.
+
+Not every scoped DocType carries a ``member`` link. The self-membership branch
+of the OR-fragment (``.member = <leader_member>``, edit #4) only applies to
+:data:`MEMBER_ANCHORED_DOCTYPES` (rows that are *about* a person — a membership
+edge, an attendance record). Group-only DocTypes like ``Flock Gathering`` (a
+meeting owned by a group, not a person) must not get a ``.member`` clause — they
+have no such column, so emitting one would yield invalid SQL (FLO-54)."""
+
+#: Scoped DocTypes that carry a ``member`` link the self-membership branch (edit
+#: #4) predicates on. A row that is *about* a person (a membership edge, an
+#: attendance record) lets a member see their own rows via ``.member = self``.
+#: Group-only DocTypes (``Flock Gathering``) are intentionally absent — they have
+#: no ``member`` column, so the ``.member`` clause is suppressed for them
+#: (FLO-54). ``Flock Attendance Record`` appends itself here when it lands.
+MEMBER_ANCHORED_DOCTYPES: frozenset[str] = frozenset({"Flock Group Member"})
 
 #: The branch doctype the native User-Permission axis rides on (ADR §6.2).
 BRANCH_DOCTYPE = "Flock Branch"
@@ -176,6 +202,17 @@ class PermissionGateway(Protocol):
 		"""
 		...
 
+	def fetch_group_bounds(self, name: str) -> GroupBounds | None:
+		"""Live nested-set bounds (``lft``/``rgt``) of a single group, or ``None``.
+
+		Used by :func:`assert_group_scope` to test whether a row's group anchor
+		falls inside a leader's led subtree (the dual of the nested-set predicate
+		the ``permission_query_conditions`` hook applies, ADR §6.3), so the guard
+		and the list hook agree — a leader of an ancestor group may operate on any
+		descendant row, not just the groups they directly lead.
+		"""
+		...
+
 	def list_branch_user_permissions(self, user: str) -> tuple[str, ...]:
 		"""Branch names the user holds a ``Flock Branch`` User Permission for.
 
@@ -200,6 +237,9 @@ class NullPermissionGateway:
 
 	def fetch_joined_group_names(self, member: str) -> tuple[str, ...]:  # noqa: ARG002
 		return ()
+
+	def fetch_group_bounds(self, name: str) -> GroupBounds | None:  # noqa: ARG002
+		return None
 
 	def list_branch_user_permissions(self, user: str) -> tuple[str, ...]:  # noqa: ARG002
 		return ()
@@ -261,9 +301,13 @@ def build_group_scope_sql(
 	returns a single ``AND ( ... )`` OR-fragment. For ``Flock Group`` it narrows
 	on the doctype's **own nested set** (self-predication, edit #2) plus the
 	groups the user belongs to by name. For every other scoped DocType it
-	narrows via the ``.group`` link (subtree of led groups) **OR**
-	``.member = <leader_member>`` (self-membership, edit #4) **OR** ``.group IN
-	(<joined groups>)``.
+	narrows via the ``.group`` link (subtree of led groups) **OR** ``.group IN
+	(<joined groups>)``; nullable-``group`` DocTypes additionally OR ``.group IS
+	NULL`` (passthrough to the branch axis); DocTypes in
+	:data:`MEMBER_ANCHORED_DOCTYPES` (rows about a person) additionally OR
+	``.member = <leader_member>`` (self-membership, edit #4). The ``.member``
+	clause is suppressed for group-only DocTypes (e.g. ``Flock Gathering``) —
+	they have no such column (FLO-54).
 
 	The subtree sub-select OR-composes one ``(lft, rgt)`` range per led group
 	(computed live), so disjoint led groups do not over-select siblings.
@@ -293,8 +337,20 @@ def build_group_scope_sql(
 			branches.append(f"`tabFlock Group`.`name` IN {_in_list(scope.joined_groups, escape)}")
 	else:
 		alias = f"`tab{doctype}`"
+		# Nullable-group passthrough (FLO-8 §6.2 / edit #5): DocTypes whose
+		# `group` link is optional (e.g. `Flock Announcement`, primarily branch-
+		# subtree-scoped) let rows with NULL `group` fall through to the branch
+		# axis (native User Permissions) — the group-axis hook must not hide
+		# them. Required-`group` DocTypes (`Flock Group Member`, `Flock Gathering`)
+		# never have a NULL `group`, so this clause is a harmless no-op for them.
+		branches.append(f"{alias}.`group` IS NULL")
 		branches.append(f"{alias}.`group` IN ({subtree_subselect})")
-		if scope.member:
+		# Self-membership (edit #4) applies ONLY to DocTypes that carry a
+		# `member` link (rows about a person). Group-only DocTypes (e.g. `Flock
+		# Gathering`, `Flock Announcement`) have no `member` column, so the
+		# clause is suppressed — emitting it would produce invalid SQL. See
+		# MEMBER_ANCHORED_DOCTYPES.
+		if scope.member and doctype in MEMBER_ANCHORED_DOCTYPES:
 			branches.append(f"{alias}.`member` = {_esc(scope.member, escape)}")
 		if scope.joined_groups:
 			branches.append(f"{alias}.`group` IN {_in_list(scope.joined_groups, escape)}")
@@ -400,9 +456,21 @@ def assert_group_scope(
 		return
 	if scope.member and doc_member and doc_member == scope.member:
 		return
-	allowed_groups = {b.name for b in scope.led_bounds} | set(scope.joined_groups)
-	if doc_group and doc_group in allowed_groups:
-		return
+	if doc_group:
+		# Subtree containment (ADR §6.3): a leader of an ancestor group may
+		# operate on any descendant row. This mirrors the nested-set predicate
+		# the ``permission_query_conditions`` hook applies (the dual of
+		# ``trees.is_descendant_of``), so the guard and the list hook agree —
+		# previously this checked direct membership only and denied a leader's
+		# call on a subtree-descendant row the list view let them see.
+		doc_bounds = gateway.fetch_group_bounds(doc_group)
+		if doc_bounds and any(
+			led.lft <= doc_bounds.lft and doc_bounds.rgt <= led.rgt for led in scope.led_bounds
+		):
+			return
+		# Direct joined-group membership (self read scope, §4.1).
+		if doc_group in set(scope.joined_groups):
+			return
 	raise FlockPermissionError(
 		f"User {user!r} lacks group-axis scope for group={doc_group!r} member={doc_member!r}."
 	)
@@ -543,6 +611,16 @@ class FrappePermissionGateway:
 		seen: dict[str, None] = dict.fromkeys(rows)
 		return tuple(seen)
 
+	def fetch_group_bounds(self, name: str) -> GroupBounds | None:
+		frappe = self._frappe
+		if not name:
+			return None
+		bounds = frappe.db.get_value(GROUP_DOCTYPE, name, ["lft", "rgt"])
+		if not bounds:
+			return None
+		lft, rgt = bounds
+		return GroupBounds(name=name, lft=int(lft), rgt=int(rgt))
+
 	def list_branch_user_permissions(self, user: str) -> tuple[str, ...]:
 		frappe = self._frappe
 		if not user:
@@ -555,14 +633,11 @@ class FrappePermissionGateway:
 		return tuple(rows)
 
 	def _bounds_for(self, group_names: tuple[str, ...]) -> tuple[GroupBounds, ...]:
-		frappe = self._frappe
 		out: list[GroupBounds] = []
 		for name in group_names:
-			bounds = frappe.db.get_value(GROUP_DOCTYPE, name, ["lft", "rgt"])
-			if not bounds:
-				continue
-			lft, rgt = bounds
-			out.append(GroupBounds(name=name, lft=int(lft), rgt=int(rgt)))
+			bounds = self.fetch_group_bounds(name)
+			if bounds:
+				out.append(bounds)
 		return tuple(out)
 
 
