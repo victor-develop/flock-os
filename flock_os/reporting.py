@@ -38,7 +38,8 @@ Scale properties locked here (FLO-10 §3 / §4):
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -189,6 +190,22 @@ class BulkAttendanceGateway(Protocol):
 	unit-testable in isolation (ADR-0001 §2, FLO-10 §3.1).
 	"""
 
+	def transaction(self) -> Iterator[None]:
+		"""Context manager bounding one atomic persistence unit (FLO-100).
+
+		The service keeps its data writes (``filter_unseen`` → ``bulk_insert`` →
+		``increment_aggregate``) inside this boundary and emits events *after* it
+		closes. The Frappe adapter commits on normal exit (releasing all row
+		locks immediately) and rolls back on exception; the in-memory adapter is
+		a no-op. This is the structural fix for the 200-wps concurrency failure:
+		the ``Event Attendance Summary`` hot-row X-lock (held by the
+		``ON DUPLICATE KEY UPDATE``) must release **before** the best-effort
+		Redis / outbox side effects, not at job-end — otherwise concurrent batches
+		serialize behind one lock held across the whole event fan-out and blow
+		the ``innodb_lock_wait_timeout`` (ADR §5.3: correctness in the queue).
+		"""
+		...
+
 	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
 		"""Return the subset of ``keys`` not already persisted.
 
@@ -239,6 +256,13 @@ class InMemoryBulkAttendanceGateway:
 		self._unique: set[tuple[str, str]] = set()
 		self._counters: dict[tuple[str, str], int] = {}
 		self.published_events: list[DomainEvent] = []
+
+	@contextmanager
+	def transaction(self) -> Iterator[None]:
+		# In-memory adapter: no locks to release, so the boundary is a no-op.
+		# The service still relies on the same exit contract (data committed
+		# before events emit) so the Frappe adapter is a drop-in.
+		yield
 
 	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
 		unseen: set[tuple[str, str, str]] = set()
@@ -296,6 +320,8 @@ class BulkAttendanceService:
 		# items/request"); the service processes whatever batch the queue hands it.
 		# 1. Set-based scope check, once per batch (D7). If any item is out of
 		#    scope the *whole* batch is rejected atomically (no partial writes).
+		#    This path performs no persistence, so its reject event emits outside
+		#    any transaction boundary.
 		out_of_scope = sum(1 for item in items if item.branch != scope.branch)
 		if out_of_scope:
 			rejected = [
@@ -323,33 +349,43 @@ class BulkAttendanceService:
 				events=[event],
 			)
 
-		# 2. Per-item idempotency dedupe (backstopped by the unique index).
 		keys = [item.idempotency_key for item in items]
-		unseen_keys = self.gateway.filter_unseen(keys)
-		new_items = [item for item in items if item.idempotency_key in unseen_keys]
-		deduplicated = len(items) - len(new_items)
 
-		# 3. Batched write + atomic aggregate + event emission.
+		# 2 + 3. Per-item idempotency dedupe, batched write, and atomic aggregate
+		# update — all inside ONE tight committed transaction (FLO-100). The
+		# gateway commits this block on exit, so the Event Attendance Summary
+		# hot-row X-lock (and every row/gap lock taken by the insert) releases
+		# *before* any event/outbox side effect below. Events are best-effort
+		# (ADR §5.3 — correctness lives in the queue): emitting them after the
+		# data commit keeps them from extending the lock hold under 200-wps
+		# concurrency, which is what flooded retries and stalled the queue.
 		events: list[DomainEvent] = []
 		inserted = 0
-		if new_items:
-			inserted = self.gateway.bulk_insert(new_items)
-			by_event = Counter(item.event for item in new_items)
-			for event, count in by_event.items():
-				self.gateway.increment_aggregate(scope, event, count)
-				events.append(
-					DomainEvent(
-						EVENT_BULK_RECORDED,
-						{
-							"gathering": event,
-							"count": count,
-							"batch_id": batch_id,
-							"branch": scope.key,
-						},
+		deduplicated = 0
+		with self.gateway.transaction():
+			unseen_keys = self.gateway.filter_unseen(keys)
+			new_items = [item for item in items if item.idempotency_key in unseen_keys]
+			deduplicated = len(items) - len(new_items)
+			if new_items:
+				inserted = self.gateway.bulk_insert(new_items)
+				by_event = Counter(item.event for item in new_items)
+				for event_name, count in by_event.items():
+					self.gateway.increment_aggregate(scope, event_name, count)
+					events.append(
+						DomainEvent(
+							EVENT_BULK_RECORDED,
+							{
+								"gathering": event_name,
+								"count": count,
+								"batch_id": batch_id,
+								"branch": scope.key,
+							},
+						)
 					)
-				)
-			for event in events:
-				self.gateway.emit(event)
+		# Events emit only after the data transaction has committed — never
+		# inside it — so best-effort Redis/outbox writes hold no data locks.
+		for event in events:
+			self.gateway.emit(event)
 
 		return BulkBatchOutcome(
 			batch_id=batch_id,
@@ -407,6 +443,29 @@ class FrappeBulkAttendanceGateway:
 		import frappe
 
 		return frappe
+
+	@contextmanager
+	def transaction(self) -> Iterator[None]:
+		"""Commit the data-persistence unit immediately on exit (FLO-100).
+
+		Frappe runs a whole background job inside one transaction that only
+		commits at job end (``execute_job``). Without an explicit boundary here,
+		the ``increment_aggregate`` upsert's X-lock on the single shared
+		``Event Attendance Summary`` row is held across the subsequent Redis +
+		outbox event writes until that job-end commit — so every concurrent batch
+		serializes behind one lock and blows ``innodb_lock_wait_timeout``.
+		Committing the moment the data writes finish releases the lock before any
+		best-effort side effect; the trailing event emission runs in its own
+		transaction. Roll back on error so a failed batch leaves no half-written
+		state for its (idempotent) retry.
+		"""
+		frappe = self._frappe
+		try:
+			yield
+		except Exception:
+			frappe.db.rollback()
+			raise
+		frappe.db.commit()
 
 	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
 		frappe = self._frappe
