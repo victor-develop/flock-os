@@ -448,26 +448,41 @@ class FrappeBulkAttendanceGateway:
 
 	@contextmanager
 	def transaction(self) -> Iterator[None]:
-		"""Commit the data-persistence unit immediately on exit (FLO-100).
+		"""Commit the persistence unit immediately, under READ COMMITTED (FLO-100).
 
-		Frappe runs a whole background job inside one transaction that only
-		commits at job end (``execute_job``). Without an explicit boundary here,
-		the ``increment_aggregate`` upsert's X-lock on the single shared
-		``Event Attendance Summary`` row is held across the subsequent Redis +
-		outbox event writes until that job-end commit — so every concurrent batch
-		serializes behind one lock and blows ``innodb_lock_wait_timeout``.
-		Committing the moment the data writes finish releases the lock before any
-		best-effort side effect; the trailing event emission runs in its own
-		transaction. Roll back on error so a failed batch leaves no half-written
-		state for its (idempotent) retry.
+		Fixes two concurrency hazards on the 200-wps bulk path. (1) Lock hold:
+		Frappe runs a whole background job in one transaction that commits only at
+		job end (execute_job); without an explicit boundary the summary upsert's
+		X-lock on the single shared (branch, event) row is held across the Redis +
+		outbox event writes until that job-end commit, so concurrent batches
+		serialize behind one lock and blow innodb_lock_wait_timeout. Committing the
+		moment the data writes finish releases the lock before any best-effort side
+		effect. (2) MariaDB 1020 ("record has changed since last read"): under the
+		default REPEATABLE READ, filter_unseen's SELECT establishes the transaction
+		snapshot; a concurrent batch then commits the same summary row, so our
+		atomic UPDATE total = total + n sees a newer version and InnoDB raises 1020
+		(QueryDeadlockError) on ~30%+ of batches. READ COMMITTED gives each
+		statement a fresh read view, so the contended summary UPDATE always sees the
+		latest committed row and never 1020s, while the tight transaction still
+		keeps insert + aggregate atomic. READ COMMITTED is the standard isolation
+		for high-concurrency write/counter workloads.
+
+		Any ambient transaction is committed first so the SESSION isolation change
+		applies to the fresh transaction, and the default (REPEATABLE READ) is
+		restored afterward so the worker's other jobs are unaffected. Roll back on
+		error so a failed batch leaves no half-written state for its retry.
 		"""
 		frappe = self._frappe
+		frappe.db.commit()  # close any ambient job transaction so SET SESSION applies
+		frappe.db.sql("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
 		try:
 			yield
 		except Exception:
 			frappe.db.rollback()
 			raise
-		frappe.db.commit()
+		finally:
+			frappe.db.commit()
+			frappe.db.sql("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
 
 	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
 		frappe = self._frappe
