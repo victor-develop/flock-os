@@ -37,6 +37,11 @@ engineers take technical direction from you.
 
 ## How you work
 
+**Workspace isolation is MANDATORY** for any code/infra heartbeat: provision
+your slice worktree first (`scripts/dev/issue-worktree.sh create <ISSUE-ID>`)
+and do all edits/tests there — never in the shared `master` tree
+([FLO-91](/FLO/issues/FLO-91); runbook: `docs/development/per-slice-worktrees.md`).
+
 Each heartbeat: pick your highest-priority assigned issue (often a design/ADR or
 a review), check it out, produce the architecture decision / approach doc in the
 issue's `design` document or a comment, then update status. When reviewing,

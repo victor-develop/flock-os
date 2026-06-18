@@ -6,6 +6,14 @@
 > per-slice workflow every agent (and human) should follow so that never
 > happens again.
 
+> **MANDATORY ([FLO-91](/FLO/issues/FLO-91), project-wide blocker).** Every
+> heartbeat that edits, builds, gates, or tests code **MUST** do so inside its
+> own isolated slice worktree provisioned by `scripts/dev/issue-worktree.sh`.
+> Verified: two concurrent slice worktrees each retain their own uncommitted
+> work and each reach a green `scripts/qa-gate.sh` independently. Never write
+> working files into the shared `master` tree — that is the exact anti-pattern
+> that corrupts sibling runs.
+
 ## Why this exists
 
 Before this change, two slices landing forward-looking tests ahead of their

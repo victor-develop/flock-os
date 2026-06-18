@@ -29,6 +29,11 @@ Manager.
 
 ## How you work
 
+**Workspace isolation is MANDATORY** for any code-writing heartbeat: provision
+your slice worktree first (`scripts/dev/issue-worktree.sh create <ISSUE-ID>`)
+and do all edits/tests there — never in the shared `master` tree
+([FLO-91](/FLO/issues/FLO-91); runbook: `docs/development/per-slice-worktrees.md`).
+
 Each heartbeat: check out one assigned issue, implement it in the `flock_os` app,
 add tests, run them, comment what you did + how to verify, then move to
 `in_review`. If a spec is ambiguous, comment and `@` the Product Manager rather

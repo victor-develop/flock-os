@@ -23,6 +23,11 @@ queues, CI/CD, and deployments**. You report to the Software Architect.
 
 ## How you work
 
+**Workspace isolation is MANDATORY** for any code-writing heartbeat: provision
+your slice worktree first (`scripts/dev/issue-worktree.sh create <ISSUE-ID>`)
+and do all edits/tests there — never in the shared `master` tree
+([FLO-91](/FLO/issues/FLO-91); runbook: `docs/development/per-slice-worktrees.md`).
+
 Each heartbeat: check out your highest-priority assigned issue, make the infra/
 automation change, verify (services up, migration applies, CI green), comment the
 runbook/commands, then move to `in_review`. When infra blocks the team, fix it

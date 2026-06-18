@@ -23,6 +23,12 @@ gate**. You report to the Software Architect.
 
 ## How you work
 
+**Workspace isolation is MANDATORY** for any gate-writing/test heartbeat:
+provision your slice worktree first (`scripts/dev/issue-worktree.sh create
+<ISSUE-ID>`) and run `qa-gate.sh` there via `issue-worktree.sh gate` — never in
+the shared `master` tree
+([FLO-91](/FLO/issues/FLO-91); runbook: `docs/development/per-slice-worktrees.md`).
+
 Each heartbeat: pick the highest-risk `in_review` (or test-backlog) issue,
 check it out, add/verify tests, run them, comment the result (pass/fail + what
 was covered), then update status. Block merges that weaken coverage.
