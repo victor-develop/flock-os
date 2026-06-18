@@ -57,6 +57,16 @@ GATHERING_SUBMITTED = "flock.gathering.submitted"
 GATHERING_APPROVED = "flock.gathering.approved"
 GATHERING_CANCELLED = "flock.gathering.cancelled"
 ATTENDANCE_RECORDED = "flock.attendance.recorded"
+ATTENDANCE_REPORTED = "flock.attendance.reported"
+"""Leader attendance-report workflow transition (FLO-6 §4 / [FLO-56](/FLO/issues/FLO-56)).
+
+Emitted once per *report submission* — when a group leader submits the
+attendance report for a gathering (members + visitors / pre-members recorded
+together), driving the gathering ``Held → Reported`` transition. Distinct from
+the per-row :data:`ATTENDANCE_RECORDED` and per-batch
+:data:`ATTENDANCE_BULK_RECORDED`: those describe individual attendance writes;
+this describes the aggregate *report* act the leader confirms. Routed through
+the single sanctioned :func:`emit` (no dual emitters, ADR-0001 §5.1)."""
 ATTENDANCE_BULK_RECORDED = "flock.attendance.bulk_recorded"
 ATTENDANCE_BATCH_REJECTED = "flock.attendance.batch_rejected"
 ATTENDANCE_IMPORT_FAILED = "flock.attendance.import_failed"

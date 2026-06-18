@@ -1,27 +1,22 @@
 """
-Transport layer for bulk attendance reporting (FLO-15).
+Transport layer for attendance reporting.
 
-Exposes the queue-based write path from FLO-10 §3 as a Frappe whitelisted REST
-endpoint and the matching background job. **No domain rules live here** — this
-module only parses input, resolves the caller's org-tree branch once per batch,
-hands a receipt back immediately, and delegates persistence to
-:class:`flock_os.reporting.BulkAttendanceService` via an RQ job.
+Two REST surfaces live here, both thin (no domain rules — ADR-0001 §2):
 
-REST contract (FLO-10 §3.2):
+1. **Bulk attendance reporting** (FLO-15 / FLO-10 §3) — ``bulk_submit`` accepts
+   one queue-ready batch, enqueues it, and returns a receipt. Background job
+   ``process_bulk_batch`` does the durable write.
+2. **Leader attendance-report workflow** (FLO-56 / FLO-6 §4) — ``report_attendance``
+   submits one leader report (members + visitors / pre-members) over a
+   ``Flock Gathering``; it delegates to :class:`LeaderReportingService`, which
+   records attendees through the same bulk write path, drives the
+   ``Held → Reported`` transition, and emits ``flock.attendance.reported``.
 
-    POST /api/method/flock_os.attendance.bulk_submit
-      body: {
-        event:   "<Flock Gathering id>",
-        items:   [{ attendee_ref, status?, source?, client_req_id }],
-        batch_id: "<client-supplied batch correlation id>"
-      }
-      200: { accepted: bool, queued: int, rejected: [{index, reason}], batch_id }
-
-Per the ADR a batch is scoped to a single event/branch; every item inherits the
-caller's resolved branch (the org-tree node / row-level permission anchor). The
-actual inserts happen in the queue job (:func:`process_bulk_batch`); the reporter
-receives a *receipt*, not a synchronous commit (D1 — attendance is
-eventually-consistent to the reporter, surfaced via realtime).
+Both paths resolve the caller's org-tree branch **once per request** (set-based,
+D7) via :func:`_resolve_caller_branch_scope` and stamp it on every row — the
+row-level permission anchor (ADR-0001 §6.2). Batches are durable the moment RQ
+accepts the enqueue; the queue owns correctness (idempotent retries, dead-letter,
+atomic aggregates).
 """
 
 from __future__ import annotations
@@ -30,6 +25,11 @@ from typing import Any
 
 import frappe
 
+# ``AttendeeReport`` is a pure dataclass (no Frappe coupling), so a module-level
+# import is safe and lets the transport parse helper annotate its return type
+# without a lazy import (the rest of the leader workflow stays lazy-imported in
+# ``report_attendance`` to keep the transport boundary explicit).
+from flock_os.leader_reporting import AttendeeReport  # noqa: E402
 from flock_os.reporting import (
 	BULK_ATTENDANCE_JOB_QUEUE,
 	BULK_ATTENDANCE_MAX_RETRY,
@@ -47,6 +47,11 @@ from flock_os.telemetry import measure_bulk_latency
 
 DEFAULT_ATTENDANCE_STATUS = "Present"
 DEFAULT_ATTENDANCE_SOURCE = "bulk"
+
+# Leader workflow source classification (FLO-56). Visitors / pre-members are
+# accepted as attendees — classification is owned by the pure service.
+_LEADER_ATTENDEE_DEFAULT_PRESENT = True
+_LEADER_ATTENDEE_DEFAULT_FIRST_TIME = False
 
 
 @frappe.whitelist()
@@ -260,3 +265,117 @@ def _now_seconds() -> int:
 	import time
 
 	return int(time.time())
+
+
+# ---------------------------------------------------------------------------- #
+# Leader attendance-report workflow transport (FLO-56 / FLO-6 §4)
+# ---------------------------------------------------------------------------- #
+# Thin REST surface over :class:`flock_os.leader_reporting.LeaderReportingService`.
+# No domain rules live here — input parsing, caller-scope resolution, gathering
+# authz, and the dict receipt only. The service owns the workflow; the Frappe
+# gateway owns the bulk write + transition + canonical emit.
+#
+# REST contract:
+#
+#     POST /api/method/flock_os.attendance.report_attendance
+#       body: {
+#         gathering:     "<Flock Gathering id>",
+#         attendees:     [{ member, present?, first_time?, client_req_id? }],
+#         client_batch_id: "<caller-supplied submission idempotency key>"
+#       }
+#       200: {
+#         accepted: bool, status: "Reported",
+#         inserted, deduplicated, member_count, visitor_count,
+#         first_time_count, batch_ids: [...]
+#       }
+# ---------------------------------------------------------------------------- #
+@frappe.whitelist()
+def report_attendance(
+	gathering: str,
+	attendees: list[dict[str, Any]],
+	client_batch_id: str,
+) -> dict[str, Any]:
+	"""Submit one leader attendance report for a gathering (FLO-56 / FLO-6 §4).
+
+	Resolves the caller's branch once (D7), authorizes the gathering is in the
+	caller's branch and ``Held``, then delegates to the leader-report service.
+	Attendees may be members, visitors, or pre-members (all ``Flock Member``
+	refs); the service classifies + records them through the bulk write path and
+	emits ``flock.attendance.reported``.
+	"""
+	from flock_os.leader_reporting import (
+		REPORTABLE_STATUS,
+		FrappeLeaderReportingGateway,
+		LeaderReportingError,
+		LeaderReportingService,
+		ReportSubmission,
+	)
+
+	if not gathering:
+		frappe.throw("gathering is required")
+	if not client_batch_id:
+		frappe.throw("client_batch_id is required (idempotency)")
+	if not isinstance(attendees, list):
+		frappe.throw("attendees must be a list")
+
+	scope = _resolve_caller_branch_scope()
+	doc = frappe.get_doc("Flock Gathering", gathering)  # row-level perm scoped (ADR §6.2/§6.3).
+	if doc.branch != scope.branch:
+		frappe.throw(
+			"Gathering is not in the caller's branch scope (row-level isolation, ADR §6.2).",
+			frappe.PermissionError,
+		)
+	if doc.status != REPORTABLE_STATUS:
+		frappe.throw(
+			f"Gathering is {doc.status!r}; a report requires {REPORTABLE_STATUS!r} (FLO-6 §4).",
+			title="Not reportable yet",
+		)
+
+	submission = ReportSubmission(
+		gathering=gathering,
+		branch=scope.branch,
+		group=doc.group,
+		reported_by=_resolve_reporter_member(),
+		attendees=[_attendee_from_payload(raw, index) for index, raw in enumerate(attendees)],
+		client_batch_id=client_batch_id,
+	)
+
+	try:
+		outcome = LeaderReportingService(FrappeLeaderReportingGateway()).submit_report(submission)
+	except LeaderReportingError as exc:
+		frappe.throw(str(exc), title="Attendance report rejected")
+
+	return {
+		"accepted": outcome.accepted,
+		"status": outcome.status,
+		"inserted": outcome.inserted,
+		"deduplicated": outcome.deduplicated,
+		"member_count": outcome.member_count,
+		"visitor_count": outcome.visitor_count,
+		"first_time_count": outcome.first_time_count,
+		"batch_ids": outcome.batch_ids,
+	}
+
+
+def _attendee_from_payload(raw: dict[str, Any], index: int) -> AttendeeReport:
+	"""Parse one attendee payload into an :class:`AttendeeReport` (transport parse only)."""
+	member = raw.get("member")
+	if not member:
+		frappe.throw(f"attendees[{index}].member is required")
+	return AttendeeReport(
+		member=str(member),
+		present=bool(raw.get("present", _LEADER_ATTENDEE_DEFAULT_PRESENT)),
+		first_time=bool(raw.get("first_time", _LEADER_ATTENDEE_DEFAULT_FIRST_TIME)),
+		client_req_id=str(raw["client_req_id"]) if raw.get("client_req_id") else None,
+	)
+
+
+def _resolve_reporter_member() -> str:
+	"""Resolve the caller's ``Flock Member`` ref (the report's ``reported_by``).
+
+	The reporter is the ``Flock Member`` linked to the session user. Falls back
+	to the session user's email when no member link is recorded so the workflow
+	still functions during bootstrap / test scaffolding.
+	"""
+	member = frappe.db.get_value("Flock Member", {"linked_user": frappe.session.user}, "name")
+	return member or frappe.session.user
