@@ -23,6 +23,9 @@ the :class:`BulkAttendanceService` Protocol defined in the QA contract layer
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+
 import pytest
 
 from flock_os.reporting import (
@@ -33,6 +36,7 @@ from flock_os.reporting import (
 	AttendanceScope,
 	BatchSizeExceeded,
 	BulkAttendanceService,
+	DomainEvent,
 	InMemoryBulkAttendanceGateway,
 	enforce_batch_size,
 	with_exponential_backoff,
@@ -247,6 +251,108 @@ def test_backoff_is_monotonic_and_capped() -> None:
 	assert delays == sorted(delays)
 	assert delays[0] == 1
 	assert all(d <= 300 for d in delays)
+
+
+# ---------------------------------------------------------------------------- #
+# Transaction boundary (FLO-100): data commits before events emit
+# ---------------------------------------------------------------------------- #
+class _OrderRecordingGateway:
+	"""Wraps the in-memory gateway and records the relative order of the
+	transaction boundary vs ``emit``.
+
+	This pins the FLO-100 structural fix: the service must close its data
+	transaction (commit, releasing the Event Attendance Summary hot-row X-lock)
+	*before* it emits any event, so the best-effort Redis / outbox side effects
+	never extend the lock hold under 200-wps concurrency.
+	"""
+
+	def __init__(self) -> None:
+		self._inner = InMemoryBulkAttendanceGateway()
+		self.order: list[str] = []
+
+	@contextmanager
+	def transaction(self) -> Iterator[None]:
+		self.order.append("tx_enter")
+		try:
+			yield
+		finally:
+			self.order.append("tx_exit")
+
+	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
+		return self._inner.filter_unseen(keys)
+
+	def bulk_insert(self, items):  # type: ignore[no-untyped-def]
+		return self._inner.bulk_insert(items)
+
+	def increment_aggregate(self, scope, event, delta):  # type: ignore[no-untyped-def]
+		return self._inner.increment_aggregate(scope, event, delta)
+
+	def aggregate(self, scope, event=None):  # type: ignore[no-untyped-def]
+		return self._inner.aggregate(scope, event)
+
+	def emit(self, event: DomainEvent) -> None:
+		self.order.append("emit")
+
+
+def test_data_transaction_commits_before_events_emit() -> None:
+	"""FLO-100: the persistence unit commits before any event is emitted.
+
+	Under the live bench the Event Attendance Summary upsert takes an X-lock on
+	the single shared ``(branch, event)`` row. If events (Redis + outbox writes)
+	ran inside that transaction, every concurrent batch would serialize behind
+	one lock held across the whole fan-out → lock-wait timeout → retry flood.
+	Here every ``emit`` must follow the transaction exit.
+	"""
+	gateway = _OrderRecordingGateway()
+	service = BulkAttendanceService(gateway)
+
+	outcome = service.submit(_items(50), SCOPE_A, batch_id="b1")
+
+	assert outcome.inserted == 50
+	tx_exit_index = gateway.order.index("tx_exit")
+	emit_indices = [i for i, marker in enumerate(gateway.order) if marker == "emit"]
+	assert emit_indices, "expected at least one event emitted"
+	assert all(i > tx_exit_index for i in emit_indices)
+
+
+def test_scope_reject_emits_without_opening_data_transaction() -> None:
+	"""FLO-100: a wholesale scope rejection performs no persistence, so it emits
+	its reject event without opening (and holding) a data transaction/lock."""
+	gateway = _OrderRecordingGateway()
+	service = BulkAttendanceService(gateway)
+
+	mixed = _items(5, client_req_prefix="b2")
+	mixed[0] = AttendanceItem(
+		event="gathering-1",
+		attendee_ref="intruder",
+		branch="branch-b",
+		client_req_id="b2:intruder",
+	)
+	outcome = service.submit(mixed, SCOPE_A, batch_id="b2")
+
+	assert outcome.accepted is False
+	assert "tx_enter" not in gateway.order
+	assert gateway.order.count("emit") == 1
+
+
+def test_failed_data_write_rolls_back_and_does_not_emit() -> None:
+	"""FLO-100: a persistence failure rolls the transaction back and emits no
+	success event — the idempotent retry (handled by the queue job) re-runs it."""
+
+	class _FailOnInsert(_OrderRecordingGateway):
+		def bulk_insert(self, items):  # type: ignore[no-untyped-def]
+			raise RuntimeError("simulated insert failure")
+
+	gateway = _FailOnInsert()
+	service = BulkAttendanceService(gateway)
+
+	with pytest.raises(RuntimeError):
+		service.submit(_items(5), SCOPE_A, batch_id="b-fail")
+
+	# The transaction still closed (rolled back via the gateway), but no event
+	# was emitted because the write never committed.
+	assert "tx_exit" in gateway.order
+	assert "emit" not in gateway.order
 
 
 # ---------------------------------------------------------------------------- #

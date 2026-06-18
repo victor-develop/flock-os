@@ -143,7 +143,16 @@ def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 		service = BulkAttendanceService(FrappeBulkAttendanceGateway())
 		outcome = service.submit(items, scope, batch_id)
 	except Exception:
-		# Unique-index backstop / transient DB error: idempotent retry is safe.
+		# Surface the real exception before the idempotent retry (FLO-100). The
+		# prior bare ``except: _deadletter_or_retry`` swallowed the cause, so the
+		# 200-wps concurrency failure (InnoDB lock-wait on the shared summary
+		# row) was invisible without instrumentation. ``log_error`` takes
+		# ``message=`` (NOT ``method=``/``error=``); the full traceback lands in
+		# the Error Log ``error`` field so the live bench can read the class.
+		frappe.log_error(
+			title=f"flock_os.attendance batch persistence failed: {batch_id}",
+			message=frappe.utils.get_traceback(),
+		)
 		_deadletter_or_retry(payload)
 		return
 
