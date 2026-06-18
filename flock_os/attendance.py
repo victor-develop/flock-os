@@ -188,7 +188,7 @@ def _resolve_caller_branch_scope() -> AttendanceScope:
 	bulk reporting is served by the native permission model per-item and is not
 	the 15k-scale hot path, so it is rejected here with a clear message.
 	"""
-	allowed = frappe.get_user_permissions().get("Flock Branch", [])
+	allowed = frappe.permissions.get_user_permissions(frappe.session.user).get("Flock Branch", [])
 	branches = {perm.get("doc") for perm in allowed if perm.get("doc")}
 	if len(branches) == 1:
 		return AttendanceScope(branch=next(iter(branches)))
