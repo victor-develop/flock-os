@@ -51,24 +51,58 @@ else
 	echo "[2/4] FAIL"; fail=1
 fi
 
-echo "==> [3/4] pytest flock_os/tests/ (no cache, deterministic)"
-if pytest flock_os/tests/ -p no:cacheprovider -q; then
+echo "==> [3/4] pytest — foundation unit tests (TRACKED files only, no cache)"
+# Parity with CI: actions/checkout only ever sees committed files, so CI's
+# pytest can never trip on an untracked WIP test. The local gate must match, or
+# a single in-flight slice's untracked test (which often imports a module that
+# does not exist yet) aborts the WHOLE suite's collection and blocks every
+# other slice. The foundation gate therefore runs only git-tracked test files;
+# a slice's tests enter the gate when their owner commits them green
+# (Architect directive: no forward-looking tests in the shared gate until their
+# implementation imports and passes). Stale-cache-proofed (-p no:cacheprovider).
+if git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest -p no:cacheprovider -q; then
 	echo "[3/4] OK"
 else
 	echo "[3/4] FAIL"; fail=1
 fi
 
-echo "==> [4/4] coverage gate (branch-coverage ratchet, pure domain logic)"
-# pytest-cov reads [tool.coverage.*] from pyproject.toml. The gate fails when
-# scoped branch coverage drops below `fail_under`. The bench-integration
-# surface is omitted via config so the floor measures only the project-testable
-# logic this gate is the authority on.
-if pytest flock_os/tests/ -p no:cacheprovider -q \
-	--cov=flock_os --cov-branch --cov-report=term-missing; then
+echo "==> [4/4] coverage gate (branch-coverage ratchet, TRACKED source only)"
+# CI parity: actions/checkout only ever has tracked files, so CI's coverage
+# never measures an untracked in-flight module (e.g. notifications.py) at 0%.
+# Locally the working tree carries other slices' untracked WIP source; left in,
+# it trips the ratchet with no foundation regression. So this run omits every
+# untracked .py under flock_os/ in addition to the bench-only surface. The
+# bench-only entries below mirror [tool.coverage.run] omit in pyproject.toml
+# (single source of truth there) — keep in sync if that list changes.
+COVRC="$(mktemp -t flock_covrc.XXXXXX)"
+{
+	echo "[run]"
+	echo "source = flock_os"
+	echo "branch = True"
+	echo "omit ="
+	printf '\t%s\n' \
+		"flock_os/flock_os/doctype/*" \
+		"flock_os/hooks.py" \
+		"flock_os/fixtures.py" \
+		"flock_os/patches/*" \
+		"flock_os/_smoke_runtime.py" \
+		"flock_os/utils/*"
+	# Dynamically omit untracked WIP source so the ratchet measures the
+	# committed foundation only (matches CI's checkout).
+	git ls-files --others --exclude-standard -z 'flock_os/*.py' | while IFS= read -r -d '' f; do
+		printf '\t%s\n' "$f"
+	done
+	echo "[report]"
+	echo "show_missing = True"
+	echo "fail_under = 80"
+} > "$COVRC"
+if git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest -p no:cacheprovider -q \
+	--cov=flock_os --cov-config="$COVRC" --cov-branch --cov-report=term-missing; then
 	echo "[4/4] OK"
 else
 	echo "[4/4] FAIL"; fail=1
 fi
+rm -f "$COVRC"
 
 echo "------------------------"
 if [[ $fail -eq 0 ]]; then

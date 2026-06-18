@@ -46,5 +46,8 @@ jobs:
 
       # Coverage ratchet over the project-testable pure domain logic
       # ([tool.coverage.*] in pyproject.toml; bench-integration surface omitted).
+      # Run only git-tracked test files — mirrors scripts/qa-gate.sh so "green
+      # here == green in CI" both ways and keeps in-flight untracked WIP tests
+      # out of the foundation gate (Architect directive, FLO-21).
       - name: Unit tests + coverage gate
-        run: pytest --cov=flock_os --cov-branch --cov-report=term-missing
+        run: git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest --cov=flock_os --cov-branch --cov-report=term-missing
