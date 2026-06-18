@@ -64,13 +64,21 @@ else
   echo "    bench already initialized at $BENCH_DIR — skipping."
 fi
 
-echo "==> [4/6] Installing flock_os app from $REPO_ROOT"
-if [ ! -e "$BENCH_DIR/apps/flock_os" ]; then
+echo "==> [4/6] Installing flock_os app from $REPO_ROOT (live-linked)"
+# Register the app via get-app (writes sites/apps.txt, runs install hooks),
+# then swap the cloned copy for a symlink to the repo so edits here are LIVE in
+# the running bench — no re-get needed on every change.
+APP_LINK="$BENCH_DIR/apps/flock_os"
+if [ ! -e "$APP_LINK" ]; then
   (cd "$BENCH_DIR" && command bench get-app "$REPO_ROOT")
-else
-  echo "    flock_os already linked at $BENCH_DIR/apps/flock_os — updating."
-  (cd "$BENCH_DIR" && command bench update --pull --patch --no-backup) || true
 fi
+if [ -d "$APP_LINK" ] && [ ! -L "$APP_LINK" ]; then
+  rm -rf "$APP_LINK"
+fi
+if [ ! -L "$APP_LINK" ]; then
+  ln -s "$REPO_ROOT" "$APP_LINK"
+fi
+"$BENCH_DIR/env/bin/python" -m pip install -q -e "$REPO_ROOT"
 
 echo "==> [5/6] Creating site $SITE_NAME (with flock_os) if missing"
 NEW_SITE_ARGS=(--db-root-username frappe_root --db-root-password "$MARIADB_ROOT_PASSWORD")
@@ -92,8 +100,8 @@ else
 fi
 
 echo
-echo "==> Done. Next:"
-echo "    cd $BENCH_DIR"
-echo "    bench --site $SITE_NAME serve   # start dev server on :8000"
-echo "    bench --site $SITE_NAME execute 'flock_os.utils.bench_helper.version'  # sanity"
-echo "    bench --site $SITE_NAME run-tests --app flock_os   # Frappe integration tests"
+echo "==> Done. Next (from $BENCH_DIR):"
+echo "    bench --site $SITE_NAME serve                              # dev server on :8000"
+echo "    bench --site $SITE_NAME execute 'frappe.get_installed_apps' # -> ['frappe','flock_os']"
+echo "    bench --site $SITE_NAME run-tests --app flock_os            # Frappe integration tests"
+echo "    cd $REPO_ROOT && pytest flock_os/tests                      # project-level unit tests (CI gate)"
