@@ -107,13 +107,17 @@ def bulk_submit(event: str, items: list[dict[str, Any]], batch_id: str) -> dict[
 		}
 
 
-def process_bulk_batch(payload: dict[str, Any]) -> None:
+def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 	"""RQ job: persist one batch + update aggregates + emit events (FLO-10 §3.3).
 
 	Idempotent by construction (per-item ``client_req_id`` dedupe), so RQ retries
 	are always safe. On failure after :data:`BULK_ATTENDANCE_MAX_RETRY`, the batch
 	is dead-lettered to Frappe's ``Error Log`` + a ``flock.attendance.import_failed``
 	event (FLO-76) -- no separate dead-letter queue, so there is no re-drain loop.
+
+	``at`` is the backoff-schedule timestamp forwarded by ``frappe.enqueue`` on
+	retry (RQ passes enqueue kwargs through to the job); the delay has already
+	elapsed by the time the worker runs the job, so it is ignored here.
 	"""
 	# Defensive guard: a stale dead-lettered job still sitting in a queue must not
 	# re-enter the write path -- just log + return (FLO-76 loop-safety).
@@ -138,8 +142,14 @@ def process_bulk_batch(payload: dict[str, Any]) -> None:
 	try:
 		service = BulkAttendanceService(FrappeBulkAttendanceGateway())
 		outcome = service.submit(items, scope, batch_id)
-	except Exception:
-		# Unique-index backstop / transient DB error: idempotent retry is safe.
+	except Exception as _diag_exc:
+		# FLO-53 DIAGNOSTIC (temporary): capture the swallowed initial exception.
+		frappe.log_error(
+			title=f"FLO53_DIAG batch={batch_id} attempt={payload.get('_attempt', 0)}",
+			reference_doctype="Flock Attendance Record",
+			method="flock_os.attendance.process_bulk_batch",
+			error=frappe.utils.get_traceback(),
+		)
 		_deadletter_or_retry(payload)
 		return
 
@@ -228,11 +238,16 @@ def _deadletter_or_retry(payload: dict[str, Any]) -> None:
 		_log_deadletter(payload, reason="max_retry_exceeded")
 		return
 	payload["_attempt"] = attempt
+	# Schedule the retry on the stock `long` queue with exponential backoff
+	# (FLO-10 §3.3). `at` is the absolute Unix timestamp to run at; RQ forwards
+	# enqueue kwargs to the job, so `process_bulk_batch` accepts (and ignores)
+	# `at` — by the time the worker runs the job the backoff has elapsed.
+	delay = with_exponential_backoff(attempt - 1)
 	frappe.enqueue(
 		"flock_os.attendance.process_bulk_batch",
 		queue=BULK_ATTENDANCE_JOB_QUEUE,
 		payload=payload,
-		at=_now_seconds() + with_exponential_backoff(attempt - 1),
+		at=_now_seconds() + int(delay),
 	)
 
 
