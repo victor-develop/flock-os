@@ -33,12 +33,17 @@ class _FakeFrappe:
 		self.session = types.SimpleNamespace(user="leader@flock.os")
 		self.permissions = _FakePermissions()
 		self.enqueue_calls: list[dict[str, Any]] = []
+		self.log_error_calls: list[dict[str, Any]] = []
 
 	def reset(self) -> None:
 		self.enqueue_calls.clear()
+		self.log_error_calls.clear()
 
 	def enqueue(self, method: str, **kwargs: Any) -> None:
 		self.enqueue_calls.append({"method": method, **kwargs})
+
+	def log_error(self, *, title: str, message: str = "") -> None:
+		self.log_error_calls.append({"title": title, "message": message})
 
 	def throw(self, msg: str, **_kwargs: Any) -> None:
 		raise ValueError(msg)
@@ -53,7 +58,10 @@ _FRAPPE_STUB = _FakeFrappe()
 sys.modules.setdefault("frappe", _FRAPPE_STUB)
 
 from flock_os import attendance  # noqa: E402
-from flock_os.reporting import BULK_ATTENDANCE_JOB_QUEUE  # noqa: E402
+from flock_os.reporting import (  # noqa: E402
+	BULK_ATTENDANCE_JOB_QUEUE,
+	BULK_ATTENDANCE_MAX_RETRY,
+)
 
 _FRAPPE_STOCK_QUEUES = {"short", "default", "long"}
 
@@ -88,3 +96,64 @@ def test_bulk_submit_enqueues_on_standard_queue(fake_frappe, monkeypatch) -> Non
 	assert call["method"] == "flock_os.attendance.process_bulk_batch"
 	assert call["queue"] == BULK_ATTENDANCE_JOB_QUEUE == "long"
 	assert call["payload"]["batch_id"] == "batch-1"
+
+
+# --------------------------------------------------------------------------- #
+# Dead-letter / retry path (FLO-76: Error Log, no separate re-drained queue)
+# --------------------------------------------------------------------------- #
+
+
+def _payload(*, attempt: int = 0, batch_id: str = "batch-x") -> dict[str, Any]:
+	return {
+		"event": "gathering-smoke",
+		"batch_id": batch_id,
+		"scope_branch": "branch-smoke",
+		"items": [
+			{
+				"event": "gathering-smoke",
+				"attendee_ref": "m-0",
+				"branch": "branch-smoke",
+				"status": "Present",
+				"source": "bulk",
+				"client_req_id": "b:m-0",
+			}
+		],
+		"_attempt": attempt,
+	}
+
+
+def test_deadletter_retry_reenqueues_on_standard_queue(fake_frappe) -> None:
+	"""A retryable failure re-enqueues on the stock long queue with backoff."""
+	attendance._deadletter_or_retry(_payload(attempt=0))
+	assert len(fake_frappe.enqueue_calls) == 1
+	call = fake_frappe.enqueue_calls[0]
+	assert call["queue"] == BULK_ATTENDANCE_JOB_QUEUE == "long"
+	assert call["payload"]["_attempt"] == 1
+	assert call["at"] > 0
+	assert fake_frappe.log_error_calls == []
+
+
+def test_deadletter_max_retry_logs_and_emits_without_reenqueue(fake_frappe) -> None:
+	"""Past max retries: Error Log + failure event, no re-enqueue (no re-drain loop)."""
+	from flock_os import events as flock_events
+	from flock_os.events import NullEventSink, RecordingEventSink, install_sink
+
+	sink = RecordingEventSink()
+	install_sink(sink)
+	try:
+		attendance._deadletter_or_retry(_payload(attempt=BULK_ATTENDANCE_MAX_RETRY))
+	finally:
+		install_sink(NullEventSink())
+
+	# No re-enqueue on dead-letter (the old separate-queue re-enqueue could loop).
+	assert fake_frappe.enqueue_calls == []
+	assert len(fake_frappe.log_error_calls) == 1
+	assert "dead-letter" in fake_frappe.log_error_calls[0]["title"]
+	assert any(pub.name == flock_events.ATTENDANCE_IMPORT_FAILED for pub, _rt, _room in sink.published)
+
+
+def test_process_bulk_batch_deadlettered_guard_short_circuits(fake_frappe) -> None:
+	"""A stale dead-lettered job drained from a queue must not re-enter the write path."""
+	attendance.process_bulk_batch({**_payload(), "_deadlettered": True})
+	assert fake_frappe.enqueue_calls == []
+	assert len(fake_frappe.log_error_calls) == 1
