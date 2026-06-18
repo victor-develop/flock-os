@@ -47,15 +47,26 @@ tracked_tests() {
 	done
 }
 
-echo "==> [1/4] ruff check (--no-cache)"
-if ruff check . --no-cache; then
+# All tracked Python sources — CI parity. actions/checkout only ever has
+# committed files, so CI's `ruff` never lints an untracked in-flight scratch
+# file. Running `ruff ... .` locally instead lints every untracked WIP file in
+# the shared tree and intermittently reds the gate on code CI will never see
+# (a transient doctype scratch file already produced a false format-red that
+# mis-diagnosed fixtures.py — FLO-89). Same parity gap FLO-21 closed for the
+# pytest/coverage steps below. (FLO-89)
+tracked_py() {
+	git ls-files -z '*.py'
+}
+
+echo "==> [1/4] ruff check (--no-cache, TRACKED files only — CI parity)"
+if tracked_py | xargs -0 ruff check --no-cache; then
 	echo "[1/4] OK"
 else
 	echo "[1/4] FAIL"; fail=1
 fi
 
-echo "==> [2/4] ruff format --check"
-if ruff format --check .; then
+echo "==> [2/4] ruff format --check (TRACKED files only — CI parity)"
+if tracked_py | xargs -0 ruff format --check; then
 	echo "[2/4] OK"
 else
 	echo "[2/4] FAIL"; fail=1
