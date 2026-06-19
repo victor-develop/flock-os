@@ -158,6 +158,36 @@ def test_collector_snapshot_as_dict_is_flat_scrape_shaped():
 
 
 # --------------------------------------------------------------------------- #
+# Prometheus exposition — the §8 dashboard scrape surface (FLO-53).
+# --------------------------------------------------------------------------- #
+def test_snapshot_as_prometheus_emits_all_d3_d5_signals_and_histogram():
+	redis = RedisMetrics(pubsub_messages_per_sec=1234.0, connected_clients=42, rq_depth=7)
+	mariadb = MariaDBMetrics(slow_query_count=3, connections=9, buffer_pool_hit_ratio=0.97)
+	collector = TelemetryCollector(
+		redis_source=StaticRedisMetricsSource(redis),
+		mariadb_source=StaticMariaDBMetricsSource(mariadb),
+	)
+	collector.observe_bulk_latency(0.02)
+	text = collector.snapshot().as_prometheus()
+
+	# Every D3/D5 signal is a Prometheus gauge/counter line.
+	for needle in (
+		f"flock_redis_connected_clients {redis.connected_clients}",
+		f"flock_redis_pubsub_messages_per_sec {redis.pubsub_messages_per_sec}",
+		f"flock_redis_rq_depth {redis.rq_depth}",
+		f"flock_mariadb_slow_queries_total {mariadb.slow_query_count}",
+		f"flock_mariadb_connections {mariadb.connections}",
+		f"flock_mariadb_buffer_pool_hit_ratio {mariadb.buffer_pool_hit_ratio}",
+	):
+		assert needle in text, f"missing Prometheus line: {needle}"
+	# The bulk-latency histogram is cumulative (Prometheus shape): one
+	# _bucket{le=...} per bucket bound incl. +Inf, plus _count + _sum.
+	assert 'flock_bulk_latency_seconds_bucket{le="+Inf"}' in text
+	assert "flock_bulk_latency_seconds_count 1" in text
+	assert text.endswith("\n")
+
+
+# --------------------------------------------------------------------------- #
 # Transport hook — measure_bulk_latency records exactly once per call.
 # --------------------------------------------------------------------------- #
 def test_measure_bulk_latency_records_exactly_one_observation():

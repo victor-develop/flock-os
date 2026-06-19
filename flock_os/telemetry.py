@@ -397,6 +397,46 @@ class TelemetrySnapshot:
 			},
 		}
 
+	def as_prometheus(self) -> str:
+		"""Prometheus text exposition (FLO-53 dashboards — the scrape surface).
+
+		One gauge per D3/D5 signal + a cumulative ``flock_bulk_latency_seconds``
+		histogram (``_bucket{le=...}`` + ``_count`` + ``_sum``), so a Prometheus
+		scrape of :func:`flock_os.telemetry_scrape.scrape` feeds a Grafana
+		dashboard directly. Pure (no Frappe) so the no-bench unit gate can pin it.
+		"""
+		lines: list[str] = [
+			"# HELP flock_redis_connected_clients Redis connected clients (D3).",
+			"# TYPE flock_redis_connected_clients gauge",
+			f"flock_redis_connected_clients {self.redis.connected_clients}",
+			"# HELP flock_redis_pubsub_messages_per_sec Redis pub/sub throughput (D3).",
+			"# TYPE flock_redis_pubsub_messages_per_sec gauge",
+			f"flock_redis_pubsub_messages_per_sec {self.redis.pubsub_messages_per_sec}",
+			"# HELP flock_redis_rq_depth RQ queue depth (§8 drain budget).",
+			"# TYPE flock_redis_rq_depth gauge",
+			f"flock_redis_rq_depth {self.redis.rq_depth}",
+			"# HELP flock_mariadb_slow_queries_total MariaDB slow-query count (D5).",
+			"# TYPE flock_mariadb_slow_queries_total counter",
+			f"flock_mariadb_slow_queries_total {self.mariadb.slow_query_count}",
+			"# HELP flock_mariadb_connections MariaDB live connections (D5).",
+			"# TYPE flock_mariadb_connections gauge",
+			f"flock_mariadb_connections {self.mariadb.connections}",
+			"# HELP flock_mariadb_buffer_pool_hit_ratio InnoDB buffer-pool hit ratio (D5).",
+			"# TYPE flock_mariadb_buffer_pool_hit_ratio gauge",
+			f"flock_mariadb_buffer_pool_hit_ratio {self.mariadb.buffer_pool_hit_ratio}",
+		]
+		h = self.bulk_latency
+		lines += [
+			"# HELP flock_bulk_latency_seconds Bulk-attendance receipt latency (§8 p95 gate).",
+			"# TYPE flock_bulk_latency_seconds histogram",
+		]
+		for le, cum in zip(h.buckets, h.bucket_counts, strict=True):
+			le_label = "+Inf" if le == float("inf") else repr(le)
+			lines.append(f'flock_bulk_latency_seconds_bucket{{le="{le_label}"}} {cum}')
+		lines.append(f"flock_bulk_latency_seconds_count {h.count}")
+		lines.append(f"flock_bulk_latency_seconds_sum {h.sum_seconds}")
+		return "\n".join(lines) + "\n"
+
 
 @dataclass
 class TelemetryCollector:

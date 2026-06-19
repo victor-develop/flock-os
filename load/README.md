@@ -26,6 +26,14 @@ is gated on.
   app installed + migrated, the bulk endpoint served (`/api/method/
   flock_os.attendance.bulk_submit`), and the Socket.IO server up. See
   **Runtime fixtures** below — the smoke is inert without this.
+- **The flock_os room-join handler wired into the bench** (FLO-107). Frappe v15's
+  realtime server has no generic `join` event and no per-app handler loader, so a
+  one-time DevOps step registers flock_os's `join` handler:
+  ```bash
+  scripts/dev/wire-socketio-handler.sh          # idempotent; re-run after bench update
+  bench restart                                  # reload the realtime node server
+  ```
+  Runbook + why: `docs/development/ws-broadcast-delivery.md`.
 - **Node** ≥ 20 only for the shard-parity check (`node --test load/lib/*.test.mjs`),
   which runs with **no runtime** and keeps the JS shard math byte-identical to
   Python (`flock_os/realtime.py`).
@@ -42,6 +50,16 @@ Permission** resolves the batch scope (`flock_os.attendance._resolve_caller_bran
    Summary` aggregate from FLO-17 migrated.
 4. Redis (cache + queue + socketio) + RQ worker on the `flock_attendance` queue.
 
+Items 1–2 are seeded idempotently by one command (after the flock_os app is
+installed + migrated — these are runtime smoke rows, not migrate-seeded catalog
+fixtures):
+
+```bash
+scripts/dev/seed-smoke-fixtures.sh
+# or: bench --site flock_os.localhost execute flock_os.utils.smoke_fixtures.execute
+# seeds: org-smoke -> branch-smoke -> group-smoke -> gathering-smoke + scoped leader
+```
+
 Override any of these via env (`EVENT_ID`, `BRANCH_ID`, `FLOCK_USER`,
 `FLOCK_PASSWORD`, `BASE_URL`, `WS_BASE_URL`) — see `config.js`.
 
@@ -57,6 +75,11 @@ k6 run -e WRITES_PER_SEC=20 -e DURATION_SEC=30 -e BATCH_ITEMS=10 \
 k6 run -e WS_VUS=200 -e WS_DURATION_SEC=30 ws_event_room.js
 ```
 
+The WS smoke authenticates (one login → shared `sid`, presented as a cookie to
+the per-site realtime namespace) and connects to `/<site>` on the Socket.IO port
+(`9000` on this bench — `8000` 404s `/socket.io`). Drive the broadcast producer
+below while the clients are up to exercise `flock_ws_broadcast_latency`.
+
 ## Full acceptance bar (Phase 6 gate)
 
 ```bash
@@ -66,6 +89,14 @@ k6 run -e WRITES_PER_SEC=200 -e DURATION_SEC=150 bulk_attendance.js
 # 2. While the write burst runs, drive a broadcast producer (see WS below) and:
 k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120 ws_event_room.js
 ```
+
+> **15k WS connect-establishment needs the scaled socketio tier (FLO-121).** The
+> full 15k **connect** bar (not the broadcast/latency bar, which is already green
+> single-process) hits a single-process node socketio connection-setup wall
+> (~27 s connect p95, <1 % established). Bring the scaled tier up first:
+> `scripts/dev/scale-socketio.sh start` (N node processes behind a TCP round-robin
+> LB, wired with `@socket.io/redis-adapter`). Runbook:
+> `docs/development/ws-broadcast-delivery.md` -> Scaling the socketio tier.
 
 The k6 `thresholds` in each script encode the §8 targets — a non-zero exit
 means the gate **failed**. In CI this runs from

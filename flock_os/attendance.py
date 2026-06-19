@@ -144,21 +144,11 @@ def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 	scope = AttendanceScope(branch=payload["scope_branch"])
 	batch_id = payload["batch_id"]
 
-	try:
-		service = BulkAttendanceService(FrappeBulkAttendanceGateway())
-		outcome = service.submit(items, scope, batch_id)
-	except Exception:
-		# Surface the real exception before the idempotent retry (FLO-100). The
-		# prior bare ``except: _deadletter_or_retry`` swallowed the cause, so the
-		# 200-wps concurrency failure (InnoDB lock-wait on the shared summary
-		# row) was invisible without instrumentation. ``log_error`` takes
-		# ``message=`` (NOT ``method=``/``error=``); the full traceback lands in
-		# the Error Log ``error`` field so the live bench can read the class.
-		frappe.log_error(
-			title=f"flock_os.attendance batch persistence failed: {batch_id}",
-			message=frappe.utils.get_traceback(),
-		)
-		_deadletter_or_retry(payload)
+	outcome = _submit_with_in_place_retry(items, scope, batch_id, payload)
+	if outcome is None:
+		# Transient errors exhausted the in-place retries (or a non-retryable
+		# error surfaced): the batch has already been logged + re-enqueued/
+		# dead-lettered by ``_submit_with_in_place_retry`` -- nothing more to do.
 		return
 
 	from flock_os.events import emit as emit_event
@@ -186,6 +176,88 @@ def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 # ---------------------------------------------------------------------------- #
 # Internals
 # ---------------------------------------------------------------------------- #
+def _submit_with_in_place_retry(items, scope, batch_id, payload):  # type: ignore[no-untyped-def]
+	"""Run ``service.submit``, retrying transient concurrency errors in-place (FLO-100).
+
+	MariaDB raises error 1020 / ``QueryDeadlockError`` on concurrent ``UPDATE``s
+	of the single shared ``Event Attendance Summary`` row (the contended
+	``total`` counter) even under READ COMMITTED, and a lock-wait timeout if
+	multiple batches pile on it. Those are transient; the batch is idempotent
+	(``filter_unseen`` dedupes already-written rows), so retrying the whole
+	``submit`` is safe. Retrying in-place (with a tiny jittered backoff to break
+	the collision) keeps the §8 queue drain fast — batches succeed once the
+	contended X-lock frees — instead of flooding the slow exponential-backoff
+	re-enqueue of :func:`_deadletter_or_retry`, which backs the queue up past the
+	60s budget.
+
+	Returns the :class:`BulkBatchOutcome` on success, or ``None`` once the
+	in-place attempts are exhausted or a non-retryable error surfaces (in both
+	cases the batch is logged + re-enqueued/dead-lettered here).
+	"""
+	from flock_os.reporting import BULK_ATTENDANCE_IN_PLACE_ATTEMPTS
+
+	retryable = _retryable_persistence_errors()
+	last_exc: Exception | None = None
+	for attempt in range(BULK_ATTENDANCE_IN_PLACE_ATTEMPTS):
+		try:
+			service = BulkAttendanceService(FrappeBulkAttendanceGateway())
+			return service.submit(items, scope, batch_id)
+		except retryable as exc:  # transient concurrency error → in-place retry
+			last_exc = exc
+			_sleep_in_place_backoff(attempt)
+			continue
+		except Exception:
+			# Non-retryable: surface the real cause (FLO-100 — the prior bare
+			# ``except`` swallowed it), then the idempotent backoff re-enqueue.
+			frappe.log_error(
+				title=f"flock_os.attendance batch persistence failed: {batch_id}",
+				message=frappe.utils.get_traceback(),
+			)
+			_deadletter_or_retry(payload)
+			return None
+
+	# Exhausted in-place retries on transient errors: surface + slow backoff.
+	detail = f"{last_exc!r}" if last_exc else "unknown"
+	frappe.log_error(
+		title=(
+			f"flock_os.attendance batch persistence failed after "
+			f"{BULK_ATTENDANCE_IN_PLACE_ATTEMPTS} retries: {batch_id}"
+		),
+		message=f"{detail}\n{frappe.utils.get_traceback()}",
+	)
+	_deadletter_or_retry(payload)
+	return None
+
+
+def _retryable_persistence_errors() -> tuple[type[Exception], ...]:
+	"""The transient DB concurrency errors worth an in-place retry (FLO-100).
+
+	MariaDB 1020 surfaces as ``frappe.QueryDeadlockError``; a lock-wait timeout
+	as ``frappe.QueryTimeoutError``. Resolved lazily so this module stays
+	import-clean without a Frappe site (unit tests stub ``frappe``). Returns an
+	empty tuple if the classes are unavailable (e.g. the test fake), in which
+	case nothing is retried in-place and every failure falls straight through to
+	the logged backoff path — never a broad ``Exception`` catch.
+	"""
+	exceptions_mod = getattr(frappe, "exceptions", None)
+	retryable: list[type[Exception]] = []
+	for name in ("QueryDeadlockError", "QueryTimeoutError"):
+		cls = getattr(frappe, name, None)
+		if cls is None and exceptions_mod is not None:
+			cls = getattr(exceptions_mod, name, None)
+		if isinstance(cls, type) and issubclass(cls, Exception):
+			retryable.append(cls)
+	return tuple(retryable)
+
+
+def _sleep_in_place_backoff(attempt: int) -> None:
+	"""Tiny jittered backoff between in-place retries to break the row collision."""
+	import random
+	import time
+
+	time.sleep(min(0.05, 0.005 * (attempt + 1)) * (0.5 + random.random()))
+
+
 def _item_from_payload(event: str, branch: str, raw: dict[str, Any], index: int) -> AttendanceItem:
 	attendee_ref = raw.get("attendee_ref")
 	if not attendee_ref:

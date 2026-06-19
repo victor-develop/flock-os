@@ -284,6 +284,10 @@ class _OrderRecordingGateway:
 	def bulk_insert(self, items):  # type: ignore[no-untyped-def]
 		return self._inner.bulk_insert(items)
 
+	def seed_aggregate(self, scope, events):  # type: ignore[no-untyped-def]
+		self.order.append("seed")
+		return self._inner.seed_aggregate(scope, events)
+
 	def increment_aggregate(self, scope, event, delta):  # type: ignore[no-untyped-def]
 		return self._inner.increment_aggregate(scope, event, delta)
 
@@ -313,6 +317,22 @@ def test_data_transaction_commits_before_events_emit() -> None:
 	emit_indices = [i for i, marker in enumerate(gateway.order) if marker == "emit"]
 	assert emit_indices, "expected at least one event emitted"
 	assert all(i > tx_exit_index for i in emit_indices)
+
+
+def test_summary_seed_runs_before_the_write_transaction() -> None:
+	"""FLO-100: the summary seed (INSERT IGNORE) runs in its own transaction
+	*before* the write transaction opens, so the increment is the only summary
+	operation in the write transaction (no read-then-modify of the shared row →
+	no MariaDB 1020)."""
+	gateway = _OrderRecordingGateway()
+	service = BulkAttendanceService(gateway)
+
+	service.submit(_items(10), SCOPE_A, batch_id="b-seed")
+
+	seed_index = gateway.order.index("seed")
+	tx_enter_index = gateway.order.index("tx_enter")
+	# Seed happens before the write transaction body opens.
+	assert seed_index < tx_enter_index
 
 
 def test_scope_reject_emits_without_opening_data_transaction() -> None:
@@ -353,6 +373,97 @@ def test_failed_data_write_rolls_back_and_does_not_emit() -> None:
 	# was emitted because the write never committed.
 	assert "tx_exit" in gateway.order
 	assert "emit" not in gateway.order
+
+
+# ---------------------------------------------------------------------------- #
+# Concurrent summary increment: avoid MariaDB 1020 (FLO-100)
+# ---------------------------------------------------------------------------- #
+class _RecordingFrappeDB:
+	"""Captures every ``sql`` call issued by the Frappe gateway (query + values)."""
+
+	def __init__(self) -> None:
+		self.calls: list[tuple[str, object]] = []
+		self.commits = 0
+		self.rollbacks = 0
+
+	def sql(self, query: str, values: object = None, **_kwargs: object) -> None:  # noqa: ARG002
+		self.calls.append((query, values))
+
+	def commit(self) -> None:  # noqa: PLR6301
+		self.commits += 1
+
+	def rollback(self) -> None:  # noqa: PLR6301
+		self.rollbacks += 1
+
+
+class _RecordingFrappe:
+	def __init__(self) -> None:
+		self.db = _RecordingFrappeDB()
+
+
+def test_bulk_write_transaction_runs_at_read_committed(monkeypatch) -> None:
+	"""FLO-100: the persistence transaction runs at READ COMMITTED so the
+	contended summary UPDATE never trips MariaDB 1020 ("record has changed since
+	last read" under REPEATABLE READ's stale snapshot), and restores the default
+	isolation afterward so the worker's other jobs are unaffected."""
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _RecordingFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	with FrappeBulkAttendanceGateway().transaction():
+		pass
+
+	sqls = [query.upper() for query, _ in fake.db.calls]
+	rc = [i for i, q in enumerate(sqls) if "READ COMMITTED" in q]
+	rr = [i for i, q in enumerate(sqls) if "REPEATABLE READ" in q]
+	assert rc, "expected SET SESSION ... READ COMMITTED"
+	assert rr, "expected default isolation restored to REPEATABLE READ"
+	assert rc[0] < rr[0], "READ COMMITTED set before the body, REPEATABLE READ restored after"
+
+
+def test_increment_aggregate_is_a_single_update_on_a_seeded_row(monkeypatch) -> None:
+	"""FLO-100: the summary increment must be ONE plain ``UPDATE total = total + n``.
+
+	Any read-then-modify of the shared ``(branch, event)`` summary row within a
+	transaction (``INSERT ... ON DUPLICATE KEY UPDATE``, or ``INSERT IGNORE``
+	followed by ``UPDATE`` in the same transaction) races under the 200-wps bar
+	and raises MariaDB 1020 ("record has changed since last read"). The seed runs
+	in its own transaction (see :meth:`seed_aggregate`), so the increment is a
+	lone UPDATE with no prior read of the row in its transaction.
+	"""
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _RecordingFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	FrappeBulkAttendanceGateway().increment_aggregate(SCOPE_A, "gathering-1", 50)
+
+	calls = fake.db.calls
+	# Exactly one statement, and it is the atomic UPDATE (no INSERT, no IODKU).
+	assert len(calls) == 1
+	query = calls[0][0].upper().replace("\n", " ")
+	assert "UPDATE" in query
+	assert "TOTAL = TOTAL +" in query
+	assert "INSERT" not in query
+	assert "ON DUPLICATE KEY UPDATE" not in query
+
+
+def test_seed_aggregate_inserts_and_commits_in_its_own_transaction(monkeypatch) -> None:
+	"""FLO-100: the seed is an INSERT IGNORE committed immediately, separated
+	from the write transaction so the increment UPDATE never shares a transaction
+	with a read of the summary row."""
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _RecordingFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	FrappeBulkAttendanceGateway().seed_aggregate(SCOPE_A, ["g-1", "g-2"])
+
+	blob = " ".join(query for query, _ in fake.db.calls).upper().replace("\n", " ")
+	assert "INSERT IGNORE" in blob
+	assert "ON DUPLICATE KEY UPDATE" not in blob
+	assert fake.db.commits == 1, "seed must commit in its own transaction"
 
 
 # ---------------------------------------------------------------------------- #

@@ -28,9 +28,43 @@ const CRC_TABLE = (() => {
 	return table;
 })();
 
-// utf-8 encode (TextEncoder is available in both Node and k6).
+// utf-8 encode. Node exposes `TextEncoder` globally, but k6's (v2) pure-JS
+// runtime does NOT — `new TextEncoder()` throws ReferenceError there and aborts
+// every ws_event_room.js iteration before ws.connect (FLO-104). Feature-detect
+// and fall back to a manual encoder that stays byte-identical to Python's
+// `str.encode("utf-8")` (golden-pinned by shards.test.mjs / test_shard_parity.py).
+const _textEncoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+
+// Manual UTF-8 encoder (no globals). Exported so shards.test.mjs can pin it
+// byte-for-byte against TextEncoder even under Node, guarding the k6 path that
+// node tests otherwise can't reach.
+export function utf8Fallback(str) {
+	const out = [];
+	for (let i = 0; i < str.length; i++) {
+		let c = str.charCodeAt(i);
+		if (c < 0x80) {
+			out.push(c);
+		} else if (c < 0x800) {
+			out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+		} else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+			// surrogate pair -> U+10000..U+10FFFF
+			const c2 = str.charCodeAt(++i);
+			const cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+			out.push(
+				0xf0 | (cp >> 18),
+				0x80 | ((cp >> 12) & 0x3f),
+				0x80 | ((cp >> 6) & 0x3f),
+				0x80 | (cp & 0x3f),
+			);
+		} else {
+			out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+		}
+	}
+	return out;
+}
+
 function utf8(str) {
-	return new TextEncoder().encode(str);
+	return _textEncoder ? _textEncoder.encode(str) : utf8Fallback(str);
 }
 
 // Unsigned CRC-32 of a string, identical to Python's `zlib.crc32(s.encode()) >>> 0`.

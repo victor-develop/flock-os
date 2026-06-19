@@ -31,7 +31,7 @@ clones. One shared `.git` object database, N independent working trees.
 # from anywhere inside the repo
 scripts/dev/issue-worktree.sh create FLO-54      # 1. provision an isolated slice tree
 cd "$(scripts/dev/issue-worktree.sh path FLO-54)"# 2. work there (edit, commit on slice/flo-54)
-scripts/dev/issue-worktree.sh gate   FLO-54      # 3. run the merge gate in THAT tree only
+scripts/dev/issue-worktree.sh gate   FLO-54      # 3. run the merge gate in THAT tree only (after `git add`-ing new files — see step 3: gate scans tracked files only)
 scripts/dev/issue-worktree.sh merge  FLO-54      # 4. gate-green -> merge slice into master
 scripts/dev/issue-worktree.sh remove FLO-54      #    teardown when done
 ```
@@ -77,6 +77,24 @@ This runs `scripts/qa-gate.sh` **inside the slice's worktree**. Because the gate
 resolves its root via its own script path (`BASH_SOURCE`), it always measures
 the tree it lives in — your slice, not the shared `master`. The `-m "not phase2"`
 foundation scoping from [FLO-86](/FLO/issues/FLO-86) applies per-tree too.
+
+> **Gate AFTER staging new files (tracked-files-only scoping,
+> [FLO-103](/FLO/issues/FLO-103)).** `scripts/qa-gate.sh` scans **tracked files
+> only** — `[1/4] ruff check` and `[2/4] ruff format` run over
+> `git ls-files '*.py'`, and `[3/4]`/`[4/4]` over
+> `git ls-files 'flock_os/tests/test_*.py'`. This is deliberate **CI parity**
+> (`actions/checkout` only ever has committed files, so CI's ruff/pytest never
+> see an in-flight scratch file). The trap: if a new module is still
+> **untracked** (`??` in `git status`) when you run the gate, the ruff steps
+> skip it entirely and you get a silent **false green** — the exact
+> [FLO-58](/FLO/issues/FLO-58) misread this runbook exists to prevent.
+>
+> **Do this instead:** `git add` (or commit) your new files **before** running
+> `scripts/dev/issue-worktree.sh gate`, then re-run after staging. If you see
+> `GATE: PASS` but `git status` still lists untracked `*.py`, your new code has
+> **not** actually been linted or formatted — stage it and gate again. The
+> `gate` step is only a trustworthy merge signal once the working tree has no
+> untracked `*.py` you intend to ship.
 
 > **Why the gate tests the right code:** `flock_os` is not pip-installed, so
 > `import flock_os` resolves via the process cwd. Pytest run from a worktree

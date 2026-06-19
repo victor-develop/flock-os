@@ -80,6 +80,20 @@ allows. See [FLO-76](/FLO/issues/FLO-76).
 BULK_ATTENDANCE_MAX_RETRY = 5
 """Max retries with exponential backoff before dead-lettering a batch."""
 
+BULK_ATTENDANCE_IN_PLACE_ATTEMPTS = 10
+"""In-place retries for transient concurrency errors before the slow backoff path.
+
+MariaDB raises error 1020 ("record has changed since last read") / deadlock on
+concurrent ``UPDATE``s of the single shared ``Event Attendance Summary`` row
+even under READ COMMITTED (FLO-100). Those errors are transient and the batch
+is idempotent (``filter_unseen`` dedupes), so the queue job retries the whole
+``service.submit`` in-place with a tiny jittered backoff. That keeps the
+§8 drain fast (batches succeed once the contended X-lock frees) instead of
+flooding the slow exponential-backoff re-enqueue path, which backs the queue
+up past the 60s budget. Only after these in-place attempts are exhausted does
+the batch fall through to ``_deadletter_or_retry``.
+"""
+
 # ---------------------------------------------------------------------------- #
 # Domain event names (ADR-0001 §5.3 / §5.4). The canonical catalog
 # (``flock_os.events``) is the single source of truth for event names; these
@@ -223,11 +237,28 @@ class BulkAttendanceGateway(Protocol):
 		"""
 		...
 
+	def seed_aggregate(self, scope: AttendanceScope, events: Iterable[str]) -> None:
+		"""Ensure summary rows exist for ``events`` (FLO-100).
+
+		The seed runs in its **own committed transaction**, separate from the
+		write transaction, so the increment is the *only* summary operation in
+		the write transaction. MariaDB raises error 1020 ("record has changed
+		since last read") whenever a transaction modifies a summary row it
+		already read in the same transaction and a concurrent batch committed in
+		between; keeping the seed (an ``INSERT IGNORE`` that reads the unique
+		index) out of the same transaction as the ``UPDATE`` removes the
+		read-then-modify pattern that triggers 1020 under 200-wps concurrency.
+		Idempotent — safe to call every batch.
+		"""
+		...
+
 	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
 		"""Atomically bump the ``Event Attendance Summary`` counter (FLO-10 §3.3).
 
-		Production uses ``UPDATE … SET count = count + n`` under ``FOR UPDATE`` or
-		``INSERT … ON DUPLICATE KEY UPDATE`` — never a scan-then-write.
+		Production uses a single ``UPDATE … SET total = total + n`` on a row the
+		caller already seeded via :meth:`seed_aggregate`. The increment must be
+		the *only* summary operation in its transaction (no prior read of the
+		row) — that is what avoids MariaDB 1020 under concurrency (FLO-100).
 		"""
 		...
 
@@ -282,6 +313,12 @@ class InMemoryBulkAttendanceGateway:
 			self._seen.add(item.idempotency_key)
 			self._unique.add(item.unique_key)
 		return len(items)
+
+	def seed_aggregate(self, scope: AttendanceScope, events: Iterable[str]) -> None:
+		# In-memory: counters are created on first increment, so seeding is a
+		# no-op. Implemented for protocol conformance with the Frappe adapter.
+		for event in events:
+			self._counters.setdefault((scope.branch, event), 0)
 
 	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
 		self._counters[(scope.branch, event)] = self._counters.get((scope.branch, event), 0) + delta
@@ -350,6 +387,17 @@ class BulkAttendanceService:
 			)
 
 		keys = [item.idempotency_key for item in items]
+
+		# Seed the summary rows for every event in the batch BEFORE the write
+		# transaction (FLO-100). The seed (INSERT IGNORE) runs in its own
+		# committed transaction, so inside the write transaction below the
+		# increment is the *only* summary operation — a single UPDATE with no
+		# prior read of the row. That breaks the read-then-modify pattern that
+		# makes MariaDB raise error 1020 ("record has changed since last read")
+		# on the shared (branch, event) row under 200-wps concurrency. Seeding is
+		# idempotent and over-broad (covers events that dedupe away), which is
+		# harmless.
+		self.gateway.seed_aggregate(scope, {item.event for item in items})
 
 		# 2 + 3. Per-item idempotency dedupe, batched write, and atomic aggregate
 		# update — all inside ONE tight committed transaction (FLO-100). The
@@ -446,26 +494,41 @@ class FrappeBulkAttendanceGateway:
 
 	@contextmanager
 	def transaction(self) -> Iterator[None]:
-		"""Commit the data-persistence unit immediately on exit (FLO-100).
+		"""Commit the persistence unit immediately, under READ COMMITTED (FLO-100).
 
-		Frappe runs a whole background job inside one transaction that only
-		commits at job end (``execute_job``). Without an explicit boundary here,
-		the ``increment_aggregate`` upsert's X-lock on the single shared
-		``Event Attendance Summary`` row is held across the subsequent Redis +
-		outbox event writes until that job-end commit — so every concurrent batch
-		serializes behind one lock and blows ``innodb_lock_wait_timeout``.
-		Committing the moment the data writes finish releases the lock before any
-		best-effort side effect; the trailing event emission runs in its own
-		transaction. Roll back on error so a failed batch leaves no half-written
-		state for its (idempotent) retry.
+		Fixes two concurrency hazards on the 200-wps bulk path. (1) Lock hold:
+		Frappe runs a whole background job in one transaction that commits only at
+		job end (execute_job); without an explicit boundary the summary upsert's
+		X-lock on the single shared (branch, event) row is held across the Redis +
+		outbox event writes until that job-end commit, so concurrent batches
+		serialize behind one lock and blow innodb_lock_wait_timeout. Committing the
+		moment the data writes finish releases the lock before any best-effort side
+		effect. (2) MariaDB 1020 ("record has changed since last read"): under the
+		default REPEATABLE READ, filter_unseen's SELECT establishes the transaction
+		snapshot; a concurrent batch then commits the same summary row, so our
+		atomic UPDATE total = total + n sees a newer version and InnoDB raises 1020
+		(QueryDeadlockError) on ~30%+ of batches. READ COMMITTED gives each
+		statement a fresh read view, so the contended summary UPDATE always sees the
+		latest committed row and never 1020s, while the tight transaction still
+		keeps insert + aggregate atomic. READ COMMITTED is the standard isolation
+		for high-concurrency write/counter workloads.
+
+		Any ambient transaction is committed first so the SESSION isolation change
+		applies to the fresh transaction, and the default (REPEATABLE READ) is
+		restored afterward so the worker's other jobs are unaffected. Roll back on
+		error so a failed batch leaves no half-written state for its retry.
 		"""
 		frappe = self._frappe
+		frappe.db.commit()  # close any ambient job transaction so SET SESSION applies
+		frappe.db.sql("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
 		try:
 			yield
 		except Exception:
 			frappe.db.rollback()
 			raise
-		frappe.db.commit()
+		finally:
+			frappe.db.commit()
+			frappe.db.sql("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
 
 	def filter_unseen(self, keys: Iterable[tuple[str, str, str]]) -> set[tuple[str, str, str]]:
 		frappe = self._frappe
@@ -517,17 +580,45 @@ class FrappeBulkAttendanceGateway:
 		frappe.db.bulk_insert(self.ATTENDANCE_DOCTYPE, fields=fields, values=values)
 		return len(values)
 
-	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
+	def seed_aggregate(self, scope: AttendanceScope, events: Iterable[str]) -> None:
 		frappe = self._frappe
-		# Atomic upsert — never scan-then-write. ON DUPLICATE KEY UPDATE keeps the
-		# counter correct under concurrent batches (FLO-10 §3.3/§4.2).
+		events = [e for e in events]
+		if not events:
+			return
+		# Idempotent seed via the UNIQUE(branch, event) index. Committed in its
+		# OWN transaction (separate from the write transaction) so the increment's
+		# single UPDATE is the only summary operation in the write transaction --
+		# no read-then-modify of the shared row within one transaction, which is
+		# what triggers MariaDB 1020 ("record has changed since last read") under
+		# 200-wps concurrency (FLO-100). Multi-row INSERT IGNORE seeds every event
+		# in the batch in one statement.
+		rows = ", ".join(["(%s, %s, 0)"] * len(events))
 		frappe.db.sql(
 			f"""
-			INSERT INTO `tab{self.SUMMARY_DOCTYPE}` (branch, event, total)
-			VALUES (%s, %s, %s)
-			ON DUPLICATE KEY UPDATE total = total + VALUES(total)
+			INSERT IGNORE INTO `tab{self.SUMMARY_DOCTYPE}` (branch, event, total)
+			VALUES {rows}
 			""",
-			values=(scope.branch, event, delta),
+			values=[v for event in events for v in (scope.branch, event)],
+		)
+		frappe.db.commit()
+
+	def increment_aggregate(self, scope: AttendanceScope, event: str, delta: int) -> None:
+		frappe = self._frappe
+		# Single atomic increment on a row the caller already seeded. This is the
+		# ONLY summary operation in the write transaction (the seed ran in a
+		# separate committed transaction), so there is no prior read of this row
+		# in the transaction for MariaDB to flag as "changed since last read" --
+		# that read-then-modify pattern is what raised error 1020 under 200-wps
+		# concurrency (FLO-100). A plain UPDATE takes a brief X-lock and
+		# serializes concurrent batches cleanly without the consistency-check
+		# failure (FLO-10 §3.3/§4.2).
+		frappe.db.sql(
+			f"""
+			UPDATE `tab{self.SUMMARY_DOCTYPE}`
+			SET total = total + %s
+			WHERE branch = %s AND event = %s
+			""",
+			values=(delta, scope.branch, event),
 		)
 
 	def aggregate(self, scope: AttendanceScope, event: str | None = None) -> int:

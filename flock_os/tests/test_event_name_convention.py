@@ -47,7 +47,10 @@ _CATALOG = [
 	flock_events.ANNOUNCEMENT_PUBLISHED,
 	flock_events.NOTIFICATION_SENT,
 	flock_events.APPROVAL_REQUESTED,
-	flock_events.APPROVAL_DECIDED,
+	flock_events.APPROVAL_STEP_APPROVED,
+	flock_events.APPROVAL_STEP_REJECTED,
+	flock_events.APPROVAL_APPROVED,
+	flock_events.APPROVAL_REJECTED,
 ]
 
 

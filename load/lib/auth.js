@@ -27,3 +27,28 @@ export function login(cfg) {
 	}
 	return jar;
 }
+
+// Log in once and return the Frappe `sid` session id, for authenticating a
+// raw k6/ws Socket.IO client against the per-site realtime namespace.
+//
+// k6/ws and k6/http do NOT share a cookie jar, so the WS handshake can't reuse
+// the login jar directly. Instead the smoke extracts the `sid` here (Frappe sets
+// `Set-Cookie: sid=...` on a successful login) and passes it as a `Cookie`
+// header in `ws.connect`. The realtime auth middleware
+// (`apps/frappe/realtime/middlewares/authenticate.js`) validates it via
+// `frappe.realtime.get_user_info` (FLO-107).
+export function loginSid(httpBase, username, password) {
+	const res = http.post(
+		`${httpBase}/api/method/login`,
+		{ usr: username, pwd: password },
+		{ headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+	);
+	if (res.status !== 200) {
+		throw new Error(`Frappe login failed for ${username}: HTTP ${res.status}`);
+	}
+	const sid = res.cookies.sid && res.cookies.sid[0] && res.cookies.sid[0].value;
+	if (!sid) {
+		throw new Error(`Frappe login for ${username} returned no sid cookie`);
+	}
+	return sid;
+}

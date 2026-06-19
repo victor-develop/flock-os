@@ -1,0 +1,318 @@
+"""
+Realtime Redis-adapter auto-wiring harness (FLO-121 / FLO-14 / FLO-10 §8).
+
+The §8 15k WS wall (FLO-121) is a *single-process node socketio*
+connection-setup wall. flock_os scales the socketio tier horizontally (N node
+processes behind a WS-aware LB) and attaches ``@socket.io/redis-adapter`` so the
+cluster fans Socket.IO room/broadcast coordination across workers. The adapter
+is wired into ``apps/frappe/realtime/index.js`` by
+``scripts/dev/wire-socketio-redis-adapter.sh`` as a marker-guarded, idempotent
+INSERT before ``realtime.on("connection", on_connection);``. A ``bench update``
+rewrites ``index.js`` and silently drops the block — exactly the wall recurring.
+flock_os's ``after_migrate`` / ``after_install`` hooks
+(``rewire_socketio_redis_adapter``) re-apply it automatically. These tests pin
+the guard so a silent regression becomes a red gate instead (sibling of
+``test_realtime_setup.py`` + ``test_realtime_auth_setup.py``):
+
+1. The redis-adapter wire script round-trips on a temp bench: it INSERTS before
+   the anchor, is idempotent, a simulated reinstall drops it, and re-running
+   restores it.
+2. ``--check`` is a non-mutating assert (exit 0 wired / 1 absent).
+3. The hook drives the real script end-to-end (frappe stubbed).
+4. FLO-121 fail-loud: a missing marker after the wire attempt RAISES
+   :class:`RealtimeWiringError` naming the regression + remediation.
+5. All three wirings (join handler + auth cache + redis adapter) compose on a
+   real Frappe v15 index that carries all three anchors.
+6. Marker parity: ``realtime_setup.REDIS_ADAPTER_WIRING_MARKER`` agrees with the
+   bash ``MARK_START`` the script keys on.
+
+Runs under plain ``pytest`` (no bench) on any host with ``bash``.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from flock_os.utils import realtime_setup
+from flock_os.utils.realtime_setup import REDIS_ADAPTER_WIRING_MARKER, RealtimeWiringError
+
+# The real redis-adapter wiring script, located the same way the hook locates it.
+ADAPTER_WIRE_SCRIPT = realtime_setup.find_wire_script(
+	realtime_setup.__file__, realtime_setup.REDIS_ADAPTER_WIRE_SCRIPT_REL
+)
+assert ADAPTER_WIRE_SCRIPT, "wire-socketio-redis-adapter.sh not found from module location"
+
+# A pristine Frappe v15 realtime index carrying ALL THREE anchors the flock_os
+# wirings key on: `realtime.use(authenticate);` (auth cache),
+# `frappe_handlers(realtime, socket);` (join handler), and
+# `realtime.on("connection", on_connection);` (redis adapter — the INSERT anchor).
+PRISTINE_INDEX = (
+	'const authenticate = require("./middlewares/authenticate");\n'
+	"realtime.use(authenticate);\n"
+	'const frappe_handlers = require("./handlers/frappe_handlers");\n'
+	"function on_connection(socket) {\n"
+	"\tfrappe_handlers(realtime, socket);\n"
+	"}\n"
+	'realtime.on("connection", on_connection);\n'
+)
+
+
+def _bench(tmp_path: Path) -> Path:
+	"""A temp bench layout with a pristine frappe realtime index (all anchors)."""
+	bench = tmp_path / "bench"
+	(bench / "apps" / "frappe" / "realtime").mkdir(parents=True)
+	(bench / "sites").mkdir(parents=True)
+	(bench / "apps" / "frappe" / "realtime" / "index.js").write_text(PRISTINE_INDEX)
+	return bench
+
+
+def _wire(bench: Path, *flags: str) -> subprocess.CompletedProcess:
+	return subprocess.run(
+		["bash", str(ADAPTER_WIRE_SCRIPT), "--bench", str(bench), *flags],
+		capture_output=True,
+		text=True,
+	)
+
+
+def _wired(index_path: Path) -> bool:
+	return REDIS_ADAPTER_WIRING_MARKER in index_path.read_text()
+
+
+# --------------------------------------------------------------------------- #
+# Wire-script behaviour (insert semantics, idempotent, self-healing)
+# --------------------------------------------------------------------------- #
+
+
+def test_find_wire_script_locates_adapter_script():
+	script = realtime_setup.find_wire_script(
+		realtime_setup.__file__, realtime_setup.REDIS_ADAPTER_WIRE_SCRIPT_REL
+	)
+	assert script and os.path.isfile(script)
+	assert script.endswith(os.path.join("scripts", "dev", "wire-socketio-redis-adapter.sh"))
+
+
+def test_wire_script_inserts_anchor_round_trip_idempotent(tmp_path):
+	"""Wire INSERTS before the anchor; reinstall drops it; re-run restores (FLO-121)."""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+
+	# 1. Wire -> marker present, adapter attach block landed, anchor still there.
+	assert _wire(bench).returncode == 0, _wire(bench).stderr
+	assert _wired(index)
+	assert "io.adapter(createRedisAdapter(" in index.read_text()
+	assert 'realtime.on("connection", on_connection);' in index.read_text(), "anchor must survive insert"
+
+	# 2. Idempotent: wiring again is a no-op (still exactly one marker block).
+	first = index.read_text()
+	assert _wire(bench).returncode == 0
+	assert index.read_text() == first
+	assert first.count(REDIS_ADAPTER_WIRING_MARKER) == 1
+
+	# 3. Simulated `bench update`/reinstall rewrites index.js -> marker dropped.
+	index.write_text(PRISTINE_INDEX)
+	assert not _wired(index), "fixture: reinstall should drop the wiring"
+
+	# 4. Re-wire restores it — the auto-wire hook's job.
+	assert _wire(bench).returncode == 0
+	assert _wired(index)
+
+
+def test_revert_restores_pristine_byte_identical(tmp_path):
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+
+	assert _wire(bench).returncode == 0
+	assert _wired(index)
+
+	assert _wire(bench, "--revert").returncode == 0
+	assert not _wired(index), "marker must be gone after --revert"
+	# INSERT semantics: removing the block leaves the pristine file byte-identical.
+	assert index.read_text() == PRISTINE_INDEX
+
+
+def test_check_mode_reflects_wiring_state(tmp_path):
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+
+	# Absent -> --check exits 1.
+	assert _wire(bench, "--check").returncode == 1
+
+	# Present -> --check exits 0 and makes no change.
+	assert _wire(bench).returncode == 0
+	wired = index.read_text()
+	assert _wire(bench, "--check").returncode == 0
+	assert index.read_text() == wired
+
+
+def test_check_and_revert_are_mutually_exclusive(tmp_path):
+	bench = _bench(tmp_path)
+	assert _wire(bench, "--check", "--revert").returncode == 2
+
+
+def test_wire_script_emits_dedicated_adapter_redis_resolver(tmp_path):
+	"""FLO-127: the wired block sources adapter clients via ``resolveAdapterClients``
+	so a dedicated adapter Redis (``FLOCK_SIO_ADAPTER_REDIS``) is honored instead of
+	always binding to the shared ``redis_socketio``. Pins both the resolver call and
+	the ``@redis/client`` factory the dedicated-URL path needs.
+	"""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	assert _wire(bench).returncode == 0
+	text = index.read_text()
+	assert "resolveAdapterClients" in text, "wired block must resolve clients via the flock_os resolver"
+	assert 'require("@redis/client").createClient' in text, (
+		"dedicated-URL path needs the @redis/client factory"
+	)
+	assert "FLOCK_SIO_ADAPTER_REDIS" not in text, "env name lives in the resolver module, not the wired block"
+	# The default (no env) path still binds the adapter to two clients + sets it on io.
+	assert "io.adapter(createRedisAdapter(" in text
+
+
+# --------------------------------------------------------------------------- #
+# The hook (frappe stubbed; real script + real module)
+# --------------------------------------------------------------------------- #
+
+
+def _stub_frappe(frappe_file: Path, sink: dict) -> SimpleNamespace:
+	"""A frappe stub that records log calls; frappe.__file__ drives find_bench_root."""
+	return SimpleNamespace(
+		__file__=str(frappe_file),
+		logger=lambda name: SimpleNamespace(
+			info=lambda *a, **k: sink.setdefault("info", []).append(a),
+			warning=lambda *a, **k: sink.setdefault("warning", []).append(a),
+		),
+	)
+
+
+def test_rewire_adapter_hook_drives_real_script_end_to_end(monkeypatch, tmp_path):
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, {}))
+
+	realtime_setup.rewire_socketio_redis_adapter()
+
+	assert _wired(index), "hook should leave the redis adapter wired"
+	assert "io.adapter(createRedisAdapter(" in index.read_text()
+
+
+def test_rewire_adapter_hook_short_circuits_when_already_wired(monkeypatch, tmp_path):
+	"""An already-wired index must not invoke the script (no-op, no raise)."""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	assert _wire(bench).returncode == 0
+	assert _wired(index)
+
+	calls = []
+	sink: dict = {}
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, sink))
+
+	def _must_not_run(*a, **k):
+		calls.append(k)
+		raise AssertionError("subprocess.run must not be called when already wired")
+
+	monkeypatch.setattr(realtime_setup.subprocess, "run", _must_not_run)
+
+	realtime_setup.rewire_socketio_redis_adapter()
+	assert calls == [], "already-wired path must short-circuit before subprocess.run"
+	assert sink.get("info"), "already-wired path should log info"
+
+
+def test_rewire_adapter_hook_raises_loud_when_wiring_still_missing(monkeypatch, tmp_path):
+	"""FLO-121: a wire attempt that leaves the marker absent RAISES, never silent."""
+	bench = _bench(tmp_path)
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	sink: dict = {}
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, sink))
+
+	def boom(cmd, **kwargs):
+		raise FileNotFoundError(str(cmd[1]))
+
+	monkeypatch.setattr(realtime_setup.subprocess, "run", boom)
+
+	with pytest.raises(RealtimeWiringError) as exc_info:
+		realtime_setup.rewire_socketio_redis_adapter()
+
+	message = str(exc_info.value)
+	assert "MISSING" in message
+	assert "FLO-121" in message  # names the regression it prevents
+	assert "bench restart" in message  # concrete remediation
+	assert sink.get("warning"), "the underlying script error should still be logged"
+
+
+def test_rewire_adapter_hook_warns_and_skips_when_index_absent(monkeypatch, tmp_path):
+	"""No vendored realtime index -> best-effort warn+return (nothing to wire)."""
+	bench = _bench(tmp_path)
+	(bench / "apps" / "frappe" / "realtime" / "index.js").unlink()
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	sink: dict = {}
+	calls = []
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, sink))
+	monkeypatch.setattr(realtime_setup.subprocess, "run", lambda *a, **k: calls.append(k))
+
+	realtime_setup.rewire_socketio_redis_adapter()  # must not raise
+
+	assert sink.get("warning"), "missing index should warn"
+	assert calls == [], "must not run the script when there is no index to wire"
+
+
+# --------------------------------------------------------------------------- #
+# Composition: all three wirings coexist (real v15 index)
+# --------------------------------------------------------------------------- #
+
+
+def test_all_three_wirings_compose_on_real_frappe_index(monkeypatch, tmp_path):
+	"""A real Frappe v15 index carries all three anchors; all three hooks wire cleanly."""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, {}))
+
+	realtime_setup.rewire_socketio_handler()
+	realtime_setup.rewire_socketio_auth_cache()
+	realtime_setup.rewire_socketio_redis_adapter()
+
+	text = index.read_text()
+	assert realtime_setup.WIRING_MARKER in text, "join handler wired"
+	assert realtime_setup.AUTH_WIRING_MARKER in text, "auth cache wired"
+	assert REDIS_ADAPTER_WIRING_MARKER in text, "redis adapter wired"
+	assert ".wrap(authenticate)" in text
+	assert "io.adapter(createRedisAdapter(" in text
+	# Each marker appears exactly once (no duplication under composition).
+	assert text.count(realtime_setup.WIRING_MARKER) == 1
+	assert text.count(realtime_setup.AUTH_WIRING_MARKER) == 1
+	assert text.count(REDIS_ADAPTER_WIRING_MARKER) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Marker parity: Python constant <-> bash MARK_START
+# --------------------------------------------------------------------------- #
+
+
+def test_python_adapter_marker_matches_script_mark_start():
+	"""The two sources of truth for "is the redis adapter wired?" must agree.
+
+	``realtime_setup.REDIS_ADAPTER_WIRING_MARKER`` is what the hook verifies;
+	``wire-socketio-redis-adapter.sh`` keys on ``MARK_START``. If they drift the
+	hook would raise forever or never detect a drop.
+	"""
+	script = Path(ADAPTER_WIRE_SCRIPT).read_text(encoding="utf-8")
+	assert f'MARK_START="{REDIS_ADAPTER_WIRING_MARKER}"' in script

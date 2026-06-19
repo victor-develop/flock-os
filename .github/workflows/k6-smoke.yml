@@ -53,6 +53,12 @@ jobs:
       - name: JS shard parity matches Python zlib.crc32
         working-directory: load
         run: node --test lib/shards.test.mjs
+      - name: Realtime join-gate logic (FLO-107 + FLO-106)
+        run: node --test realtime/handlers/flock_room_handlers.test.mjs
+      - name: Realtime per-connection auth cache (FLO-116)
+        run: node --test realtime/middlewares/flock_auth_cache.test.mjs
+      - name: Realtime Redis adapter for scaled socketio tier (FLO-121)
+        run: node --test realtime/adapters/flock_redis_adapter.test.mjs
 
   k6-smoke:
     name: k6 bulk + ws smoke (Phase 6 gate)
