@@ -54,8 +54,12 @@ export const ws = {
 	// projector's room universe. Leading ``/`` is added by the smoke.
 	site: __ENV.SITE || "flock_os.localhost",
 	// HTTP origin the realtime auth middleware cross-checks against the Host
-	// header (authenticate.js: get_hostname(host) == get_hostname(origin)).
-	origin: __ENV.WS_ORIGIN || "http://flock_os.localhost",
+	// header (authenticate.js: get_hostname(host) == get_hostname(origin)) AND
+	// uses as the base for its `get_user_info` callback (utils.js get_url =
+	// origin + path). So this MUST point at the live web server — port and all
+	// (default :8000); a port-less origin makes the node server call back to
+	// :80 and reject the namespace with `Unauthorized: AggregateError` (FLO-107).
+	origin: __ENV.WS_ORIGIN || write.baseUrl,
 	eventId: __ENV.EVENT_ID || write.eventId,
 	// Default 10 shards == DEFAULT_SHARD_COUNT in flock_os.realtime.
 	shardCount: parseInt(__ENV.SHARD_COUNT || "10", 10),

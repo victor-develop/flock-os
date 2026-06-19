@@ -28,7 +28,12 @@ A third wrinkle: the site namespace runs `realtime/middlewares/authenticate.js`,
 which requires a `sid` cookie or `Authorization` header (validated via
 `frappe.realtime.get_user_info`) and a matching Host/Origin hostname. The smoke
 now logs in once (`setup()`) and presents the `sid` as a cookie on the WS
-handshake.
+handshake. **Gotcha:** the middleware builds its `get_user_info` callback URL as
+`origin + path` (`realtime/utils.js`), so the `Origin` header must include the
+web port (`http://flock_os.localhost:8000`); a port-less origin makes the node
+server call back to `:80` and reject the namespace with
+`Unauthorized: AggregateError`. `config.ws.origin` defaults to the web base for
+this reason.
 
 ## Wire the handler (one-time, idempotent)
 
