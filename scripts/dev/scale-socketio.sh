@@ -149,15 +149,23 @@ start_nginx_lb() {
 	local tmpl="$REPO_ROOT/scripts/dev/nginx-socketio.conf.template"
 	[[ -f "$tmpl" ]] || { err "nginx template missing: $tmpl"; exit 1; }
 	local conf="$STATE_DIR/nginx.conf"
-	# Render the __STATE_DIR__ / __LB_PORT__ placeholders.
+	# 1. Render the __STATE_DIR__ / __LB_PORT__ placeholders (single-line -v
+	#    values, safe under BSD awk / gawk alike).
 	awk -v state="$STATE_DIR" -v lbport="$LB_PORT" '
 		{ gsub(/__STATE_DIR__/, state); gsub(/__LB_PORT__/, lbport); print }
 	' "$tmpl" > "$conf"
-	# Inject one `server host:port;` line per backend at the marker.
-	local injected
-	injected="$(awk '{printf "\t\tserver %s;\n", $0}' "$BACKENDS_FILE")"
-	awk -v inj="$injected" '
-		/# BACKENDS_INJECTED_HERE/ { print inj; next } { print }
+	# 2. Inject one `server host:port;` per backend at the standalone marker.
+	#    Reads the backend list via getline (portable: a newline-laden value in
+	#    `awk -v` is rejected by BSD awk on macOS, which silently dropped every
+	#    server line) and anchors on the marker line ALONE — `^[ \t]*# ... $` — so
+	#    the template's header prose that merely mentions the marker is untouched.
+	awk -v backends="$BACKENDS_FILE" '
+		/^[ \t]*# BACKENDS_INJECTED_HERE[ \t]*$/ {
+			while ((getline line < backends) > 0) printf "\t\tserver %s;\n", line
+			close(backends)
+			next
+		}
+		{ print }
 	' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
 
 	echo "nginx" > "$STATE_DIR/lb-kind"
