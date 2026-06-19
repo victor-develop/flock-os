@@ -116,17 +116,28 @@ permission_query_conditions = {
 # ---------------------------------------------------------------------------- #
 
 # ---------------------------------------------------------------------------- #
-# Realtime-handler auto-wiring (FLO-109)
+# Realtime-handler + auth-cache auto-wiring (FLO-109 / FLO-116)
 # ---------------------------------------------------------------------------- #
 # A `bench update` rewrites apps/frappe/realtime/index.js and would silently
-# drop the flock_os join handler inserted by
-# scripts/dev/wire-socketio-handler.sh (FLO-107) — joins then no-op and
-# broadcasts reach zero clients with no startup error. Re-wire automatically on
-# every migrate (which `bench update` performs) and on install, so the line is
-# never missing without a manual runbook step. The wire script is idempotent +
-# marker-guarded; the hook never breaks migrate on failure (best-effort log).
-after_migrate = ["flock_os.utils.realtime_setup.rewire_socketio_handler"]
-after_install = ["flock_os.utils.realtime_setup.rewire_socketio_handler"]
+# drop two flock_os wirings:
+#   * the join handler inserted by scripts/dev/wire-socketio-handler.sh
+#     (FLO-107) — joins then no-op and broadcasts reach zero clients; and
+#   * the auth-cache `.wrap(authenticate)` swap inserted by
+#     scripts/dev/wire-socketio-auth-cache.sh (FLO-116) — the per-connection
+#     `get_user_info` HTTP returns, bringing back the §8 15k WS auth wall
+#     (connect p95 > 2 s, flock_ws_receive_errors > 0).
+# Re-wire both automatically on every migrate (which `bench update` performs)
+# and on install, so neither line is ever missing without a manual runbook step.
+# Both wire scripts are idempotent + marker-guarded; the hooks fail loud on a
+# missing marker (RealtimeWiringError) rather than shipping a silent regression.
+after_migrate = [
+	"flock_os.utils.realtime_setup.rewire_socketio_handler",
+	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
+]
+after_install = [
+	"flock_os.utils.realtime_setup.rewire_socketio_handler",
+	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
+]
 
 
 # ---------------------------------------------------------------------------- #

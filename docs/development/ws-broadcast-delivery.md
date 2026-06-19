@@ -1,7 +1,8 @@
-# WebSocket broadcast-delivery — runbook (FLO-107)
+# WebSocket broadcast-delivery — runbook (FLO-107 / FLO-116)
 
 > How a published realtime broadcast actually reaches a `ws_event_room.js`
-> client on this bench, and the one-time wiring that makes it work on Frappe v15.
+> client on this bench, the one-time wiring that makes it work on Frappe v15,
+> and the per-connection auth cache that clears the §8 15k WS wall.
 
 ## The gap this closed
 
@@ -86,6 +87,61 @@ now **self-healing** through two independent guards:
 If you ever suspect the line went missing (e.g. a k6 run delivered 0
 broadcasts), the one-line confirm is `wire-socketio-handler.sh --check`; if it
 fails, a plain `wire-socketio-handler.sh` + `bench restart` restores delivery.
+
+## Cache per-connection auth to clear the §8 15k WS wall (FLO-116)
+
+Frappe's site-namespace auth middleware
+(`apps/frappe/realtime/middlewares/authenticate.js`) fires ONE synchronous HTTP
+callback per WS connection — `GET /api/method/frappe.realtime.get_user_info` —
+to resolve `socket.user`. The smoke logs in once (`setup()`) and every VU
+presents the **same** `sid`, so at the full 15k bar the node realtime server
+makes ~15k identical `get_user_info` round-trips through gunicorn in a burst.
+The superagent calls then hit `ETIMEDOUT` (errno -60), connections cycle/fail
+(connect p95 **2.26 s**), in-flight packets drop (`flock_ws_receive_errors`
+**8255**), and broadcasts back up (p95 **16.41 s**). Redis is **not** the wall;
+the per-connection auth HTTP is, not the broadcast fan-out.
+
+**Fix:** flock_os owns a sid-keyed cache (`realtime/middlewares/flock_auth_cache.js`)
+that wraps frappe's `authenticate` middleware, so `get_user_info` fires **once
+per session, not once per connection** — at 15k clients sharing one sid that is
+1 call + 14,999 in-memory hits. The cache is TTL'd (default 60 s; a revoked
+session is re-checked within the window) and bounded LRU (default 50k entries);
+on a HIT it replays the cached `{user,user_type}` and skips the redundant HTTP.
+
+socket.io's `namespace.use()` has no removal API and *appends*, so registering
+the cached middleware alongside the original would still let the original run
+first (firing the HTTP). The wiring therefore **replaces** the single
+`realtime.use(authenticate);` line in `apps/frappe/realtime/index.js` with a
+guarded `realtime.use(require("...flock_auth_cache").wrap(authenticate))`. It is
+marker-guarded, idempotent, and reversible — the same shape as the join-handler
+wiring above, and independent of it (different anchor line), so the two compose.
+
+```bash
+scripts/dev/wire-socketio-auth-cache.sh          # replace the anchor with the cached swap
+bench restart                                     # reload the realtime node server
+scripts/dev/wire-socketio-auth-cache.sh --check   # assert wired: exit 0 ok / 1 absent
+# undo:
+scripts/dev/wire-socketio-auth-cache.sh --revert  # restore realtime.use(authenticate);
+```
+
+It survives a `bench update` by the **same self-healing guards** as the join
+handler: an `after_migrate` + `after_install` hook
+(`flock_os.utils.realtime_setup.rewire_socketio_auth_cache`, sharing the
+handler's drive+verify core) re-runs the script on every migrate, then
+**verifies** the marker landed and raises `RealtimeWiringError` if it is missing
+— a dropped cache can never silently bring back the wall.
+
+> **Security tradeoff (deliberate, bounded):** on a cache HIT the wrapper skips
+> the redundant `get_user_info` HTTP. The `sid` already passed frappe's FULL
+> validation (namespace + origin + cookie + `get_user_info`) when it was first
+> cached, and entries expire on a short TTL, so a revoked/changed session is
+> re-checked within the TTL window. TTL + LRU bound staleness and memory.
+> Redis-push logout invalidation is an optional future hardening (not needed for
+> the §8 bar).
+
+The cache + middleware branching is unit-tested under plain `node --test`
+(`realtime/middlewares/flock_auth_cache.test.mjs`); the wiring harness under
+`pytest` (`flock_os/tests/test_realtime_auth_setup.py`) — neither needs a bench.
 
 ### Why a patch (and not a framework hook)
 
