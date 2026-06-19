@@ -117,6 +117,67 @@ function resolveAdapterOptions(opts = {}) {
 	return resolved;
 }
 
+// Resolve the adapter's pub/sub Redis clients for the scaled socketio tier.
+//
+// The §8 15k burst stalls the shared dev Redis — this bench's `redis_socketio`
+// == `redis_cache` (`127.0.0.1:13000`) — under 8x adapter pub/sub + Frappe
+// cache, so a Redis client emits `ETIMEDOUT` (the runbook's local-testbed
+// ceiling #2). The production tier gives the adapter a DEDICATED Redis so the
+// socket.io coordination traffic never contends with the cache/queue instance
+// (FLO-127 / FLO-10 §8 prod gate). This resolver picks the adapter's Redis:
+//
+//   1. `FLOCK_SIO_ADAPTER_REDIS` env  — a raw `redis://` URL for the dedicated
+//      adapter instance (highest priority; matches the runbook name). Set it on
+//      EVERY backend so the cluster agrees. `start-adapter-redis.sh` brings one
+//      up on a new port and prints the URL to export.
+//   2. `get_redis_subscriber(confKey)`  — the Frappe-idiomatic conf-keyed path:
+//      add a `redis_socketio_adapter` key to `sites/common_site_config.json`
+//      and point `FLOCK_SIO_ADAPTER_CONF_KEY` at it. Falls back to the bench's
+//      `redis_socketio` (the current single-instance behavior) so nothing
+//      changes unless a dedicated Redis is configured.
+//
+// `deps` is INJECTED (`get_redis_subscriber` + `createRedisClient`) so this
+// stays unit-testable with fakes and has no frappe / `@redis/client` import at
+// module load. The wiring (`apps/frappe/realtime/index.js`) supplies both
+// because both are already in scope there (`get_redis_subscriber` is
+// destructured from `../node_utils`; `@redis/client` is frappe's own dep, so
+// `require("@redis/client").createClient` resolves from `apps/frappe/`).
+// Returns `[pubClient, subClient]`, NOT yet connected — the wiring connects
+// them (socket.io-redis-adapter tolerates a not-yet-connected client).
+function resolveAdapterClients(deps = {}) {
+	const dedicatedUrl = process.env.FLOCK_SIO_ADAPTER_REDIS;
+	if (dedicatedUrl) {
+		const createRedisClient = deps.createRedisClient;
+		if (typeof createRedisClient !== "function") {
+			throw Object.assign(
+				new Error(
+					"flock_os realtime redis-adapter: FLOCK_SIO_ADAPTER_REDIS is set to a dedicated URL but " +
+						"no createRedisClient was injected — the wiring must pass " +
+						"require('@redis/client').createClient so the URL can become clients (FLO-127).",
+				),
+				{ code: "FLOCK_REDIS_ADAPTER_NO_FACTORY" },
+			);
+		}
+		const pub = createRedisClient({ url: dedicatedUrl });
+		const sub = typeof pub.duplicate === "function" ? pub.duplicate() : createRedisClient({ url: dedicatedUrl });
+		return [pub, sub];
+	}
+	const get_redis_subscriber = deps.get_redis_subscriber;
+	if (typeof get_redis_subscriber !== "function") {
+		throw Object.assign(
+			new Error(
+				"flock_os realtime redis-adapter: get_redis_subscriber is required when " +
+					"FLOCK_SIO_ADAPTER_REDIS is unset — the wiring must pass frappe's get_redis_subscriber (FLO-127).",
+			),
+			{ code: "FLOCK_REDIS_ADAPTER_NO_FACTORY" },
+		);
+	}
+	const confKey = _envStr("FLOCK_SIO_ADAPTER_CONF_KEY", "redis_socketio");
+	const pub = get_redis_subscriber(confKey);
+	const sub = typeof pub.duplicate === "function" ? pub.duplicate() : get_redis_subscriber(confKey);
+	return [pub, sub];
+}
+
 // Build the socket.io-redis-adapter and return it for `io.adapter(...)`.
 //
 // `pubClient` / `subClient` are node-redis v4 clients (created + connected by
@@ -134,6 +195,7 @@ function createRedisAdapter(pubClient, subClient, opts = {}, _deps = {}) {
 
 module.exports = {
 	createRedisAdapter,
+	resolveAdapterClients,
 	resolveAdapterOptions,
 	requireRedisAdapter,
 	DEFAULT_KEY,

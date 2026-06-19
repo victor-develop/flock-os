@@ -155,6 +155,25 @@ def test_check_and_revert_are_mutually_exclusive(tmp_path):
 	assert _wire(bench, "--check", "--revert").returncode == 2
 
 
+def test_wire_script_emits_dedicated_adapter_redis_resolver(tmp_path):
+	"""FLO-127: the wired block sources adapter clients via ``resolveAdapterClients``
+	so a dedicated adapter Redis (``FLOCK_SIO_ADAPTER_REDIS``) is honored instead of
+	always binding to the shared ``redis_socketio``. Pins both the resolver call and
+	the ``@redis/client`` factory the dedicated-URL path needs.
+	"""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	assert _wire(bench).returncode == 0
+	text = index.read_text()
+	assert "resolveAdapterClients" in text, "wired block must resolve clients via the flock_os resolver"
+	assert 'require("@redis/client").createClient' in text, (
+		"dedicated-URL path needs the @redis/client factory"
+	)
+	assert "FLOCK_SIO_ADAPTER_REDIS" not in text, "env name lives in the resolver module, not the wired block"
+	# The default (no env) path still binds the adapter to two clients + sets it on io.
+	assert "io.adapter(createRedisAdapter(" in text
+
+
 # --------------------------------------------------------------------------- #
 # The hook (frappe stubbed; real script + real module)
 # --------------------------------------------------------------------------- #
