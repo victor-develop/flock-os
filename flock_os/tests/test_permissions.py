@@ -309,7 +309,7 @@ def test_hook_returns_empty_for_bypass_role():
 	perms.install_gateway(gw)
 	try:
 		# Auditor → no-op (sees all via DocPerm; not group-scoped).
-		assert perms.get_group_scoped_conditions("Flock Group", "aud@flock") == ""
+		assert perms.get_group_scoped_conditions(doctype="Flock Group", user="aud@flock") == ""
 		assert perms.has_group_scope("Flock Group", "aud@flock") is False
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())
@@ -319,7 +319,7 @@ def test_hook_returns_empty_for_unscoped_doctype():
 	# The hook is a no-op for doctypes not in SCOPED_DOCTYPES (defensive).
 	perms.install_gateway(perms.NullPermissionGateway())
 	try:
-		assert perms.get_group_scoped_conditions("Some Other DocType", "x@flock") == ""
+		assert perms.get_group_scoped_conditions(doctype="Some Other DocType", user="x@flock") == ""
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())
 
@@ -334,10 +334,45 @@ def test_hook_emits_fragment_for_leader_with_self_predication():
 	)
 	perms.install_gateway(gw)
 	try:
-		sql = perms.get_group_scoped_conditions("Flock Group", "lead@flock")
+		sql = perms.get_group_scoped_conditions(doctype="Flock Group", user="lead@flock")
 		assert sql.startswith(" AND (")
 		assert "`tabFlock Group`.`lft` >= 1" in sql
 		assert perms.has_group_scope("Flock Group", "lead@flock") is True
+	finally:
+		perms.install_gateway(perms.NullPermissionGateway())
+
+
+def test_hook_accepts_frappe_permission_query_conditions_calling_convention():
+	"""Pin Frappe's ``permission_query_conditions`` dispatch shape (FLO-191).
+
+	Frappe invokes the hook as ``frappe.call(method, user, doctype=doctype)``
+	(apps/frappe/frappe/model/db_query.py:1130): ``user`` positional, ``doctype``
+	as a keyword. The signature MUST accept that — the old
+	``def get_group_scoped_conditions(doctype, user=None)`` bound the positional
+	``user`` to ``doctype`` then collided with the ``doctype=`` keyword, raising
+	``TypeError: ... got multiple values for argument 'doctype'`` and breaking
+	every scoped Flock Group/Gathering list view. This pins the calling
+	convention so it can't slip past the no-bench unit gate again.
+	"""
+	# Bypass / unscoped paths must be clean no-ops under Frappe's call shape.
+	perms.install_gateway(perms.NullPermissionGateway())
+	try:
+		assert perms.get_group_scoped_conditions("aud@flock", doctype="Flock Group") == ""
+		assert perms.get_group_scoped_conditions("aud@flock", doctype="Some Other DocType") == ""
+	finally:
+		perms.install_gateway(perms.NullPermissionGateway())
+
+	# Leader path must still emit the §6.3 fragment under the SAME call shape.
+	gw = RecordingPermissionGateway(
+		roles_by_user={"lead@flock": frozenset({perms.ROLE_GROUP_LEADER})},
+		member_by_user={"lead@flock": "M1"},
+		led_bounds_by_member={"M1": (_gb("G0", 1, 8),)},
+	)
+	perms.install_gateway(gw)
+	try:
+		sql = perms.get_group_scoped_conditions("lead@flock", doctype="Flock Group")
+		assert sql.startswith(" AND (")
+		assert "`tabFlock Group`.`lft` >= 1" in sql
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())
 
@@ -591,7 +626,7 @@ def test_flock_gathering_hook_narrows_leader_to_led_subtree():
 	)
 	perms.install_gateway(gw)
 	try:
-		sql = perms.get_group_scoped_conditions("Flock Gathering", "lead@flock")
+		sql = perms.get_group_scoped_conditions(doctype="Flock Gathering", user="lead@flock")
 		assert sql.startswith(" AND (")
 		# The gathering scopes via its `.group` link (not self-predication).
 		assert "`tabFlock Gathering`.`group` IN (SELECT name FROM `tabFlock Group`" in sql
@@ -610,7 +645,7 @@ def test_flock_gathering_hook_is_noop_for_bypass_role():
 	)
 	perms.install_gateway(gw)
 	try:
-		assert perms.get_group_scoped_conditions("Flock Gathering", "ba@flock") == ""
+		assert perms.get_group_scoped_conditions(doctype="Flock Gathering", user="ba@flock") == ""
 		assert perms.has_group_scope("Flock Gathering", "ba@flock") is False
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())
