@@ -161,6 +161,7 @@ def test_default_status_is_draft_and_catalog_locked():
 	[
 		(None, APPROVAL_DRAFT),
 		(APPROVAL_DRAFT, APPROVAL_PENDING),
+		(APPROVAL_DRAFT, APPROVAL_APPROVED),  # §3.4 auto-approve fast path (FLO-79)
 		(APPROVAL_DRAFT, APPROVAL_WITHDRAWN),
 		(APPROVAL_DRAFT, APPROVAL_CANCELLED),
 		(APPROVAL_PENDING, APPROVAL_APPROVED),
@@ -179,7 +180,6 @@ def test_valid_approval_transitions(from_status, to_status):
 	[
 		(None, APPROVAL_PENDING),  # cannot forge Pending on create
 		(None, APPROVAL_APPROVED),  # cannot forge Approved on create
-		(APPROVAL_DRAFT, APPROVAL_APPROVED),  # must go via Pending
 		(APPROVAL_PENDING, APPROVAL_DRAFT),  # cannot un-submit
 		(APPROVAL_APPROVED, APPROVAL_PENDING),  # terminal
 		(APPROVAL_REJECTED, APPROVAL_APPROVED),  # rejected must resubmit via Draft
@@ -191,9 +191,12 @@ def test_invalid_approval_transitions(from_status, to_status):
 
 
 def test_validate_approval_transition_raises_on_illegal_move():
+	# Pending → Draft is illegal (cannot un-submit); the §3.4 Draft → Approved
+	# auto-approve fast path is now legal (FLO-79), so it no longer raises here.
 	with pytest.raises(approvals.FlockApprovalError):
-		approvals.validate_approval_transition(from_status=APPROVAL_DRAFT, to_status=APPROVAL_APPROVED)
-	# A legal move does not raise.
+		approvals.validate_approval_transition(from_status=APPROVAL_PENDING, to_status=APPROVAL_DRAFT)
+	# A legal move does not raise (incl. the auto-approve fast path).
+	approvals.validate_approval_transition(from_status=APPROVAL_DRAFT, to_status=APPROVAL_APPROVED)
 	approvals.validate_approval_transition(from_status=APPROVAL_DRAFT, to_status=APPROVAL_PENDING)
 
 
@@ -569,3 +572,62 @@ def test_approver_levels_catalog_matches_spec():
 	# §3.3 Select options.
 	assert approvals.APPROVER_LEVELS == (LEVEL_PARENT, LEVEL_ANCESTOR, LEVEL_BRANCH_ADMIN)
 	assert approvals.STEP_STATUSES == (STEP_PENDING, STEP_APPROVED, STEP_REJECTED, STEP_SKIPPED, "Recused")
+
+
+# --------------------------------------------------------------------------- #
+# Phase B (FLO-79) — rich Approval Policy (§3.4) + auto-approve fast path.
+# --------------------------------------------------------------------------- #
+
+
+def test_default_policy_carries_phase_b_defaults():
+	# The Phase B rich knobs ship with safe defaults (auto-approve off, no
+	# timeout, waitlist on, no default scope).
+	p = approvals.DEFAULT_POLICY
+	assert p.auto_approve_below_capacity is None
+	assert p.approval_timeout_hours is None
+	assert p.enable_waitlist is True
+	assert p.default_registration_scope is None
+
+
+def test_is_auto_approved_below_threshold_clears_fast_path():
+	# §3.4: capacity strictly below the threshold skips the chain.
+	p = approvals.ApprovalPolicy(auto_approve_below_capacity=20)
+	assert approvals.is_auto_approved(capacity=19, policy=p) is True
+	assert approvals.is_auto_approved(capacity=10, policy=p) is True
+
+
+def test_is_auto_approved_at_or_above_threshold_routes():
+	# Strict: capacity == threshold still routes (not auto-approved).
+	p = approvals.ApprovalPolicy(auto_approve_below_capacity=20)
+	assert approvals.is_auto_approved(capacity=20, policy=p) is False
+	assert approvals.is_auto_approved(capacity=25, policy=p) is False
+
+
+def test_is_auto_approved_disabled_when_threshold_missing_or_zero():
+	# None/0 threshold = fast path disabled (every event routes).
+	for threshold in (None, 0):
+		p = approvals.ApprovalPolicy(auto_approve_below_capacity=threshold)
+		assert approvals.is_auto_approved(capacity=5, policy=p) is False
+
+
+def test_is_auto_approved_uncapped_event_never_clears_finite_threshold():
+	# An uncapped event (capacity is None) cannot be "small" — never auto.
+	p = approvals.ApprovalPolicy(auto_approve_below_capacity=100)
+	assert approvals.is_auto_approved(capacity=None, policy=p) is False
+
+
+def test_approval_policy_is_frozen_with_rich_fields():
+	# The rich Phase B fields ride the same frozen struct.
+	p = approvals.ApprovalPolicy(
+		require_branch_admin_final=False,
+		max_approval_levels=3,
+		allow_self_approval=True,
+		auto_approve_below_capacity=15,
+		approval_timeout_hours=48,
+		default_registration_scope="Branch",
+		enable_waitlist=False,
+	)
+	assert p.auto_approve_below_capacity == 15
+	assert p.approval_timeout_hours == 48
+	assert p.default_registration_scope == "Branch"
+	assert p.enable_waitlist is False

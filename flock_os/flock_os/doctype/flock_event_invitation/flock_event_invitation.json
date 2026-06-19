@@ -1,0 +1,213 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-20 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "INV-.#####",
+   "default": "INV-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1,
+   "description": "Tenant floor (ADR §3). Denormalized from the branch."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Scoping key (FLO-5 contract). Branch-bound to the gathering's branch."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "search_index": 1,
+   "in_standard_filter": 1,
+   "description": "Originating group axis (group-scope hook surface, ADR §6.3). Branch-bound to the gathering's group."
+  },
+  {
+   "fieldname": "gathering_section",
+   "fieldtype": "Section Break",
+   "label": "Invitation"
+  },
+  {
+   "fieldname": "gathering",
+   "fieldtype": "Link",
+   "label": "Gathering",
+   "options": "Flock Gathering",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "description": "The one-time event this invitation is for (registration_scope = Invited Only, FLO-7 §3.6)."
+  },
+  {
+   "fieldname": "invitee",
+   "fieldtype": "Link",
+   "label": "Invitee",
+   "options": "Flock Member",
+   "search_index": 1,
+   "in_list_view": 1,
+   "description": "The invited person (visitors are Flock Member rows with status=Visitor, login-less; FLO-5 §3.2)."
+  },
+  {
+   "fieldname": "invitee_group",
+   "fieldtype": "Link",
+   "label": "Invitee Group",
+   "options": "Flock Group",
+   "description": "Invite a whole group subtree at once (§3.6). When set, every active member of this group's subtree is eligible under the invitation — used by the bulk-create path."
+  },
+  {
+   "fieldname": "invitee_name",
+   "fieldtype": "Data",
+   "label": "Invitee Name",
+   "read_only": 1,
+   "translatable": 0,
+   "description": "Denormalized invitee full_name for list search."
+  },
+  {
+   "fieldname": "invite_token",
+   "fieldtype": "Data",
+   "label": "Invite Token",
+   "unique": 1,
+   "search_index": 1,
+   "read_only": 1,
+   "translatable": 0,
+   "description": "Opaque token for link-based RSVP (login-less visitors can accept/decline without a session, §3.6). Generated on create."
+  },
+  {
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Lifecycle"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Sent\nAccepted\nDeclined\nExpired",
+   "default": "Sent",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "Invitation lifecycle (§3.6). Sent on create; Accepted/Declined on RSVP; Expired past expires_on."
+  },
+  {
+   "fieldname": "expires_on",
+   "fieldtype": "Datetime",
+   "label": "Expires On",
+   "in_list_view": 1,
+   "description": "When the invitation lapses (an expired invitation is out of scope, §5 Invited Only). Null = no expiry."
+  },
+  {
+   "fieldname": "accepted_registration",
+   "fieldtype": "Link",
+   "label": "Accepted Registration",
+   "options": "Flock Event Registration",
+   "read_only": 1,
+   "description": "The registration row created when the invitee RSVPs Accepted (back-reference, §3.6). Null until accepted."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Event Invitation",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "invitee_name",
+ "track_changes": 1
+}

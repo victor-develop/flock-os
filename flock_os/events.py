@@ -96,6 +96,32 @@ REGISTRATION_CREATED = "flock.registration.created"
 REGISTRATION_WAITLISTED = "flock.registration.waitlisted"
 REGISTRATION_CANCELLED = "flock.registration.cancelled"
 REGISTRATION_CHECKED_IN = "flock.registration.checked_in"
+"""One-time-event registration lifecycle (FLO-7 §7, materialized by [FLO-62]).
+The Phase B ([FLO-79]) additions below cover the waitlist auto-promotion, the
+bulk path, and the invitation lifecycle — the rich §5/§3.6 features layered on
+the MVP gate."""
+REGISTRATION_PROMOTED = "flock.registration.promoted"
+"""Waitlist auto-promotion (FLO-7 §5 #6, Phase B/[FLO-79]): on a Cancelled
+registration freeing a seat, the oldest Waitlisted row is atomically promoted
+to Registered. Emitted alongside ``flock.registration.created`` semantics so
+notification fan-out ([FLO-8](/FLO/issues/FLO-8)) treats the promotion as a
+fresh seat claim."""
+REGISTRATION_BULK_QUEUED = "flock.registration.bulk_queued"
+"""Bulk registration path (FLO-7 §5, Phase B/[FLO-79]): ``register_bulk`` validated
+scope once and enqueued the per-batch inserts on the Frappe/RQ queue (the 15k
+path). Emitted once per bulk request; per-row ``created``/``waitlisted`` events
+fire inside each batch job."""
+REGISTRATION_BULK_COMPLETED = "flock.registration.bulk_completed"
+"""Bulk registration completion (FLO-7 §5, Phase B/[FLO-79]): every enqueued batch
+for a bulk job finished (success + idempotent skips). Carries the job totals so
+the dashboard ([FLO-79] §10) + the leader can confirm the 15k ingest landed."""
+INVITATION_SENT = "flock.invitation.sent"
+INVITATION_ACCEPTED = "flock.invitation.accepted"
+INVITATION_DECLINED = "flock.invitation.declined"
+"""Invitation lifecycle (FLO-7 §3.6/§7, Phase B/[FLO-79]): a leader/admin creates
+an invitation (``sent``), the invitee RSVPs via the link-based token
+(``accepted``/``declined``, login-less for visitors). The ``Invited Only``
+eligibility gate honors Sent/Accepted, non-expired rows."""
 """Scoped registration lifecycle (FLO-7 §5 / §7, materialized by [FLO-62]).
 ``opened`` fires on final approval when the window + confirmed scope land on
 the gathering (drives the FLO-8 announcement + the eligibility gate);
