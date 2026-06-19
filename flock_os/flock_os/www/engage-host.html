@@ -20,12 +20,15 @@
       data-kinds="{{ kinds_json }}"
       data-parity="{{ parity_json }}"
       data-endpoints="{{ endpoints_json }}"
+      data-templates="{{ templates_json }}"
+      data-template-preselect="{{ template_preselect }}"
       aria-label="{{ _('Facilitate engagement') }}">
 
   <header class="flock-host__head">
     <h1 class="flock-host__title">{{ _("Run Fun Attendance") }}</h1>
     <p class="flock-host__org text-muted">
       {{ _("Organization") }}: <strong>{{ organization or "—" }}</strong>
+      · <a href="/engage-templates">{{ _("Manage templates") }}</a>
     </p>
   </header>
 
@@ -59,6 +62,13 @@
   {# --- Session config --- #}
   <fieldset class="flock-host__section">
     <legend>{{ _("Session") }}</legend>
+    <div class="form-group">
+      <label class="form-label" for="flock-host-template">{{ _("Use a saved template (optional)") }}</label>
+      <select class="form-control" id="flock-host-template" name="template">
+        <option value="">{{ _("Configure from scratch…") }}</option>
+      </select>
+      <small class="form-text text-muted">{{ _("Picking a template fills the kind, rounds, and defaults below.") }}</small>
+    </div>
     <div class="row">
       <div class="col-6 form-group">
         <label class="form-label" for="flock-host-kind">{{ _("Engagement type") }}</label>

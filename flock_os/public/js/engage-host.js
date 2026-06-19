@@ -31,6 +31,8 @@
 	const PARITY = JSON.parse(FORM.dataset.parity || "{}");
 	const GROUPS_BY_BRANCH = JSON.parse(FORM.dataset.groupsByBranch || "{}");
 	const GATHERINGS_BY_BRANCH = JSON.parse(FORM.dataset.gatheringsByBranch || "{}");
+	const TEMPLATES = JSON.parse(FORM.dataset.templates || "{}");
+	const TEMPLATE_PRESELECT = FORM.dataset.templatePreselect || "";
 	const ORG = FORM.dataset.organization;
 
 	const BRANCH = $("flock-host-branch");
@@ -40,6 +42,7 @@
 	const ROUNDS = $("flock-host-rounds");
 	const TITLE = $("flock-host-title");
 	const CALM = $("flock-host-calm");
+	const TEMPLATE = $("flock-host-template");
 	const SHARE = $("flock-host-share");
 	const CODE = $("flock-host-code");
 	const QR = $("flock-host-qr");
@@ -55,6 +58,7 @@
 	const BTN_CLOSE = $("flock-host-close");
 
 	let currentSession = null; // { name, status, room_code, ... }
+	let currentTemplate = null; // { template_name, template_doctype } provenance for create_session
 
 	// ---- kind picker (rendered from the catalog) -------------------------- //
 	KINDS.forEach((k) => {
@@ -63,6 +67,50 @@
 		opt.textContent = _(k.i18n_key) + " (" + _(k.family) + ")";
 		KIND.appendChild(opt);
 	});
+
+	// ---- saved-template picker (FLO-190 launch surface) ------------------- //
+	// Templates come pre-summarized from the page context (engage-host.py);
+	// selecting one fetches its launch config and folds kind/rounds/title/calm
+	// into the inline fields. Provenance is sent on create_session so the
+	// session records which template it launched from.
+	function fillTemplatePicker() {
+		if (!TEMPLATE) return;
+		Object.keys(TEMPLATES || {}).forEach((family) => {
+			const rows = TEMPLATES[family] || [];
+			if (!rows.length) return;
+			const group = el("optgroup");
+			group.label = _(family);
+			rows.forEach((t) => {
+				const opt = el("option");
+				opt.value = t.doctype + ":" + t.name;
+				opt.textContent = t.template_name + " (" + t.kind + ")";
+				group.appendChild(opt);
+			});
+			TEMPLATE.appendChild(group);
+		});
+	}
+
+	async function applyTemplate(value) {
+		if (!value) {
+			currentTemplate = null;
+			return;
+		}
+		const [doctype, name] = value.split(":");
+		try {
+			const tpl = await call(ENDPOINTS.get_template, { doctype: doctype, name: name });
+			if (!tpl) return;
+			currentTemplate = { template_name: name, template_doctype: doctype };
+			if (tpl.kind && KIND) KIND.value = tpl.kind;
+			if (TITLE && !TITLE.value && tpl.title) TITLE.value = tpl.title;
+			const cfg = tpl.config || {};
+			if (ROUNDS && cfg.rounds) ROUNDS.value = String(cfg.rounds);
+			if (CALM && (tpl.accessibility_mode_default || cfg.calm_default)) CALM.checked = true;
+		} catch (e) {
+			setStatus("error", _("Could not load that template. ") + ((e && e.message) || ""));
+		}
+	}
+
+	if (TEMPLATE) TEMPLATE.addEventListener("change", () => applyTemplate(TEMPLATE.value));
 
 	// ---- status helper ---------------------------------------------------- //
 	function setStatus(kind, html) {
@@ -141,16 +189,18 @@
 	async function createSession() {
 		busy(true);
 		try {
-			const res = await call(ENDPOINTS.create_session, {
-				organization: ORG,
-				branch: BRANCH.value,
-				group: GROUP.value || null,
-				gathering: GATHERING.value,
-				engagement_kind: KIND.value,
-				rounds: Number(ROUNDS.value) || 1,
-				title: (TITLE.value || "").trim() || null,
-				calm_default: CALM.checked,
-			});
+		const res = await call(ENDPOINTS.create_session, {
+			organization: ORG,
+			branch: BRANCH.value,
+			group: GROUP.value || null,
+			gathering: GATHERING.value,
+			engagement_kind: KIND.value,
+			rounds: Number(ROUNDS.value) || 1,
+			title: (TITLE.value || "").trim() || null,
+			calm_default: CALM.checked,
+			template_name: currentTemplate && currentTemplate.template_name,
+			template_doctype: currentTemplate && currentTemplate.template_doctype,
+		});
 			currentSession = res;
 			renderShare(res);
 			subscribeLive(res);
@@ -317,5 +367,10 @@
 	// ---- init ------------------------------------------------------------- //
 	fillGroupPicker();
 	fillGatheringPicker();
+	fillTemplatePicker();
+	if (TEMPLATE_PRESELECT) {
+		TEMPLATE.value = TEMPLATE_PRESELECT;
+		applyTemplate(TEMPLATE_PRESELECT);
+	}
 	refreshCreate();
 })();

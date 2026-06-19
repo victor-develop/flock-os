@@ -60,6 +60,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json as _json
+import random as _random
+import string as _string
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -1439,6 +1442,179 @@ def build_facilitator_context(*, user: str, gateway: FacilitatorGateway) -> dict
 	}
 
 
+# ---------------------------------------------------------------------------- #
+# Facilitator launch + authoring reconciliation (FLO-190).
+#
+# Pure, frappe-free helpers that bridge the FLO-12 portal/JS contract to the
+# FLO-11 runtime transport (engagement_api). The ``engagement_views`` module is
+# the thin ``@frappe.whitelist()`` adapter the portal JS actually calls
+# (ENGAGEMENT_ENDPOINTS); every branch of real logic lives HERE so it stays
+# unit-testable without a bench — the same hexagonal discipline as the rest of
+# this module. FLO-190 is "the missing launch surface": template authoring +
+# wiring a saved template to a session launch.
+# ---------------------------------------------------------------------------- #
+#: Length of a Fun Attendance room code (FLO-9 §2 — "6-digit join code").
+ROOM_CODE_LEN = 6
+
+
+def generate_room_code(rng: _random.Random | None = None) -> str:
+	"""Return a fresh 6-digit room code (FLO-9 §2).
+
+	``rng`` is injectable so the call is deterministic under test. The code is a
+	six-character numeric string so it round-trips the player-side
+	``/^\\d{6}$/`` join guard (engagement-core.js).
+	"""
+	r = rng if rng is not None else _random
+	return "".join(r.choices(_string.digits, k=ROOM_CODE_LEN))
+
+
+def resolve_session_ref(payload: dict[str, Any]) -> dict[str, Any]:
+	"""Normalize the client's many spellings of "which session" to one lookup.
+
+	The portal JS (engagement-core.js / engage-host.js) sends ``session``,
+	``name``, ``session_id``, or ``room_code`` depending on the call site.
+	Returns ``{"session_id": x}`` when a direct id is present, else
+	``{"room_code": x}`` for a code join. Raises :class:`FlockEngagementError`
+	if no reference at all was supplied — the adapter surfaces this as a 4xx.
+	"""
+	sid = payload.get("session_id") or payload.get("name") or payload.get("session")
+	if sid:
+		return {"session_id": str(sid)}
+	code = payload.get("room_code")
+	if code:
+		return {"room_code": str(code)}
+	raise FlockEngagementError("A session id or room code is required.")
+
+
+def pack_session_config(payload: dict[str, Any]) -> dict[str, Any]:
+	"""Pack the facilitator's inline session fields into the runtime ``config``.
+
+	The console sends flat fields (rounds, calm_default, …); the runtime stores
+	them under ``config`` (FLO-9 §2). Template/config keys the caller already
+	nested under ``config`` are preserved verbatim.
+	"""
+	config = dict(payload.get("config") or {})
+	for key in ("rounds", "calm_default", "accessibility_mode_default", "languages"):
+		if payload.get(key) is not None:
+			config[key] = payload[key]
+	return config
+
+
+def unpack_participate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+	"""Map a player's kind-specific ``payload`` to ``engagement_api.participate`` fields.
+
+	Attendance credit (the North Star) only needs the call to be *accepted*; the
+	score fields drive scored-game leaderboards. The full payload is always
+	preserved as ``feedback`` so close-time analytics stay lossless.
+	"""
+	feedback = dict(payload or {})
+	out: dict[str, Any] = {"feedback": feedback}
+	if kind == KIND_TAP_BURST and isinstance(feedback.get("hit"), (int, float)):
+		out["score"] = float(feedback["hit"])
+	return out
+
+
+#: Doctypes that hold reusable engagement templates (FLO-190 authoring surface).
+TEMPLATE_DOCTYPES: dict[str, str] = {
+	ENGAGEMENT_TYPE_GAME: "Flock Engagement Game Template",
+	ENGAGEMENT_TYPE_QUESTIONNAIRE: "Flock Engagement Questionnaire Template",
+}
+
+#: Kinds valid for each template family (mirrors the DocType ``Select`` options).
+TEMPLATE_KINDS: dict[str, frozenset[str]] = {
+	ENGAGEMENT_TYPE_GAME: GAME_KINDS,
+	ENGAGEMENT_TYPE_QUESTIONNAIRE: QUESTIONNAIRE_KINDS,
+}
+
+#: Roles permitted to author (create/edit) engagement templates. The DocType
+#: perms deny Group Leaders write; the authoring UI mirrors that here so the
+#: page can hide the create/edit affordance for leaders (who only launch).
+TEMPLATE_AUTHOR_ROLES: frozenset[str] = frozenset({ROLE_ORG_ADMIN, ROLE_BRANCH_ADMIN, "System Manager"})
+
+
+def template_doctype_for_kind(kind: str) -> str:
+	"""Resolve which template DocType a kind belongs to (game vs questionnaire)."""
+	if kind in GAME_KINDS:
+		return TEMPLATE_DOCTYPES[ENGAGEMENT_TYPE_GAME]
+	if kind in QUESTIONNAIRE_KINDS:
+		return TEMPLATE_DOCTYPES[ENGAGEMENT_TYPE_QUESTIONNAIRE]
+	raise FlockEngagementError(f"Unknown engagement kind: {kind!r}")
+
+
+def _template_config(template: dict[str, Any]) -> dict[str, Any]:
+	"""Parse a template's JSON ``config`` (str or dict) into a plain dict."""
+	raw = template.get("config")
+	if isinstance(raw, dict):
+		return dict(raw)
+	if isinstance(raw, str) and raw:
+		try:
+			parsed = _json.loads(raw)
+		except (ValueError, TypeError):
+			return {}
+		return parsed if isinstance(parsed, dict) else {}
+	return {}
+
+
+def template_to_launch_config(template: dict[str, Any]) -> dict[str, Any]:
+	"""Project a saved Template DocType row onto ``create_session`` args.
+
+	Facilitators launch from a saved template (FLO-190): its ``kind`` +
+	``config`` become the session's, its ``template_name`` the default title,
+	and its a11y default the session's accessibility-mode default.
+	"""
+	kind = template.get("kind")
+	if not kind:
+		raise FlockEngagementError("Template has no engagement kind.")
+	return {
+		"kind": kind,
+		"engagement_type": engagement_type_for(kind),
+		"title": template.get("template_name") or template.get("title"),
+		"config": _template_config(template),
+		"accessibility_mode_default": bool(template.get("accessibility_mode_default")),
+		"template_name": template.get("name"),
+		"template_doctype": template.get("doctype") or template_doctype_for_kind(kind),
+	}
+
+
+def template_summary(row: dict[str, Any], *, doctype: str = "") -> dict[str, Any]:
+	"""Project a template row to the lean shape the authoring list view renders."""
+	kind = row.get("kind") or ""
+	return {
+		"name": row.get("name"),
+		"doctype": doctype or row.get("doctype") or (template_doctype_for_kind(kind) if kind else ""),
+		"template_name": row.get("template_name") or row.get("title") or row.get("name"),
+		"kind": kind or None,
+		"engagement_type": engagement_type_for(kind) if kind else None,
+		"description": row.get("description") or "",
+		"is_active": bool(row.get("is_active", True)),
+		"reviewed": bool(row.get("reviewed", False)),
+		"accessibility_mode_default": bool(row.get("accessibility_mode_default", False)),
+	}
+
+
+#: The portal-view function name each endpoint key routes to (FLO-190).
+#:
+#: Pure contract so a frappe-free test can pin that every documented endpoint
+#: resolves to a real ``@frappe.whitelist()`` view in :mod:`flock_os.engagement_views`
+#: (closes the FLO-12 false-green where ENGAGEMENT_ENDPOINTS pointed at a module
+#: that did not exist). The test parses ``engagement_views.py`` statically so it
+#: needs no bench.
+ENGAGEMENT_VIEWS_CONTRACT: dict[str, str] = {
+	"create_session": "create_session",
+	"open_session": "open_session",
+	"close_session": "close_session",
+	"join_session": "join_session",
+	"participate": "participate",
+	"session_state": "session_state",
+	"flush_offline": "flush_offline_queue",
+	"facilitator_context": "facilitator_context",
+	"review_queue": "suspect_review_queue",
+	"manual_override": "manual_override",
+	"list_templates": "list_engagement_templates",
+	"get_template": "get_engagement_template",
+}
+
+
 def assert_host_target_in_context(
 	*, branch: str | None, group: str | None, gathering: str | None, context: dict[str, Any]
 ) -> None:
@@ -1490,6 +1666,7 @@ __all__ = [
 	"DEFAULT_TICKET_TTL_SECONDS",
 	"ENGAGEMENT_CATALOG",
 	"ENGAGEMENT_ENDPOINTS",
+	"ENGAGEMENT_VIEWS_CONTRACT",
 	"ENGAGEMENT_TYPE_GAME",
 	"ENGAGEMENT_TYPE_QUESTIONNAIRE",
 	"EngagementGateway",
@@ -1521,6 +1698,7 @@ __all__ = [
 	"ROLE_BRANCH_ADMIN",
 	"ROLE_GROUP_LEADER",
 	"ROLE_ORG_ADMIN",
+	"ROOM_CODE_LEN",
 	"STATUS_ARCHIVED",
 	"STATUS_CLOSED",
 	"STATUS_CLOSING",
@@ -1529,6 +1707,9 @@ __all__ = [
 	"STATUS_SCHEDULED",
 	"SUSPECT_REACTION_MS",
 	"SUSPECT_SAME_IP_ATTENDEES",
+	"TEMPLATE_AUTHOR_ROLES",
+	"TEMPLATE_DOCTYPES",
+	"TEMPLATE_KINDS",
 	"SessionTicket",
 	"assert_host_target_in_context",
 	"attendee_key",
@@ -1536,14 +1717,21 @@ __all__ = [
 	"catalog_json",
 	"detect_suspect_pattern",
 	"engagement_type_for",
+	"generate_room_code",
 	"get_kind",
 	"is_facilitator",
 	"issue_session_ticket",
 	"js_parity_contract",
 	"normalize_score",
+	"pack_session_config",
 	"resolve_a11y_profile",
+	"resolve_session_ref",
 	"sign_ticket",
 	"status_flags_for",
+	"template_doctype_for_kind",
+	"template_summary",
+	"template_to_launch_config",
+	"unpack_participate_payload",
 	"valid_kinds",
 	"validate_kind",
 	"validate_session_window",

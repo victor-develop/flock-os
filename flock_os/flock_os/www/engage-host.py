@@ -14,7 +14,12 @@ import frappe
 from frappe import _
 from frappe.utils import cstr
 
-from flock_os.engagement import FlockEngagementError, build_facilitator_context
+from flock_os.engagement import (
+	TEMPLATE_DOCTYPES,
+	FlockEngagementError,
+	build_facilitator_context,
+	template_summary,
+)
 
 
 def get_context(context):
@@ -53,6 +58,10 @@ def get_context(context):
 	context["parity_json"] = frappe.as_json(ctx["parity"])
 	context["a11y_defaults_json"] = frappe.as_json(ctx["a11y_defaults"])
 	context["endpoints_json"] = frappe.as_json(ctx["endpoints"])
+	# FLO-190: saved-template picker + ?template=DOCTYPE:NAME preselect so a
+	# facilitator can launch straight from the template library.
+	context["templates_json"] = frappe.as_json(_templates_by_family(ctx.get("organization")))
+	context["template_preselect"] = frappe.form_dict.get("template") or ""
 	return context
 
 
@@ -86,4 +95,33 @@ def _gatherings_by_branch(gatherings):
 	out: dict[str, list[dict]] = {}
 	for g in gatherings:
 		out.setdefault(g["branch"], []).append({"name": g["name"], "label": g["label"]})
+	return out
+
+
+def _templates_by_family(organization):
+	"""Active templates grouped by family for the FLO-190 launch picker.
+
+	The picker populates the session's kind + config from the chosen template;
+	inactive rows are hidden from the launch surface.
+	"""
+	out: dict[str, list[dict]] = {}
+	for family, doctype in TEMPLATE_DOCTYPES.items():
+		try:
+			rows = frappe.get_all(
+				doctype,
+				filters={"organization": organization, "is_active": 1} if organization else {"is_active": 1},
+				fields=[
+					"name",
+					"template_name",
+					"kind",
+					"description",
+					"accessibility_mode_default",
+					"config",
+				],
+				order_by="modified desc",
+				limit_page_length=100,
+			)
+		except Exception:  # noqa: BLE001 — degrade to empty before doctype is synced
+			rows = []
+		out[family] = [template_summary(r, doctype=doctype) for r in rows]
 	return out
