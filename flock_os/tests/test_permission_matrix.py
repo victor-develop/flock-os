@@ -11,9 +11,10 @@ and :mod:`scripts.demo_phase1`, so the two stay DRY (no forked harness).
 
 Matrix axes (the full enterprise-perm confinement proof):
 
-* **Roles** — every role in the ``FLOCK_ROLES`` catalog mirrored from
-  :mod:`flock_os.permissions` (Org Admin, Branch Admin, Auditor, Group Leader,
-  Member, Visitor).
+* **Roles** — every role in the Flock role catalog (the ``BYPASS_ROLES ∪
+  GROUP_SCOPED_ROLES`` partition exposed by :mod:`flock_os.permissions`, which
+  mirrors :data:`fixtures.FLOCK_ROLES`): Org Admin, Branch Admin, Auditor,
+  Group Leader, Member, Visitor.
 * **Documents** — every entry in :data:`permissions.SCOPED_DOCTYPES` (the single
   list the ``permission_query_conditions`` hook narrows), grouped by kind:
   self-predication (``Flock Group``), member-anchored
@@ -171,7 +172,8 @@ def _passthrough(value: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Representative actors — one per role in the FLOCK_ROLES catalog. Each actor's
+# Representative actors — one per role in the catalog (BYPASS_ROLES ∪
+# GROUP_SCOPED_ROLES). Each actor's
 # resolved scope exercises a distinct branch of the resolve→scope→guard logic.
 # --------------------------------------------------------------------------- #
 ORG_ADMIN_USER = "admin@flock"
@@ -322,7 +324,7 @@ GROUP_SCOPED_ACTORS: tuple[tuple[str, str], ...] = (
 
 
 # --------------------------------------------------------------------------- #
-# Matrix dimension sanity — the full FLOCK_ROLES × SCOPED_DOCTYPES catalog.
+# Matrix dimension sanity — the full role catalog × SCOPED_DOCTYPES matrix.
 # --------------------------------------------------------------------------- #
 def test_matrix_covers_full_role_catalog():
 	# The matrix exercises every role in the permission role catalog (ADR §6.4).
