@@ -26,6 +26,14 @@ is gated on.
   app installed + migrated, the bulk endpoint served (`/api/method/
   flock_os.attendance.bulk_submit`), and the Socket.IO server up. See
   **Runtime fixtures** below — the smoke is inert without this.
+- **The flock_os room-join handler wired into the bench** (FLO-107). Frappe v15's
+  realtime server has no generic `join` event and no per-app handler loader, so a
+  one-time DevOps step registers flock_os's `join` handler:
+  ```bash
+  scripts/dev/wire-socketio-handler.sh          # idempotent; re-run after bench update
+  bench restart                                  # reload the realtime node server
+  ```
+  Runbook + why: `docs/development/ws-broadcast-delivery.md`.
 - **Node** ≥ 20 only for the shard-parity check (`node --test load/lib/*.test.mjs`),
   which runs with **no runtime** and keeps the JS shard math byte-identical to
   Python (`flock_os/realtime.py`).
@@ -56,6 +64,11 @@ k6 run -e WRITES_PER_SEC=20 -e DURATION_SEC=30 -e BATCH_ITEMS=10 \
 # Websocket — 200 concurrent clients × 30s.
 k6 run -e WS_VUS=200 -e WS_DURATION_SEC=30 ws_event_room.js
 ```
+
+The WS smoke authenticates (one login → shared `sid`, presented as a cookie to
+the per-site realtime namespace) and connects to `/<site>` on the Socket.IO port
+(`9000` on this bench — `8000` 404s `/socket.io`). Drive the broadcast producer
+below while the clients are up to exercise `flock_ws_broadcast_latency`.
 
 ## Full acceptance bar (Phase 6 gate)
 
