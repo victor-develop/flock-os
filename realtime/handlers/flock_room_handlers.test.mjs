@@ -13,6 +13,7 @@ import {
 	makeJoinListener,
 	defaultAuthorize,
 	FLOCK_EVENT_ROOM_RE,
+	FLOCK_SCOPE_ENDPOINT,
 } from "./flock_room_handlers.js";
 
 // Minimal fake socket: records every room it joined / left.
@@ -104,9 +105,13 @@ test("makeJoinListener never throws on authorize rejection (best-effort)", async
 });
 
 // --- defaultAuthorize: HTTP scope-check shape (frappe_request injected) ---- #
-// A fake frappe_request returning a superagent-like chainable.
-function fakeFrappeRequest(outcome) {
-	return (_path, _socket) => {
+// A fake frappe_request returning a superagent-like chainable. Captures the
+// endpoint path so the test pins the bench-only `flock_os.realtime_views`
+// surface (FLO-112 — `realtime.py` is import-clean, so the
+// `@frappe.whitelist()` decorator lives in `realtime_views`, not `realtime`).
+function fakeFrappeRequest(outcome, captured = {}) {
+	return (path, _socket) => {
+		captured.path = path;
 		const chain = {
 			type() {
 				return chain;
@@ -122,6 +127,18 @@ function fakeFrappeRequest(outcome) {
 		return chain;
 	};
 }
+
+test("defaultAuthorize POSTs the bench-only realtime_views scope endpoint", async () => {
+	const captured = {};
+	const auth = defaultAuthorize({}, fakeFrappeRequest({ status: 200, body: { message: true } }, captured));
+	await auth("flock_os:event:g1:broadcast");
+	assert.equal(captured.path, FLOCK_SCOPE_ENDPOINT);
+	assert.equal(
+		captured.path,
+		"/api/method/flock_os.realtime_views.can_join_event_room",
+		"must hit the whitelisted realtime_views surface, not realtime (import-clean)",
+	);
+});
 
 test("defaultAuthorize resolves true on HTTP 200 with truthy message", async () => {
 	const auth = defaultAuthorize({}, fakeFrappeRequest({ status: 200, body: { message: true } }));

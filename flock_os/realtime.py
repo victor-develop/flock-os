@@ -619,13 +619,17 @@ def event_room_join_allowed(
 
 
 def can_join_event_room(room: str) -> bool:
-	"""``@frappe.whitelist()`` scope gate for the realtime ``join`` handler.
+	"""Scope gate for the realtime ``join`` handler (FLO-106 / FLO-112).
 
-	The node ``join`` handler reaches this over HTTP via ``frappe_request`` (the
-	same pattern as Frappe's own ``can_subscribe_doc``): the request carries the
-	socket's session cookie / authorization header, so ``frappe.session.user`` is
-	the authenticated subscriber. Returns ``True``/``False`` as JSON
-	(``{"message": true}``); a ``False`` keeps the socket out of the room.
+	Pure decision the bench-side ``@frappe.whitelist()`` surface
+	:func:`flock_os.realtime_views.can_join_event_room` delegates to: the node
+	``join`` handler POSTs that endpoint over HTTP via ``frappe_request`` (the
+	same pattern as Frappe's own ``can_subscribe_doc``), the request carries the
+	socket's session cookie / authorization header, and this resolves
+	``frappe.session.user`` against the gathering's branch. Returns ``True``/
+	``False`` as JSON (``{"message": true}``); a ``False`` keeps the socket out
+	of the room. The decorator lives in ``realtime_views`` (not here) so this
+	module stays import-clean for the no-bench CI gate.
 	"""
 	import frappe
 

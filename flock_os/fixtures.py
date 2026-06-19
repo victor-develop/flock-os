@@ -54,3 +54,30 @@ FLOCK_GATHERING_TYPES: tuple[dict[str, str | int], ...] = (
 )
 
 FLOCK_GATHERING_TYPE_NAMES: tuple[str, ...] = tuple(t["gathering_type_name"] for t in FLOCK_GATHERING_TYPES)
+
+
+# ---------------------------------------------------------------------------- #
+# Smoke fixtures for the FLO-10 §8 load / WS gate (load/README.md -> Runtime
+# fixtures, [FLO-112](/FLO/issues/FLO-112)).
+#
+# These are **runtime smoke data, not canonical catalog fixtures** — they are
+# NOT auto-seeded on `bench migrate` (that would pollute every production site
+# with test rows). They are materialized on demand against a bench by
+# `flock_os.utils.smoke_fixtures` so the §8 WS room-join scope gate resolves
+# `gathering-smoke` -> `branch-smoke` and the leader can join (the same chain
+# the k6 smoke + the broadcast producer assume). Kept here (pure data, no
+# Frappe import) so the seed shape is unit-testable under plain pytest.
+# ---------------------------------------------------------------------------- #
+#: Tenant floor for the smoke (a Flock Organization row).
+FLOCK_SMOKE_ORG = "org-smoke"
+#: The branch the leader is scoped to (a Flock Branch row -> FLOCK_SMOKE_ORG).
+FLOCK_SMOKE_BRANCH = "branch-smoke"
+#: A branch-bound group the gathering attaches to (Flock Group -> branch).
+FLOCK_SMOKE_GROUP = "group-smoke"
+#: The gathering whose broadcast room the smoke joins (Flock Gathering -> branch+group).
+FLOCK_SMOKE_GATHERING = "gathering-smoke"
+#: The smoke user (Flock Group Leader) holding a single Flock Branch User
+#: Permission = branch-smoke so the scope gate resolves (load/config.js).
+FLOCK_SMOKE_USER = "leader@flock.os"
+FLOCK_SMOKE_USER_PASSWORD = "flock"
+FLOCK_SMOKE_GATHERING_TITLE = "Smoke Gathering"
