@@ -24,9 +24,13 @@
 //      socket cannot eavesdrop on Frappe's internal rooms (`doc:*`, `task:*`,
 //      `user:*`, …).
 //   2. Branch scope (FLO-106) — before joining, ask
-//      `flock_os.realtime.can_join_event_room` whether the socket's user has
-//      branch scope over the gathering (ADR §6.2), the same decision that scopes
-//      `tabFlock Attendance Record` rows. Fails closed: a denied/errored check
+//      `flock_os.realtime_views.can_join_event_room` whether the socket's user
+//      has branch scope over the gathering (ADR §6.2), the same decision that
+//      scopes `tabFlock Attendance Record` rows. The whitelisted surface lives
+//      in `flock_os.realtime_views` (a bench-only module) because `realtime.py`
+//      is import-clean by design — no top-level `import frappe`, so the
+//      `@frappe.whitelist()` decorator cannot live there (FLO-112). Fails closed:
+//      a denied/errored check
 //      keeps the socket out of the room. (FLO-107 shipped gate 1 as the smoke
 //      unblocker and deferred gate 2; FLO-106 is that follow-up.)
 //
@@ -49,19 +53,23 @@ function isFlockEventRoom(room) {
 	return typeof room === "string" && FLOCK_EVENT_ROOM_RE.test(room);
 }
 
-// Default branch-scope authorizer: POST flock_os.realtime.can_join_event_room
+// Default branch-scope authorizer: POST flock_os.realtime_views.can_join_event_room
 // over the socket's session (same shape as Frappe's `can_subscribe_doc`). It
-// returns true iff the user's branch scope covers the gathering's branch.
+// returns true iff the user's branch scope covers the gathering's branch. The
+// whitelisted endpoint lives in the bench-only `flock_os.realtime_views` module
+// (`realtime.py` stays import-clean for the no-bench CI gate) — FLO-112.
 //
 // `frappeRequest` is injectable so the gate's allow/deny branching is unit-
 // testable with no bench; in production the wiring passes frappe's own
 // `realtime/utils.js` (`frappe_request`). Resolved lazily as a fallback so the
 // module still imports clean under `node --test`.
+const FLOCK_SCOPE_ENDPOINT = "/api/method/flock_os.realtime_views.can_join_event_room";
+
 function defaultAuthorize(socket, frappeRequest) {
 	const request = frappeRequest || requireFrappeRequest();
 	return async function authorize(room) {
 		return new Promise((resolve) => {
-			request("/api/method/flock_os.realtime.can_join_event_room", socket)
+			request(FLOCK_SCOPE_ENDPOINT, socket)
 				.type("form")
 				.query({ room })
 				.end((err, res) => {
@@ -119,4 +127,5 @@ module.exports = flock_room_handlers;
 module.exports.isFlockEventRoom = isFlockEventRoom;
 module.exports.makeJoinListener = makeJoinListener;
 module.exports.defaultAuthorize = defaultAuthorize;
+module.exports.FLOCK_SCOPE_ENDPOINT = FLOCK_SCOPE_ENDPOINT;
 module.exports.FLOCK_EVENT_ROOM_RE = FLOCK_EVENT_ROOM_RE;

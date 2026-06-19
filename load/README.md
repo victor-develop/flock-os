@@ -50,6 +50,16 @@ Permission** resolves the batch scope (`flock_os.attendance._resolve_caller_bran
    Summary` aggregate from FLO-17 migrated.
 4. Redis (cache + queue + socketio) + RQ worker on the `flock_attendance` queue.
 
+Items 1–2 are seeded idempotently by one command (after the flock_os app is
+installed + migrated — these are runtime smoke rows, not migrate-seeded catalog
+fixtures):
+
+```bash
+scripts/dev/seed-smoke-fixtures.sh
+# or: bench --site flock_os.localhost execute flock_os.utils.smoke_fixtures.execute
+# seeds: org-smoke -> branch-smoke -> group-smoke -> gathering-smoke + scoped leader
+```
+
 Override any of these via env (`EVENT_ID`, `BRANCH_ID`, `FLOCK_USER`,
 `FLOCK_PASSWORD`, `BASE_URL`, `WS_BASE_URL`) — see `config.js`.
 

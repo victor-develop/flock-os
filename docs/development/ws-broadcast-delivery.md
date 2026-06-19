@@ -24,10 +24,12 @@ root causes, both fixed by FLO-107:
    `join` handler (`realtime/handlers/flock_room_handlers.js`) wired into the
    bench realtime server by `scripts/dev/wire-socketio-handler.sh`. **FLO-106**
    added a second gate on top: before joining, the handler asks
-   `flock_os.realtime.can_join_event_room` whether the socket's user has branch
+   `flock_os.realtime_views.can_join_event_room` whether the socket's user has branch
    scope over the gathering (ADR §6.2) — the same decision that scopes
    `tabFlock Attendance Record` rows — so a client can only subscribe to rooms
-   for gatherings in its branch subtree.
+   for gatherings in its branch subtree. (The whitelisted surface lives in the
+   bench-only `flock_os.realtime_views` module — `realtime.py` is import-clean
+   by design, so the `@frappe.whitelist()` decorator cannot live there; FLO-112.)
 
 A third wrinkle: the site namespace runs `realtime/middlewares/authenticate.js`,
 which requires a `sid` cookie or `Authorization` header (validated via
@@ -101,7 +103,7 @@ The handler applies **two** gates, defense in depth:
    rooms route through it (an authenticated socket cannot eavesdrop on Frappe's
    `doc:*` / `task:*` / `user:*` rooms).
 2. **Branch scope** — before `socket.join(room)`, the handler calls
-   `flock_os.realtime.can_join_event_room` over the socket's session (same shape
+   `flock_os.realtime_views.can_join_event_room` over the socket's session (same shape
    as Frappe's `can_subscribe_doc`). That endpoint resolves the gathering's
    `Flock Gathering.branch` and reuses the single sanctioned decision
    `flock_os.permissions.can_access_branch`: global-branch roles (Org Admin /
@@ -140,20 +142,14 @@ Architect §5.1 sign-off; changing it is a one-line client + server edit.
 > the gathering's branch, so the smoke's `EVENT_ID` (`gathering-smoke`) MUST
 > exist as a `Flock Gathering` in a branch the smoke user (`leader@flock.os`,
 > scoped to `branch-smoke`) can access — otherwise joins fail closed and the
-> smoke sees no broadcasts (looks like an FLO-107 regression). Seed it once
-> (after the `Flock Gathering` doctype is migrated into the site):
+> smoke sees no broadcasts (looks like an FLO-107 regression). Seed it once with
+> the idempotent seeder (after the `Flock Gathering` doctype is migrated into
+> the site — these are runtime smoke rows, not migrate-seeded catalog fixtures):
 >
-> ```python
-> # bench --site flock_os.localhost console
-> import frappe
-> if not frappe.db.exists("Flock Gathering", "gathering-smoke"):
->     frappe.get_doc({
->         "doctype": "Flock Gathering", "title": "Smoke Gathering",
->         "organization": frappe.db.get_single_value("Flock Settings", "default_organization") or frappe.db.get_value("Flock Organization", {}, "name"),
->         "branch": "branch-smoke", "gathering_type": "Weekly Service",
->         "starts_on": "2026-01-01 10:00", "status": "Scheduled",
->     }).insert(ignore_permissions=True)
->     frappe.db.commit()
+> ```bash
+> # org-smoke -> branch-smoke -> group-smoke -> gathering-smoke + scoped leader.
+> scripts/dev/seed-smoke-fixtures.sh          # idempotent; safe to re-run
+> # or: bench --site flock_os.localhost execute flock_os.utils.smoke_fixtures.execute
 > ```
 
 ```bash
