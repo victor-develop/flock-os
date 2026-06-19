@@ -1,0 +1,110 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{#
+  Flock OS — Fun Attendance player shell (FLO-12 / FLO-9 §12).
+  Mobile-first, touch-friendly, WCAG 2.1 AA. The shell renders a room-code join,
+  the live <EngagementStage> mount, an accessibility-mode toggle, and clear
+  connection/loading/empty/error states. Every participation/flush call goes to
+  flock_os.engagement_views (FLO-11); the backend owns attendance + scope.
+#}
+
+{% block page_content %}
+<div
+	id="flock-engage-root"
+	class="flock-engage{% if a11y_defaults_json %}{% endif %}"
+	data-session-id="{{ session_id }}"
+	data-room-code="{{ room_code }}"
+	data-a11y-pref-key="{{ a11y_pref_key }}"
+	data-min-target-px="{{ min_target_px }}"
+	data-endpoints="{{ endpoints_json }}"
+	data-kinds="{{ kinds_json }}"
+	data-parity="{{ parity_json }}"
+	data-a11y-defaults="{{ a11y_defaults_json }}"
+	aria-label="{{ _('Fun Attendance') }}"
+>
+  {# --- Connection + a11y chrome (persistent across stages) --- #}
+  <div class="flock-engage__chrome">
+    <div class="flock-engage__conn" id="flock-engage-conn" role="status" aria-live="polite">
+      <span class="flock-dot flock-dot--ok" aria-hidden="true"></span>
+      <span class="flock-engage__conn-label" id="flock-engage-conn-label">{{ _('Connecting…') }}</span>
+    </div>
+    <button type="button"
+            class="flock-engage__a11y-btn"
+            id="flock-engage-a11y-toggle"
+            aria-pressed="false"
+            aria-controls="flock-engage-a11y-panel"
+            title="{{ _('Accessibility options') }}">
+      <span aria-hidden="true">A11y</span>
+      <span class="sr-only">{{ _('Accessibility options') }}</span>
+    </button>
+  </div>
+
+  {# --- Accessibility panel (reduced motion, high contrast, captions, calm) --- #}
+  <section class="flock-engage__a11y-panel" id="flock-engage-a11y-panel" hidden aria-label="{{ _('Accessibility options') }}">
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-enabled" data-a11y="enabled">
+      <span>{{ _('Accessibility mode') }}</span>
+    </label>
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-reduced-motion" data-a11y="reduced_motion">
+      <span>{{ _('Reduced motion') }}</span>
+    </label>
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-high-contrast" data-a11y="high_contrast">
+      <span>{{ _('High contrast') }}</span>
+    </label>
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-colorblind" data-a11y="colorblind_safe">
+      <span>{{ _('Colorblind-safe palette') }}</span>
+    </label>
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-captions" data-a11y="captions">
+      <span>{{ _('Captions') }}</span>
+    </label>
+    <label class="flock-check">
+      <input type="checkbox" name="a11y-haptics" data-a11y="haptics" checked>
+      <span>{{ _('Haptics') }}</span>
+    </label>
+  </section>
+
+  {# --- Join view (room code) — shown until a session is joined --- #}
+  <section class="flock-engage__join" id="flock-engage-join" aria-label="{{ _('Join a session') }}">
+    <h1 class="flock-engage__title">{{ _('Join the fun') }}</h1>
+    <p class="flock-engage__hint">{{ _('Enter the 6-digit code shown by your facilitator.') }}</p>
+    <form id="flock-engage-join-form" class="flock-engage__join-form" autocomplete="off">
+      <label class="sr-only" for="flock-engage-room">{{ _('6-digit room code') }}</label>
+      <input
+        id="flock-engage-room"
+        name="room_code"
+        class="flock-engage__room-input"
+        type="text"
+        inputmode="numeric"
+        pattern="[0-9]{6}"
+        maxlength="6"
+        minlength="6"
+        required
+        placeholder="123456"
+        aria-describedby="flock-engage-room-help">
+      <p class="flock-engage__room-help" id="flock-engage-room-help">
+        {{ _('Tip: scan the QR code or tap the share link to skip this step.') }}
+      </p>
+      <button type="submit" class="btn btn-primary flock-engage__join-btn" id="flock-engage-join-submit">
+        {{ _('Join') }}
+      </button>
+    </form>
+    <div class="flock-engage__status" id="flock-engage-join-status" role="status" aria-live="polite"></div>
+  </section>
+
+  {# --- Stage mount: <EngagementStage> renders the live experience here --- #}
+  <section class="flock-engage__stage" id="flock-engage-stage" hidden aria-live="polite" aria-label="{{ _('Live engagement') }}"></section>
+
+  {# --- Global status / toast (participation ack, reconnect, errors) --- #}
+  <div class="flock-engage__toast" id="flock-engage-toast" role="status" aria-live="assertive" hidden></div>
+</div>
+
+<link rel="stylesheet" href="/assets/flock_os/css/engage.css">
+<script src="/assets/flock_os/js/engagement-core.js"></script>
+<script src="/assets/flock_os/js/engage.js"></script>
+{% endblock %}

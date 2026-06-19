@@ -115,10 +115,22 @@ class BatchSizeExceeded(Exception):
 class AttendanceItem:
 	"""A single attendance row to be bulk-reported.
 
-	``event`` is the gathering/event id (``Flock Gathering``). ``attendee_ref``
+	``event`` is the gathering/event id (``Flock Gathering``) — the legacy rev-1
+	grouping axis the rollup/``bulk_recorded`` payload keys on. ``attendee_ref``
 	is the member or visitor reference. ``branch`` is the org-tree node the row
 	belongs to and the row-level permission anchor. ``client_req_id`` is the
 	per-item idempotency key supplied by the client.
+
+	The optional **provenance** fields (``gathering``, ``member``,
+	``engagement_session``, ``attendee_key``) stamp the ADR §9 cross-source dedup
+	columns when the row originates from the engagement runtime (FLO-11). They
+	are additive + backward-compatible: the manual-roster bulk path leaves them
+	``None`` and ``FrappeBulkAttendanceGateway.bulk_insert`` writes them only when
+	present. The engagement close path (FLO-11 §5) populates them so the
+	``UNIQUE (branch, gathering, member)`` index (ADR §9) collapses a
+	manual-roster credit + an engagement credit for the same member at the same
+	gathering into one attendance row, and ``UNIQUE (engagement_session,
+	attendee_key)`` is the per-session backstop.
 	"""
 
 	event: str
@@ -127,6 +139,11 @@ class AttendanceItem:
 	status: str = "Present"
 	source: str = "bulk"
 	client_req_id: str | None = None
+	# Engagement provenance (FLO-11 §5 / ADR §9). None for manual-roster rows.
+	gathering: str | None = None
+	member: str | None = None
+	engagement_session: str | None = None
+	attendee_key: str | None = None
 
 	@property
 	def idempotency_key(self) -> tuple[str, str, str]:
@@ -287,6 +304,10 @@ class InMemoryBulkAttendanceGateway:
 		self._unique: set[tuple[str, str]] = set()
 		self._counters: dict[tuple[str, str], int] = {}
 		self.published_events: list[DomainEvent] = []
+		# Full items captured in insertion order so callers/tests can assert the
+		# provenance fields (gathering/member/engagement_session/attendee_key)
+		# actually reached the write path (FLO-11 §5 dedup contract).
+		self.inserted_items: list[AttendanceItem] = []
 
 	@contextmanager
 	def transaction(self) -> Iterator[None]:
@@ -312,6 +333,7 @@ class InMemoryBulkAttendanceGateway:
 		for item in items:
 			self._seen.add(item.idempotency_key)
 			self._unique.add(item.unique_key)
+			self.inserted_items.append(item)
 		return len(items)
 
 	def seed_aggregate(self, scope: AttendanceScope, events: Iterable[str]) -> None:
@@ -474,8 +496,10 @@ class FrappeBulkAttendanceGateway:
 
 	Expected backing schema (provided by [FLO-17](/FLO/issues/FLO-17)):
 	``tabFlock Attendance Record`` with columns ``event, attendee_ref, branch,
-	status, source, client_req_id``, the ``UNIQUE (event, attendee_ref)`` index
-	and the ``UNIQUE (event, attendee_ref, client_req_id)`` idempotency index
+	status, source, client_req_id`` plus the engagement-provenance columns
+	``gathering, member, engagement_session, attendee_key`` (written when the
+	``AttendanceItem`` carries them — FLO-11 §5), the ``UNIQUE (event, attendee_ref)``
+	index and the ``UNIQUE (event, attendee_ref, client_req_id)`` idempotency index
 	(FLO-10 §4.1); and ``tabEvent Attendance Summary`` with one row per
 	``(branch, event)`` and a ``total`` counter maintained atomically by
 	:meth:`increment_aggregate`. Event emission routes through
@@ -557,6 +581,14 @@ class FrappeBulkAttendanceGateway:
 		frappe = self._frappe
 		if not items:
 			return 0
+		# The engagement provenance columns (gathering, member, engagement_session,
+		# attendee_key) are written only when the item carries them (FLO-11 §5 /
+		# ADR §9). They are None for manual-roster rows, so the cross-source dedup
+		# ``UNIQUE (branch, gathering, member)`` index only fires when BOTH paths
+		# stamp the same member at the same gathering — which is exactly the
+		# headline feature. ``event`` stays the legacy grouping axis (rollup +
+		# ``bulk_recorded`` payload key on ``gathering``); it equals ``gathering``
+		# for engagement-sourced rows.
 		fields = [
 			"event",
 			"attendee_ref",
@@ -564,6 +596,10 @@ class FrappeBulkAttendanceGateway:
 			"status",
 			"source",
 			"client_req_id",
+			"gathering",
+			"member",
+			"engagement_session",
+			"attendee_key",
 		]
 		values = [
 			[
@@ -573,6 +609,10 @@ class FrappeBulkAttendanceGateway:
 				item.status,
 				item.source,
 				item.client_req_id or item.attendee_ref,
+				item.gathering,
+				item.member,
+				item.engagement_session,
+				item.attendee_key,
 			]
 			for item in items
 		]

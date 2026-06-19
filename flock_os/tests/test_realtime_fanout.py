@@ -224,7 +224,7 @@ def test_publisher_failure_does_not_propagate():
 # The engagement session close → bulk reporting → bulk_recorded → projector flow.
 # --------------------------------------------------------------------------- #
 def test_live_game_close_fans_all_shards_and_broadcast():
-	"""``flock.engagement.session.closed`` reaches every player on every shard."""
+	"""``flock.engagement.closed`` reaches every player on every shard."""
 	publisher = RecordingRealtimePublisher()
 	projector = EventRoomProjector(publisher)
 

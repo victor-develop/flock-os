@@ -99,6 +99,8 @@ def bulk_submit(event: str, items: list[dict[str, Any]], batch_id: str) -> dict[
 						"status": item.status,
 						"source": item.source,
 						"client_req_id": item.client_req_id,
+						"gathering": item.gathering,
+						"member": item.member,
 					}
 					for item in attendance_items
 				],
@@ -138,6 +140,11 @@ def process_bulk_batch(payload: dict[str, Any], at: int | None = None) -> None:
 			status=raw.get("status", DEFAULT_ATTENDANCE_STATUS),
 			source=raw.get("source", DEFAULT_ATTENDANCE_SOURCE),
 			client_req_id=raw["client_req_id"],
+			# FLO-199: provenance carried across the enqueue boundary so the RQ
+			# job reconstructs the same (gathering, member) the transport layer
+			# stamped — keeps the ADR §9 cross-source dedup index firing.
+			gathering=raw.get("gathering"),
+			member=raw.get("member"),
 		)
 		for raw in payload["items"]
 	]
@@ -265,6 +272,15 @@ def _item_from_payload(event: str, branch: str, raw: dict[str, Any], index: int)
 	client_req_id = raw.get("client_req_id")
 	if not client_req_id:
 		frappe.throw(f"items[{index}].client_req_id is required (idempotency)")
+	# ADR §9 / FLO-199 cross-source provenance. The manual-roster ``event`` IS
+	# the gathering id, so ``gathering`` is stamped unconditionally. ``member``
+	# is stamped only when the caller asserts the attendee is a known member
+	# (the optional ``member`` field); visitors omit it so a dangling ref never
+	# lands in the ``member`` FK column. This mirrors the engagement close-path
+	# projection (:func:`flock_os.engagement._participation_to_attendance_item`)
+	# so the ``UNIQUE (branch, gathering, member)`` index collapses a manual
+	# credit + an engagement credit for the same member into one row.
+	member = raw.get("member")
 	return AttendanceItem(
 		event=event,
 		attendee_ref=str(attendee_ref),
@@ -272,6 +288,8 @@ def _item_from_payload(event: str, branch: str, raw: dict[str, Any], index: int)
 		status=raw.get("status", DEFAULT_ATTENDANCE_STATUS),
 		source=raw.get("source", DEFAULT_ATTENDANCE_SOURCE),
 		client_req_id=str(client_req_id),
+		gathering=event,
+		member=str(member) if member else None,
 	)
 
 

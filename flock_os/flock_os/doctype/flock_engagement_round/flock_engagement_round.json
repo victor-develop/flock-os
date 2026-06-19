@@ -1,0 +1,151 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "session",
+   "fieldtype": "Link",
+   "label": "Session",
+   "options": "Flock Engagement Session",
+   "reqd": 1,
+   "search_index": 1,
+   "in_standard_filter": 1,
+   "description": "Parent engagement session."
+  },
+  {
+   "fieldname": "round_index",
+   "fieldtype": "Int",
+   "label": "Round Index",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "1-based ordering of the round within the session."
+  },
+  {
+   "fieldname": "prompt",
+   "fieldtype": "Text",
+   "label": "Prompt",
+   "translatable": 1,
+   "description": "The question / action prompt (translated via frappe._, FLO-9 §7)."
+  },
+  {
+   "fieldname": "kind_detail",
+   "fieldtype": "Data",
+   "label": "Kind Detail",
+   "translatable": 0,
+   "description": "Per-kind payload key, e.g. quiz option set, bingo cell, poll options JSON, slider config."
+  },
+  {
+   "fieldname": "options_json",
+   "fieldtype": "JSON",
+   "label": "Options JSON",
+   "description": "Per-round option set (quiz choices, poll options, bingo cells, slider bounds)."
+  },
+  {
+   "fieldname": "correct_option",
+   "fieldtype": "Data",
+   "label": "Correct Option",
+   "translatable": 0,
+   "description": "Quiz-race correct answer key (server-scored)."
+  },
+  {
+   "fieldname": "duration_seconds",
+   "fieldtype": "Int",
+   "label": "Duration Seconds",
+   "description": "Server-timed round duration (quiz race / reaction tap)."
+  },
+  {
+   "fieldname": "starts_at",
+   "fieldtype": "Datetime",
+   "label": "Starts At",
+   "description": "Server-published synchronized tick (FLO-9 §7 fairness)."
+  },
+  {
+   "fieldname": "calm_equivalent",
+   "fieldtype": "Check",
+   "label": "Calm Equivalent",
+   "default": "0",
+   "description": "Marks this round as the no-time-pressure accessibility variant (FLO-9 §7)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Engagement Round",
+ "naming_rule": "Autoincrement",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
