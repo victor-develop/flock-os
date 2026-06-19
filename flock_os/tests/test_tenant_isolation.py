@@ -248,7 +248,7 @@ class TestFullTreeViewers:
 			)
 		)
 		try:
-			assert perms.get_group_scoped_conditions("Flock Group", "global@flock") == ""
+			assert perms.get_group_scoped_conditions(doctype="Flock Group", user="global@flock") == ""
 			assert perms.has_group_scope("Flock Group", "global@flock") is False
 		finally:
 			perms.install_gateway(perms.NullPermissionGateway())
@@ -273,7 +273,7 @@ class TestBroaderScopeWins:
 		# via Branch Admin, not Leader.
 		perms.install_gateway(_dual_role_gateway())
 		try:
-			assert perms.get_group_scoped_conditions("Flock Group Member", "dual@north") == ""
+			assert perms.get_group_scoped_conditions(doctype="Flock Group Member", user="dual@north") == ""
 			assert perms.has_group_scope("Flock Group Member", "dual@north") is False
 		finally:
 			perms.install_gateway(perms.NullPermissionGateway())
@@ -296,7 +296,7 @@ class TestBroaderScopeWins:
 		# → the hook returns a non-empty fragment narrowing to their led subtree.
 		perms.install_gateway(_plain_leader_gateway())
 		try:
-			sql = perms.get_group_scoped_conditions("Flock Group Member", "lead@north")
+			sql = perms.get_group_scoped_conditions(doctype="Flock Group Member", user="lead@north")
 			assert sql.startswith(" AND (")
 			assert "G-North" in sql or "`tabFlock Group`.`lft` >= 1" in sql
 			assert perms.has_group_scope("Flock Group Member", "lead@north") is True

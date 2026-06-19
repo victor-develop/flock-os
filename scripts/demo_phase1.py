@@ -333,7 +333,7 @@ def _scenario_c_group_leader(world: DemoWorld) -> Result:
 	# Permission hook narrows the group axis to the led subtree (non-empty fragment).
 	perms.install_gateway(world)
 	try:
-		fragment = perms.get_group_scoped_conditions("Flock Group", "lead@north")
+		fragment = perms.get_group_scoped_conditions(doctype="Flock Group", user="lead@north")
 		has_scope = perms.has_group_scope("Flock Group", "lead@north")
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())
@@ -391,7 +391,7 @@ def _scenario_d_org_admin_and_auditor(world: DemoWorld) -> Result:
 	# Org admin also has no group-axis fragment (bypass).
 	perms.install_gateway(world)
 	try:
-		org_no_fragment = perms.get_group_scoped_conditions("Flock Group", "admin@flock") == ""
+		org_no_fragment = perms.get_group_scoped_conditions(doctype="Flock Group", user="admin@flock") == ""
 		auditor_no_branch_up = world.list_branch_user_permissions("auditor@flock") == ()
 	finally:
 		perms.install_gateway(perms.NullPermissionGateway())

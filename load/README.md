@@ -57,7 +57,8 @@ fixtures):
 ```bash
 scripts/dev/seed-smoke-fixtures.sh
 # or: bench --site flock_os.localhost execute flock_os.utils.smoke_fixtures.execute
-# seeds: org-smoke -> branch-smoke -> group-smoke -> gathering-smoke + scoped leader
+# seeds: branch-smoke -> group-smoke -> gathering-smoke + scoped leader
+# (the smoke reuses the site's singleton Flock Organization — FLO-114)
 ```
 
 Override any of these via env (`EVENT_ID`, `BRANCH_ID`, `FLOCK_USER`,

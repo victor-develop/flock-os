@@ -51,6 +51,11 @@ _CATALOG = [
 	flock_events.APPROVAL_STEP_REJECTED,
 	flock_events.APPROVAL_APPROVED,
 	flock_events.APPROVAL_REJECTED,
+	flock_events.REGISTRATION_OPENED,
+	flock_events.REGISTRATION_CREATED,
+	flock_events.REGISTRATION_WAITLISTED,
+	flock_events.REGISTRATION_CANCELLED,
+	flock_events.REGISTRATION_CHECKED_IN,
 ]
 
 

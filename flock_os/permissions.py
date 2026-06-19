@@ -93,6 +93,7 @@ SCOPED_DOCTYPES: tuple[str, ...] = (
 	"Flock Event Approval",
 	"Flock Engagement Session",
 	"Flock Attendance Record",
+	"Flock Event Registration",
 )
 """DocTypes the group-axis ``permission_query_conditions`` hook narrows.
 
@@ -116,14 +117,21 @@ edge, an attendance record). Group-only DocTypes like ``Flock Gathering`` (a
 meeting owned by a group, not a person) must not get a ``.member`` clause — they
 have no such column, so emitting one would yield invalid SQL (FLO-54)."""
 
-#: Scoped DocTypes that carry a ``member`` link the self-membership branch (edit
-#: #4) predicates on. A row that is *about* a person (a membership edge, an
-#: attendance record) lets a member see their own rows via ``.member = self``.
-#: Group-only DocTypes (``Flock Gathering``) are intentionally absent — they have
-#: no ``member`` column, so the ``.member`` clause is suppressed for them
-#: (FLO-54). ``Flock Attendance Record`` carries ``member`` (FLO-9 §5) so a
-#: member can see their own attendance rows.
-MEMBER_ANCHORED_DOCTYPES: frozenset[str] = frozenset({"Flock Group Member", "Flock Attendance Record"})
+#: Scoped DocTypes that carry a member-like link the self-membership branch
+#: (edit #4) predicates on. A row that is *about* a person (a membership edge,
+#: an attendance record, a registration) lets a member see their own rows via
+#: ``.<column> = self``. Group-only DocTypes (``Flock Gathering``) are
+#: intentionally absent — they have no such column, so the ``.member`` clause
+#: is suppressed for them (FLO-54). Mapped doctype → the exact member-column
+#: name on that table (``member`` for ``Flock Group Member``; ``registrant`` for
+#: ``Flock Event Registration`` per FLO-7 §3.5; ``member`` for ``Flock
+#: Attendance Record`` per FLO-9 §5) so the emitted SQL matches each table's
+#: real schema.
+MEMBER_ANCHORED_DOCTYPES: dict[str, str] = {
+	"Flock Group Member": "member",
+	"Flock Event Registration": "registrant",
+	"Flock Attendance Record": "member",
+}
 
 #: The branch doctype the native User-Permission axis rides on (ADR §6.2).
 BRANCH_DOCTYPE = "Flock Branch"
@@ -350,12 +358,13 @@ def build_group_scope_sql(
 		branches.append(f"{alias}.`group` IS NULL")
 		branches.append(f"{alias}.`group` IN ({subtree_subselect})")
 		# Self-membership (edit #4) applies ONLY to DocTypes that carry a
-		# `member` link (rows about a person). Group-only DocTypes (e.g. `Flock
-		# Gathering`, `Flock Announcement`) have no `member` column, so the
+		# member-like link (rows about a person). Group-only DocTypes (e.g. `Flock
+		# Gathering`, `Flock Announcement`) have no such column, so the
 		# clause is suppressed — emitting it would produce invalid SQL. See
-		# MEMBER_ANCHORED_DOCTYPES.
+		# MEMBER_ANCHORED_DOCTYPES (doctype → the exact member-column name).
 		if scope.member and doctype in MEMBER_ANCHORED_DOCTYPES:
-			branches.append(f"{alias}.`member` = {_esc(scope.member, escape)}")
+			member_col = MEMBER_ANCHORED_DOCTYPES[doctype]
+			branches.append(f"{alias}.`{member_col}` = {_esc(scope.member, escape)}")
 		if scope.joined_groups:
 			branches.append(f"{alias}.`group` IN {_in_list(scope.joined_groups, escape)}")
 
@@ -816,10 +825,13 @@ def install_gateway(gateway: PermissionGateway) -> PermissionGateway:
 #
 # Registered in hooks.py for every name in SCOPED_DOCTYPES. Returns "" for the
 # bypass / no-scope cases (Frappe composes a no-op); returns the OR-fragment for
-# a leader/member. Frappe calls this with (doctype, user); under plain pytest it
-# is exercised directly against a RecordingPermissionGateway.
+# a leader/member. Frappe dispatches the hook as ``frappe.call(method, user,
+# doctype=doctype)`` — ``user`` positional, ``doctype`` keyword
+# (apps/frappe/frappe/model/db_query.py:1130); the signature matches that
+# convention. Under plain pytest it is exercised directly against a
+# RecordingPermissionGateway.
 # ---------------------------------------------------------------------------- #
-def get_group_scoped_conditions(doctype: str, user: str | None = None) -> str:
+def get_group_scoped_conditions(user: str | None = None, doctype: str | None = None) -> str:
 	"""``permission_query_conditions`` hook — the one custom group-axis mechanism.
 
 	ADR §6.3: appends a single OR-fragment to the existing ``WHERE``. Bypass
@@ -874,4 +886,4 @@ def has_group_scope(doctype: str, user: str) -> bool:
 	test can confirm leader scoping actually fires on the group list (the §6.3
 	self-predication regression risk).
 	"""
-	return bool(get_group_scoped_conditions(doctype, user).strip())
+	return bool(get_group_scoped_conditions(user=user, doctype=doctype).strip())

@@ -417,7 +417,9 @@ Architect §5.1 sign-off; changing it is a one-line client + server edit.
 > the site — these are runtime smoke rows, not migrate-seeded catalog fixtures):
 >
 > ```bash
-> # org-smoke -> branch-smoke -> group-smoke -> gathering-smoke + scoped leader.
+> # branch-smoke -> group-smoke -> gathering-smoke + scoped leader.
+> # The smoke reuses the site's singleton Flock Organization (FLO-114 — a
+> # parallel 'org-smoke' would violate the 1-org-per-site invariant, FLO-5 §8.1).
 > scripts/dev/seed-smoke-fixtures.sh          # idempotent; safe to re-run
 > # or: bench --site flock_os.localhost execute flock_os.utils.smoke_fixtures.execute
 > ```

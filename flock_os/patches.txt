@@ -34,3 +34,7 @@ flock_os.patches.v0_1.ensure_attendance_name_sequence_default
 # after the Flock Attendance Record table is synced (engagement fields land in
 # the same JSON) and after the FLO-64 attendance indexes.
 flock_os.patches.v0_1.add_engagement_indexes
+# FLO-62: composite UNIQUE + hot-path indexes for one-time-event registration
+# (FLO-7 §3.5/§5). Declared here because DocType JSON cannot express composite
+# unique indexes. Runs after the Flock Event Registration table is synced.
+flock_os.patches.v0_2.add_registration_indexes
