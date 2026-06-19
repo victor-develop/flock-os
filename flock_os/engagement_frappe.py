@@ -25,6 +25,15 @@ Architecture (mirrors :class:`flock_os.reporting.FrappeBulkAttendanceGateway`):
 
 All Redis access goes through ``frappe.cache`` / ``frappe.publish_realtime`` —
 no bespoke Redis clients (FLO-10 §6, keeps the D3 escape hatch viable).
+
+This module also hosts :class:`FrappeFacilitatorGateway` (FLO-12) — the
+production :class:`flock_os.engagement.FacilitatorGateway` adapter that resolves
+a facilitator's hostable scope (targetable branches + gatherings + groups) for
+the facilitator console picker. It reuses the permission spine's materialized
+branch User-Permissions (ADR §6.2) — the same no-leakage boundary as the
+announcement compose gateway. (FLO-207 reconciliation: FLO-11's runtime adapter
+keeps the name ``FrappeEngagementGateway``; FLO-12's console adapter is the
+distinct ``FrappeFacilitatorGateway`` so the two never clash.)
 """
 
 from __future__ import annotations
@@ -40,8 +49,10 @@ from flock_os.engagement import (
 	STATUS_CLOSING,
 	STATUS_OPEN,
 	EngagementSession,
+	FacilitatorGateway,
 	Participation,
 )
+from flock_os.permissions import GLOBAL_BRANCH_ROLES
 
 
 class FrappeEngagementGateway:
@@ -335,4 +346,91 @@ def _safe_json(value: Any) -> Any:
 		return None
 
 
-__all__ = ["FrappeEngagementGateway"]
+# ---------------------------------------------------------------------------- #
+# Facilitator console adapter (FLO-12) — resolves a facilitator's hostable scope
+# over ``frappe``. The no-leakage boundary mirrors FrappeComposeGateway.
+# ---------------------------------------------------------------------------- #
+class FrappeFacilitatorGateway(FacilitatorGateway):
+	"""Production adapter: role + tree-membership + gathering reads over ``frappe``."""
+
+	@property
+	def _frappe(self):  # type: ignore[no-untyped-def]
+		import frappe
+
+		return frappe
+
+	def _user_roles(self, frappe, user: str) -> tuple[str, ...]:  # type: ignore[no-untyped-def]
+		return tuple(frappe.get_roles(user) if user else [])
+
+	def get_user_roles(self, user: str) -> tuple[str, ...]:
+		return self._user_roles(self._frappe, user)
+
+	def get_user_organization(self, user: str) -> str | None:
+		frappe = self._frappe
+		if not user:
+			return None
+		member = frappe.db.get_value("Flock Member", {"linked_user": user}, "organization")
+		if member:
+			return member
+		orgs = frappe.get_all("Flock Organization", pluck="name", limit=1)
+		return orgs[0] if orgs else None
+
+	def facilitator_branches(self, user: str) -> tuple[str, ...]:
+		frappe = self._frappe
+		if not user:
+			return ()
+		roles = self._user_roles(frappe, user)
+		# Global roles see every branch in their org (ADR §6.2 global axis).
+		if frozenset(roles) & GLOBAL_BRANCH_ROLES:
+			org = self.get_user_organization(user)
+			if not org:
+				return ()
+			return tuple(
+				frappe.get_all("Flock Branch", filters={"organization": org}, pluck="name", order_by="name")
+			)
+		# Scoped roles: the materialized User-Permission subtree (ADR §6.2).
+		return tuple(
+			frappe.get_all(
+				"User Permission", filters={"user": user, "doctype": "Flock Branch"}, pluck="doc.name"
+			)
+		)
+
+	def branch_label(self, branch: str) -> str | None:
+		frappe = self._frappe
+		if not branch:
+			return None
+		return frappe.db.get_value("Flock Branch", branch, "branch_name") or branch
+
+	def gatherings_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+		frappe = self._frappe
+		if not branches:
+			return ()
+		# Hostable gatherings: not cancelled, ordered by most recent start.
+		rows = frappe.get_all(
+			"Flock Gathering",
+			filters={"branch": ["in", list(branches)], "status": ["!=", "Cancelled"]},
+			fields=["name", "branch", "title", "starts_on"],
+			order_by="starts_on desc, title",
+			limit=200,
+		)
+		return tuple(
+			{"name": r["name"], "branch": r["branch"], "label": r.get("title") or r["name"]} for r in rows
+		)
+
+	def groups_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]:
+		frappe = self._frappe
+		if not branches:
+			return ()
+		rows = frappe.get_all(
+			"Flock Group",
+			filters={"branch": ["in", list(branches)]},
+			fields=["name", "branch", "group_name"],
+			order_by="branch, group_name",
+		)
+		return tuple(
+			{"name": r["name"], "branch": r["branch"], "label": r.get("group_name") or r["name"]}
+			for r in rows
+		)
+
+
+__all__ = ["FrappeEngagementGateway", "FrappeFacilitatorGateway"]

@@ -1,0 +1,124 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{#
+  Flock OS — Fun Attendance facilitator console (FLO-12 / FLO-9 §12).
+  Mobile-first, touch-friendly. The scope <select>s are populated server-side
+  from the facilitator's targetable subtree (no cross-subtree leakage); the
+  group/gathering pickers filter client-side by the chosen branch. Mutating
+  actions call the FLO-11 REST controller (create/open/close/share/override) —
+  the backend re-validates scope as the source of truth.
+#}
+
+{% block page_content %}
+<form id="flock-host-form"
+      class="flock-host"
+      data-organization="{{ organization }}"
+      data-groups-by-branch="{{ groups_by_branch_json }}"
+      data-gatherings-by-branch="{{ gatherings_by_branch_json }}"
+      data-kinds="{{ kinds_json }}"
+      data-parity="{{ parity_json }}"
+      data-endpoints="{{ endpoints_json }}"
+      aria-label="{{ _('Facilitate engagement') }}">
+
+  <header class="flock-host__head">
+    <h1 class="flock-host__title">{{ _("Run Fun Attendance") }}</h1>
+    <p class="flock-host__org text-muted">
+      {{ _("Organization") }}: <strong>{{ organization or "—" }}</strong>
+    </p>
+  </header>
+
+  {# --- Host scope (the no-leakage picker) --- #}
+  <fieldset class="flock-host__section">
+    <legend>{{ _("Host Scope") }}</legend>
+    <div class="row">
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-host-branch">{{ _("Branch (subtree)") }} <span class="req">*</span></label>
+        <select class="form-control" id="flock-host-branch" name="branch" required>
+          <option value="" disabled selected>{{ _("Select a branch…") }}</option>
+          {% for b in branches %}<option value="{{ b.name }}">{{ b.label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-host-group">{{ _("Group (optional)") }}</label>
+        <select class="form-control" id="flock-host-group" name="group" disabled>
+          <option value="">{{ _("All groups in subtree") }}</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="flock-host-gathering">{{ _("Gathering") }} <span class="req">*</span></label>
+      <select class="form-control" id="flock-host-gathering" name="gathering" required disabled>
+        <option value="" disabled selected>{{ _("Select a branch first…") }}</option>
+      </select>
+      <small class="form-text text-muted">{{ _("The underlying event this attendance records against.") }}</small>
+    </div>
+  </fieldset>
+
+  {# --- Session config --- #}
+  <fieldset class="flock-host__section">
+    <legend>{{ _("Session") }}</legend>
+    <div class="row">
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-host-kind">{{ _("Engagement type") }}</label>
+        <select class="form-control" id="flock-host-kind" name="engagement_kind">
+          {# Rendered from the catalog (engagement.py canonical). #}
+        </select>
+      </div>
+      <div class="col-6 form-group">
+        <label class="form-label" for="flock-host-rounds">{{ _("Rounds / questions") }}</label>
+        <input class="form-control" id="flock-host-rounds" name="rounds" type="number" min="1" max="20" value="1">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="flock-host-title">{{ _("Session title (optional)") }}</label>
+      <input class="form-control" id="flock-host-title" name="title" type="text" maxlength="120"
+             placeholder="{{ _("Sunday Service Check-in") }}">
+    </div>
+    <div class="flock-check">
+      <input type="checkbox" id="flock-host-calm" name="calm_default">
+      <label for="flock-host-calm">{{ _("Offer Calm Check-in by default") }}</label>
+      <small class="form-text text-muted">{{ _("No-time-pressure path for timed games (WCAG).") }}</small>
+    </div>
+  </fieldset>
+
+  {# --- Share surface (QR + room code + deep link) --- #}
+  <fieldset class="flock-host__section flock-host__share" id="flock-host-share" hidden>
+    <legend>{{ _("Share") }}</legend>
+    <div class="flock-host__share-grid">
+      <div class="flock-host__code" id="flock-host-code" aria-label="{{ _("6-digit room code") }}">——</div>
+      <div class="flock-host__qr" id="flock-host-qr" role="img" aria-label="{{ _("QR code to join") }}"></div>
+    </div>
+    <a class="flock-host__deeplink" id="flock-host-deeplink" href="#" target="_blank" rel="noopener">{{ _("Open player link") }}</a>
+  </fieldset>
+
+  {# --- Live headcount + status --- #}
+  <aside class="flock-host__live" id="flock-host-live" hidden aria-live="polite">
+    <div class="flock-host__count">
+      <span class="flock-host__count-num" id="flock-host-count">0</span>
+      <span class="flock-host__count-label">{{ _("checked in") }}</span>
+    </div>
+    <div class="flock-host__state" id="flock-host-state">{{ _("Session not open") }}</div>
+  </aside>
+
+  {# --- Suspect-pattern review queue + manual override --- #}
+  <fieldset class="flock-host__section flock-host__review" id="flock-host-review" hidden>
+    <legend>{{ _("Review & Override") }}</legend>
+    <p class="text-muted">{{ _("Flagged patterns are reviewed here; attendance is still credited until revoked.") }}</p>
+    <div class="flock-host__queue" id="flock-host-queue" aria-live="polite"></div>
+  </fieldset>
+
+  <div class="flock-status" id="flock-host-status" role="status" aria-live="polite"></div>
+
+  <div class="flock-host__actions">
+    <button type="button" class="btn btn-secondary" id="flock-host-create" disabled>{{ _("Create session") }}</button>
+    <button type="button" class="btn btn-primary" id="flock-host-open" disabled>{{ _("Open live") }}</button>
+    <button type="button" class="btn btn-danger" id="flock-host-close" disabled>{{ _("Close & record") }}</button>
+  </div>
+</form>
+
+<link rel="stylesheet" href="/assets/flock_os/css/engage.css">
+<script src="/assets/flock_os/js/engagement-core.js"></script>
+<script src="/assets/flock_os/js/engage-host.js"></script>
+{% endblock %}
