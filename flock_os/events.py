@@ -91,6 +91,18 @@ transition: ``requested`` on submit, ``step_approved``/``step_rejected`` per
 approver, ``approved``/``rejected`` on the terminal decision. Replaces the
 earlier coarse ``flock.approval.decided`` placeholder with the spec's canonical
 granular set."""
+REGISTRATION_OPENED = "flock.registration.opened"
+REGISTRATION_CREATED = "flock.registration.created"
+REGISTRATION_WAITLISTED = "flock.registration.waitlisted"
+REGISTRATION_CANCELLED = "flock.registration.cancelled"
+REGISTRATION_CHECKED_IN = "flock.registration.checked_in"
+"""Scoped registration lifecycle (FLO-7 §5 / §7, materialized by [FLO-62]).
+``opened`` fires on final approval when the window + confirmed scope land on
+the gathering (drives the FLO-8 announcement + the eligibility gate);
+``created``/``waitlisted`` per registration (capacity hit → waitlist);
+``cancelled`` on a registrant cancel; ``checked_in`` on the FLO-6 attendance
+bridge. Routed through the single sanctioned :func:`emit` so the
+``Flock Event Outbox`` + notification fan-out stay coherent."""
 
 #: Redis pub/sub channel prefix for domain events (ADR-0001 §5.1).
 PUBSUB_CHANNEL_PREFIX = "flock"

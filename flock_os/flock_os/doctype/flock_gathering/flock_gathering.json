@@ -153,16 +153,87 @@
    "read_only": 1,
    "description": "1:1 back-reference to the Flock Event Approval authorizing this one-time event (FLO-7 §3.1)."
   },
-  {
-   "fieldname": "approval_status",
-   "fieldtype": "Select",
-   "label": "Approval Status",
-   "options": "Not Required\nDraft\nPending Approval\nApproved\nRejected\nCancelled",
-   "default": "Not Required",
-   "search_index": 1,
-   "read_only": 1,
-   "description": "Denormalized from the approval doc for fast list filtering + registration gating (FLO-7 §3.1). Set by the approval workflow (FLO-61)."
-  },
+   {
+    "fieldname": "approval_status",
+    "fieldtype": "Select",
+    "label": "Approval Status",
+    "options": "Not Required\nDraft\nPending Approval\nApproved\nRejected\nCancelled",
+    "default": "Not Required",
+    "search_index": 1,
+    "read_only": 1,
+    "description": "Denormalized from the approval doc for fast list filtering + registration gating (FLO-7 §3.1). Set by the approval workflow (FLO-61)."
+   },
+   {
+    "fieldname": "registration_section",
+    "fieldtype": "Section Break",
+    "label": "Scoped Registration (FLO-7 §3.1/§5)",
+    "permlevel": 1,
+    "description": "The controllable-scope registration layer for one-time events. Confirmed at final approval (the leader proposes, the final approver confirms the scope); ignored for routine gatherings. MVP scope/capacity/window shipped by FLO-62; invitations + bulk + waitlist auto-promotion land with Phase B (FLO-79)."
+   },
+   {
+    "fieldname": "registration_scope",
+    "fieldtype": "Select",
+    "label": "Registration Scope",
+    "options": "None\nOwn Group\nGroup Subtree\nBranch\nBranch Subtree\nOrg-wide\nInvited Only",
+    "default": "None",
+    "depends_on": "eval:doc.event_category===\"One-time\"",
+    "permlevel": 1,
+    "description": "Confirmed eligible set (FLO-7 §5). Leader proposes (permlevel 1); final approver confirms. Copied from Flock Event Approval.proposed_registration_scope on final approval (FLO-61). ``None`` = registration closed."
+   },
+   {
+    "fieldname": "registration_capacity",
+    "fieldtype": "Int",
+    "label": "Registration Capacity",
+    "non_negative": 1,
+    "depends_on": "eval:doc.event_category===\"One-time\"",
+    "permlevel": 1,
+    "description": "Max registrations; null/0 = uncapped. Capacity check is an atomic conditional UPDATE (FLO-7 §5 #3) so a concurrent registration can't overshoot."
+   },
+   {
+    "fieldname": "registration_opens_on",
+    "fieldtype": "Datetime",
+    "label": "Registration Opens On",
+    "depends_on": "eval:doc.event_category===\"One-time\"",
+    "permlevel": 1,
+    "description": "Window start. Null = unbounded on the early side (FLO-7 §5 #1)."
+   },
+   {
+    "fieldname": "registration_closes_on",
+    "fieldtype": "Datetime",
+    "label": "Registration Closes On",
+    "depends_on": "eval:doc.event_category===\"One-time\"",
+    "permlevel": 1,
+    "description": "Window end. Null = unbounded on the late side (FLO-7 §5 #1)."
+   },
+    {
+     "fieldname": "registration_counters_section",
+     "fieldtype": "Section Break",
+     "label": "Registration Counters (permlevel 2 — system-maintained)",
+     "permlevel": 2,
+     "description": "Note: `is_registration_open` (FLO-7 §3.1) is a time-dependent value (Approved AND now-in-window AND registered_count < capacity) that cannot be stored correctly — it goes stale the instant it is saved. The authoritative live hint is the read-only `get_registration_eligibility` REST action (FLO-7 §8), which computes the verdict at request time. A stored/onload badge is a Phase B frontend concern (FLO-79)."
+    },
+    {
+     "fieldname": "registered_count",
+    "fieldtype": "Int",
+    "label": "Registered Count",
+    "default": "0",
+    "non_negative": 1,
+    "read_only": 1,
+    "search_index": 1,
+    "permlevel": 2,
+    "description": "Atomic capacity counter (FLO-7 §3.1/§10). Incremented by the conditional UPDATE on register_for_event; decremented on cancel. Dashboards read counters, never COUNT(*) over 15k rows."
+   },
+   {
+    "fieldname": "checked_in_count",
+    "fieldtype": "Int",
+    "label": "Checked-in Count",
+    "default": "0",
+    "non_negative": 1,
+    "read_only": 1,
+    "search_index": 1,
+    "permlevel": 2,
+    "description": "Registrations bridged to Flock Attendance Record (FLO-7 §5 #5). Incremented by check_in_registration."
+   },
   {
    "fieldname": "reporting_section",
    "fieldtype": "Section Break",
