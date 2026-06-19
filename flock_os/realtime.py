@@ -16,7 +16,7 @@ Two responsibilities:
    broadcast channel for admin pushes.
 
 2. **The realtime projector** (§5.2) — a thin subscriber that translates each
-   domain event (``attendance.recorded``, ``engagement.session.closed``, …) into
+   domain event (``flock.attendance.recorded``, ``flock.engagement.closed``, …) into
    the correct shard(s) + broadcast fan-out via ``frappe.publish_realtime``.
    Features **subscribe to events — they never poll or re-query** the DB
    (event-modeling rule, AGENTS.md).
@@ -196,7 +196,7 @@ class EventRoomProjector:
 
 	- ``attendance.recorded`` → attendee's shard (presence) + broadcast (count tick).
 	- ``attendance.bulk_recorded`` → touched-or-all shards + broadcast (the FLO-9 game-close path, DoD #2).
-	- ``engagement.session.opened/closed`` → all shards + broadcast (game state change).
+	- ``flock.engagement.opened``/``flock.engagement.closed`` → all shards + broadcast (game state change).
 	- ``notification.sent`` / ``announcement.scheduled`` → broadcast only (admin push).
 	"""
 
@@ -382,7 +382,7 @@ def _route_bulk_attendance(projector: EventRoomProjector, event: DomainEvent) ->
 
 
 def _route_game_lifecycle(projector: EventRoomProjector, event: DomainEvent) -> list[RealtimeEmission]:
-	"""``flock.engagement.session.opened/closed`` → all shards + broadcast.
+	"""``flock.engagement.opened/closed`` → all shards + broadcast.
 
 	Every player — whichever shard they are on — must see the game start/finish
 	and results, so this fans to all N shards plus the broadcast room (§5.1).

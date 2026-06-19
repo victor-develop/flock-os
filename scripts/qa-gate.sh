@@ -115,6 +115,8 @@ COVRC="$(mktemp -t flock_covrc.XXXXXX)"
 		"flock_os/hooks.py" \
 		"flock_os/fixtures.py" \
 		"flock_os/patches/*" \
+		"flock_os/engagement_api.py" \
+		"flock_os/engagement_frappe.py" \
 		"flock_os/_smoke_runtime.py" \
 		"flock_os/utils/*"
 	# Dynamically omit untracked WIP source so the ratchet measures the

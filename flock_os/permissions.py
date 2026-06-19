@@ -91,6 +91,8 @@ SCOPED_DOCTYPES: tuple[str, ...] = (
 	"Flock Gathering",
 	"Flock Announcement",
 	"Flock Event Approval",
+	"Flock Engagement Session",
+	"Flock Attendance Record",
 )
 """DocTypes the group-axis ``permission_query_conditions`` hook narrows.
 
@@ -119,8 +121,9 @@ have no such column, so emitting one would yield invalid SQL (FLO-54)."""
 #: attendance record) lets a member see their own rows via ``.member = self``.
 #: Group-only DocTypes (``Flock Gathering``) are intentionally absent — they have
 #: no ``member`` column, so the ``.member`` clause is suppressed for them
-#: (FLO-54). ``Flock Attendance Record`` appends itself here when it lands.
-MEMBER_ANCHORED_DOCTYPES: frozenset[str] = frozenset({"Flock Group Member"})
+#: (FLO-54). ``Flock Attendance Record`` carries ``member`` (FLO-9 §5) so a
+#: member can see their own attendance rows.
+MEMBER_ANCHORED_DOCTYPES: frozenset[str] = frozenset({"Flock Group Member", "Flock Attendance Record"})
 
 #: The branch doctype the native User-Permission axis rides on (ADR §6.2).
 BRANCH_DOCTYPE = "Flock Branch"

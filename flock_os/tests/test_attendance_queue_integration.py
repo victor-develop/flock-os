@@ -253,3 +253,186 @@ def test_process_bulk_batch_deadletters_after_exhausting_in_place_retries(fake_f
 	assert "retries" in fake_frappe.log_error_calls[0]["title"]
 	assert len(fake_frappe.enqueue_calls) == 1
 	assert fake_frappe.enqueue_calls[0]["queue"] == "long"
+
+
+# --------------------------------------------------------------------------- #
+# ADR §9 / FLO-199: manual-roster provenance stamping + cross-source dedup
+#
+# The manual-roster bulk path must stamp the same ``(gathering, member)``
+# provenance the engagement close path stamps (FLO-195) so the
+# ``UNIQUE (branch, gathering, member)`` index collapses a manual credit + an
+# engagement credit for the same member into one attendance row. Visitors omit
+# ``member`` so a dangling ref never lands in the FK column.
+# --------------------------------------------------------------------------- #
+def test_item_from_payload_stamps_gathering_and_member_for_member(fake_frappe) -> None:
+	"""A manual-roster member row stamps ``gathering=event`` + ``member=member_ref``."""
+	item = attendance._item_from_payload(
+		event="gathering-1",
+		branch="branch-smoke",
+		raw={"attendee_ref": "mem-1", "client_req_id": "b:mem-1", "member": "mem-1"},
+		index=0,
+	)
+	assert item.gathering == "gathering-1"
+	assert item.member == "mem-1"
+	assert item.event == "gathering-1"  # gathering is the grouping axis
+
+
+def test_item_from_payload_stamps_gathering_null_member_for_visitor(fake_frappe) -> None:
+	"""A visitor row (no ``member`` field) stamps ``gathering=event``, ``member=None``."""
+	item = attendance._item_from_payload(
+		event="gathering-1",
+		branch="branch-smoke",
+		raw={"attendee_ref": "visitor-xyz", "client_req_id": "b:visitor-xyz"},
+		index=0,
+	)
+	assert item.gathering == "gathering-1"
+	assert item.member is None  # no dangling visitor ref in the member FK
+
+
+def test_bulk_submit_carries_provenance_through_enqueue(fake_frappe, monkeypatch) -> None:
+	"""The RQ payload carries ``gathering`` + ``member`` across the enqueue boundary."""
+	fake_scope = attendance.AttendanceScope(branch="branch-smoke")
+	monkeypatch.setattr(attendance, "_resolve_caller_branch_scope", lambda: fake_scope)
+
+	items = [
+		{"attendee_ref": "mem-1", "client_req_id": "b:mem-1", "member": "mem-1"},
+		{"attendee_ref": "visitor-2", "client_req_id": "b:visitor-2"},
+	]
+	attendance.bulk_submit(event="gathering-1", items=items, batch_id="batch-prov")
+
+	call = fake_frappe.enqueue_calls[0]
+	enqueued = call["payload"]["items"]
+	assert enqueued[0]["gathering"] == "gathering-1"
+	assert enqueued[0]["member"] == "mem-1"
+	assert enqueued[1]["gathering"] == "gathering-1"
+	assert enqueued[1]["member"] is None
+
+
+def test_process_bulk_batch_reconstructs_provenance(fake_frappe, monkeypatch) -> None:
+	"""The RQ job reconstructs ``gathering`` + ``member`` from the payload."""
+
+	captured: list[Any] = []
+
+	class _CapturingService:
+		def __init__(self, _gateway: Any) -> None:
+			pass
+
+		def submit(self, items: Any, _scope: Any, _batch_id: Any) -> Any:
+			captured.extend(items)
+			return types.SimpleNamespace(accepted=True, inserted=len(items), deduplicated=0, rejected_count=0)
+
+	monkeypatch.setattr(attendance, "BulkAttendanceService", _CapturingService)
+	monkeypatch.setattr(attendance, "_retryable_persistence_errors", lambda: ())
+
+	payload = {
+		"event": "gathering-1",
+		"batch_id": "batch-rebuild",
+		"scope_branch": "branch-smoke",
+		"items": [
+			{
+				"event": "gathering-1",
+				"attendee_ref": "mem-1",
+				"branch": "branch-smoke",
+				"status": "Present",
+				"source": "bulk",
+				"client_req_id": "b:mem-1",
+				"gathering": "gathering-1",
+				"member": "mem-1",
+			},
+			{
+				"event": "gathering-1",
+				"attendee_ref": "visitor-2",
+				"branch": "branch-smoke",
+				"status": "Present",
+				"source": "bulk",
+				"client_req_id": "b:visitor-2",
+				"gathering": "gathering-1",
+				"member": None,
+			},
+		],
+	}
+
+	attendance.process_bulk_batch(payload)
+
+	assert len(captured) == 2
+	assert captured[0].gathering == "gathering-1"
+	assert captured[0].member == "mem-1"
+	assert captured[1].gathering == "gathering-1"
+	assert captured[1].member is None
+
+
+def test_manual_and_engagement_credits_for_same_member_dedup() -> None:
+	"""ADR §9 / FLO-199: a manual-roster credit + an engagement credit for the
+	same ``(branch, gathering, member)`` collapse to one attendance row.
+
+	Both paths now stamp ``event=gathering, attendee_ref=member_id, gathering,
+	member`` for members, so the service-level ``(event, attendee_ref)`` unique
+	backstop dedupes the second credit — exactly what the DB-level
+	``UNIQUE (branch, gathering, member)`` index enforces on the real schema.
+	"""
+	from flock_os.engagement import Participation, _participation_to_attendance_item
+	from flock_os.reporting import (
+		AttendanceItem,
+		AttendanceScope,
+		BulkAttendanceService,
+		InMemoryBulkAttendanceGateway,
+	)
+
+	gateway = InMemoryBulkAttendanceGateway()
+	service = BulkAttendanceService(gateway)
+	scope = AttendanceScope(branch="branch-a")
+	gathering = "gathering-1"
+	member = "mem-dedup"
+
+	# 1. Manual-roster credit: leader takes roll for the member.
+	manual_item = AttendanceItem(
+		event=gathering,
+		attendee_ref=member,
+		branch="branch-a",
+		status="Present",
+		source="bulk",
+		client_req_id=f"manual:{member}",
+		gathering=gathering,
+		member=member,
+	)
+	first = service.submit([manual_item], scope, batch_id="manual-batch")
+	assert first.inserted == 1
+
+	# 2. Engagement credit: same member plays a game at the same gathering.
+	#    The engagement projection stamps the identical (gathering, member).
+	engagement_item = _participation_to_attendance_item(
+		Participation(
+			session_id="sess-1",
+			attendee_key="key-dedup",
+			member_id=member,
+			attendee_display_name="Dedup Member",
+			device_fingerprint="dev",
+			role="member",
+			engagement_type="game",
+			engagement_kind="tap_burst",
+			score=80.0,
+			submitted_at=1000.0,
+			client_submitted_at=None,
+			branch="branch-a",
+			organization="org-1",
+			group=None,
+			geo_region=None,
+			nonce="n",
+			gathering=gathering,
+		)
+	)
+	# The two items share the cross-source provenance keys.
+	assert engagement_item.gathering == gathering
+	assert engagement_item.member == member
+	assert engagement_item.event == gathering
+
+	replay = service.submit([engagement_item], scope, batch_id="engagement-batch")
+
+	# The second credit is deduplicated — no double-counting.
+	assert replay.inserted == 0
+	assert replay.deduplicated == 1
+	# The maintained aggregate counts the member exactly once.
+	assert service.aggregate(scope, event=gathering) == 1
+	# The single persisted row carries the provenance from the first writer.
+	assert gateway.inserted_items[0].gathering == gathering
+	assert gateway.inserted_items[0].member == member

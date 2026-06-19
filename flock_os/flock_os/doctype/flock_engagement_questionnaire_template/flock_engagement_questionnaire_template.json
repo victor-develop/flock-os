@@ -1,0 +1,171 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "Q-TPL-.#####",
+   "default": "Q-TPL-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "reqd": 1,
+   "search_index": 1,
+   "in_standard_filter": 1,
+   "description": "Tenant floor (ADR §3) — org-scoped reusable content library."
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "template_name",
+   "fieldtype": "Data",
+   "label": "Template Name",
+   "reqd": 1,
+   "in_list_view": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "label": "Questionnaire Kind",
+   "options": "poll\nword_cloud\nqa\npulse",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Live questionnaire kind (FLO-9 §3.2)."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description",
+   "translatable": 1
+  },
+  {
+   "fieldname": "config",
+   "fieldtype": "JSON",
+   "label": "Config",
+   "description": "Default questionnaire parameters (poll options, slider bounds, reveal-after flag)."
+  },
+  {
+   "fieldname": "free_text_retention_days",
+   "fieldtype": "Int",
+   "label": "Free Text Retention Days",
+   "description": "Per-org configurable free-text retention (FLO-9 §14.3)."
+  },
+  {
+   "fieldname": "moderation_required",
+   "fieldtype": "Check",
+   "label": "Moderation Required",
+   "default": "1",
+   "description": "Word-cloud / Q&A free text moderation flag queue before public display (FLO-9 §7)."
+  },
+  {
+   "fieldname": "reviewed",
+   "fieldtype": "Check",
+   "label": "Reviewed",
+   "default": "0",
+   "description": "Org-level review step for custom content (FLO-9 §7)."
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Engagement Questionnaire Template",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "template_name",
+ "track_changes": 1
+}

@@ -64,8 +64,14 @@ ATTENDANCE_IMPORT_FAILED = "flock.attendance.import_failed"
 visible ``attendance_import_error`` queue (FLO-10 §3.3). Emitted by the
 reporting dead-letter path ([FLO-15](/FLO/issues/FLO-15)); the catalog — not a
 local constant — is its single source of truth (ADR-0001 §5.3/§5.4)."""
-ENGAGEMENT_SESSION_OPENED = "flock.engagement.session.opened"
-ENGAGEMENT_SESSION_CLOSED = "flock.engagement.session.closed"
+ENGAGEMENT_SESSION_OPENED = "flock.engagement.opened"
+ENGAGEMENT_SESSION_CLOSED = "flock.engagement.closed"
+"""FLO-9 engagement session lifecycle. Three-segment ``flock.<aggregate>.<verb>``
+form per ADR-0001 §5.3 (design rev 4 shortened these from the earlier
+``flock.engagement.session.*`` four-segment shape). Emitted by the engagement
+runtime ([FLO-11](/FLO/issues/FLO-11)) via :func:`emit` → ``Flock Event Outbox``;
+the realtime projector ([FLO-14](/FLO/issues/FLO-14)) fans them to every shard +
+broadcast so every player sees the session open/close."""
 ANNOUNCEMENT_SCHEDULED = "flock.announcement.scheduled"
 ANNOUNCEMENT_PUBLISHED = "flock.announcement.published"
 NOTIFICATION_SENT = "flock.notification.sent"

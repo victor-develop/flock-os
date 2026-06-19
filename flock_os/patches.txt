@@ -26,3 +26,11 @@ flock_os.patches.v0_1.add_attendance_indexes
 # raw-SQL bulk-write path (bulk_insert + upsert) works. Frappe's autoincrement
 # naming is sequence-based + Python-side, so it sets no DB DEFAULT on `name`.
 flock_os.patches.v0_1.ensure_attendance_name_sequence_default
+# FLO-11: engagement-runtime composite indexes on Flock Attendance Record.
+#   UNIQUE (engagement_session, attendee_key) — per-session idempotency backstop
+#   UNIQUE (branch, gathering, member)        — ADR §9 cross-source dedup
+#   INDEX  (branch, organization, gathering, submitted_at) — reporting index
+# Declared here because DocType JSON cannot express composite indexes. Runs
+# after the Flock Attendance Record table is synced (engagement fields land in
+# the same JSON) and after the FLO-64 attendance indexes.
+flock_os.patches.v0_1.add_engagement_indexes

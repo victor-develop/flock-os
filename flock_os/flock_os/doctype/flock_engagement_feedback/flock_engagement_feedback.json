@@ -1,0 +1,142 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "attendance_record",
+   "fieldtype": "Link",
+   "label": "Attendance Record",
+   "options": "Flock Attendance Record",
+   "reqd": 1,
+   "search_index": 1,
+   "in_standard_filter": 1,
+   "description": "Parent attendance row (FLO-9 §5 normalized feedback child)."
+  },
+  {
+   "fieldname": "round",
+   "fieldtype": "Link",
+   "label": "Round",
+   "options": "Flock Engagement Round",
+   "search_index": 1,
+   "description": "The round this feedback responds to (nullable for whole-session feedback)."
+  },
+  {
+   "fieldname": "feedback_kind",
+   "fieldtype": "Select",
+   "label": "Feedback Kind",
+   "options": "poll_choice\nword_cloud_term\nqa_question\nqa_upvote\nslider_value",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The questionnaire response shape (FLO-9 §3.2)."
+  },
+  {
+   "fieldname": "key",
+   "fieldtype": "Data",
+   "label": "Key",
+   "translatable": 0,
+   "description": "Option id / slider id this feedback targets."
+  },
+  {
+   "fieldname": "value",
+   "fieldtype": "Data",
+   "label": "Value",
+   "translatable": 0,
+   "description": "The response (poll option id, word-cloud term, Q&A text, slider numeric)."
+  },
+  {
+   "fieldname": "numeric_value",
+   "fieldtype": "Float",
+   "label": "Numeric Value",
+   "description": "Slider/pulse numeric response (FLO-9 §3.2 pulse)."
+  },
+  {
+   "fieldname": "moderation_flag",
+   "fieldtype": "Check",
+   "label": "Moderation Flag",
+   "default": "0",
+   "description": "Word-cloud / Q&A free text held for moderation before public display (FLO-9 §7)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Engagement Feedback",
+ "naming_rule": "Autoincrement",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
