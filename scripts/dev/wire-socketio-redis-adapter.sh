@@ -140,10 +140,13 @@ ADAPTER_REL="../../flock_os/realtime/adapters/flock_redis_adapter"
 # adapter on the `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server
 # method that applies the adapter to ALL namespaces, including the per-site
 # `io.of(/^\/.*$/)` parent + its dynamic child namespaces — calling it on the
-# Namespace would fail with "realtime.adapter is not a function"). Clients are
-# connected fire-and-forget (socket.io-redis-adapter tolerates a not-yet-connected
-# client; the connect promise just ensures pub/sub is live). On ANY error (e.g.
-# the npm package missing) the try/catch logs and the server keeps booting.
+# Namespace would fail with "realtime.adapter is not a function"). The pub/sub
+# clients get `on("error")` handlers so a Redis blip under load (e.g. ETIMEDOUT)
+# is LOGGED instead of crashing the worker (an unhandled 'error' event kills the
+# node process — proven under the 15k burst). Clients are connected
+# fire-and-forget (socket.io-redis-adapter tolerates a not-yet-connected client;
+# the connect promise just ensures pub/sub is live). On ANY error (e.g. the npm
+# package missing) the try/catch logs and the server keeps booting.
 cp "$INDEX" "$INDEX.bak"
 awk -v s="$MARK_START" -v e="$MARK_END" -v a="$ADAPTER_REL" '
 	/realtime\.on\("connection", on_connection\);/ {
@@ -152,6 +155,8 @@ awk -v s="$MARK_START" -v e="$MARK_END" -v a="$ADAPTER_REL" '
 		print "\tconst { createRedisAdapter } = require(\"" a "\");"
 		print "\tconst _flockAdapterPub = get_redis_subscriber(\"redis_socketio\");"
 		print "\tconst _flockAdapterSub = _flockAdapterPub.duplicate();"
+		print "\t_flockAdapterPub.on(\"error\", (e) => console.error(\"flock_os redis-adapter pub:\", (e && e.message) || e));"
+		print "\t_flockAdapterSub.on(\"error\", (e) => console.error(\"flock_os redis-adapter sub:\", (e && e.message) || e));"
 		print "\tPromise.all([_flockAdapterPub.connect(), _flockAdapterSub.connect()]).catch((err) => console.error(\"flock_os redis-adapter connect:\", (err && err.message) || err));"
 		print "\tio.adapter(createRedisAdapter(_flockAdapterPub, _flockAdapterSub));"
 		print "} catch (err) { console.error(\"flock_os realtime redis-adapter:\", (err && err.message) || err); }"
