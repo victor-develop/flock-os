@@ -90,6 +90,14 @@ k6 run -e WRITES_PER_SEC=200 -e DURATION_SEC=150 bulk_attendance.js
 k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120 ws_event_room.js
 ```
 
+> **15k WS connect-establishment needs the scaled socketio tier (FLO-121).** The
+> full 15k **connect** bar (not the broadcast/latency bar, which is already green
+> single-process) hits a single-process node socketio connection-setup wall
+> (~27 s connect p95, <1 % established). Bring the scaled tier up first:
+> `scripts/dev/scale-socketio.sh start` (N node processes behind a TCP round-robin
+> LB, wired with `@socket.io/redis-adapter`). Runbook:
+> `docs/development/ws-broadcast-delivery.md` -> Scaling the socketio tier.
+
 The k6 `thresholds` in each script encode the §8 targets — a non-zero exit
 means the gate **failed**. In CI this runs from
 `.github/workflows/k6-smoke.yml` against `$BASE_URL` (Phase 6 tag / manual).

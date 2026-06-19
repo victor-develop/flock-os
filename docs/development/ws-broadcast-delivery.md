@@ -1,8 +1,11 @@
-# WebSocket broadcast-delivery — runbook (FLO-107 / FLO-116)
+# WebSocket broadcast-delivery — runbook (FLO-107 / FLO-116 / FLO-121)
 
 > How a published realtime broadcast actually reaches a `ws_event_room.js`
 > client on this bench, the one-time wiring that makes it work on Frappe v15,
-> and the per-connection auth cache that clears the §8 15k WS wall.
+> the per-connection auth cache that clears the §8 15k WS **auth-callback** wall,
+> and the scaled socketio tier that clears the §8 15k WS **connection-setup**
+> wall. (Two distinct walls; each is cleared by a different layer — see
+> [FLO-53](/FLO/issues/FLO-53) §8 verdict.)
 
 ## The gap this closed
 
@@ -88,7 +91,19 @@ If you ever suspect the line went missing (e.g. a k6 run delivered 0
 broadcasts), the one-line confirm is `wire-socketio-handler.sh --check`; if it
 fails, a plain `wire-socketio-handler.sh` + `bench restart` restores delivery.
 
-## Cache per-connection auth to clear the §8 15k WS wall (FLO-116)
+## Cache per-connection auth to clear the §8 15k WS **auth-callback** wall (FLO-116)
+
+> **Two walls, two layers.** The §8 15k WS bar hit two independent walls in
+> sequence (see [FLO-53](/FLO/issues/FLO-53) §8 verdict):
+> 1. the **auth-callback** wall — ~15k redundant `get_user_info` HTTPs in a burst
+>    (connect p95 2.26 s, `flock_ws_receive_errors` 8255), cleared by this cache
+>    ([FLO-116](/FLO/issues/FLO-116)); and
+> 2. the **connection-setup** wall — a single node event loop serializing ~15k
+>    concurrent handshakes (connect p95 ~27 s, <1 % established), cleared by
+>    scaling the socketio tier horizontally ([FLO-121](/FLO/issues/FLO-121), see
+>    [Scaling the socketio tier](#scale-the-socketio-tier-flo-121) below).
+>
+> The cache cleared wall #1; it does **not** by itself clear wall #2.
 
 Frappe's site-namespace auth middleware
 (`apps/frappe/realtime/middlewares/authenticate.js`) fires ONE synchronous HTTP
@@ -179,6 +194,93 @@ Python scope decision under `pytest`
 > A per-`(socket, event)` memo (the scope is per-gathering, not per-room) is a
 > straightforward future optimization if a gate run ever shows join throughput
 > as the bottleneck; it is not needed for the §8 bar.
+
+## Scale the socketio tier (FLO-121)
+
+The auth cache cleared the §8 15k WS **auth-callback** wall. With that gone the
+bar shifted to the **connection-setup** wall: one node event loop serializes
+~15k concurrent handshakes (TCP accept + engine.io OPEN + SIO CONNECT + per-room
+JOIN), so connect p95 balloons (~27 s) and <1 % of sessions ever establish. This
+is *not* a flock_os code gap — the realtime path is correct end-to-end — it is a
+single-process node socketio throughput wall. The remedy is horizontal scaling:
+run **N** node socketio processes behind a WS-aware load balancer so the
+handshakes distribute across event loops, and wire `@socket.io/redis-adapter` so
+the cluster behaves as one logical io instance.
+
+### Cross-worker fan-out: `@socket.io/redis-adapter` (auto-wired, idempotent)
+
+Frappe's realtime server already fans a `frappe.publish_realtime` out via a
+Redis "events" pub/sub channel that **every** node process subscribes to — so the
+publish→room path already crosses processes without help. What does **not**
+cross processes by default is Socket.IO's own room machinery
+(`io.to(room).emit` / `socket.broadcast` issued from inside a connection
+handler, plus room-membership coordination), which is per-process.
+`@socket.io/redis-adapter` routes those through Redis pub/sub so a broadcast
+originating on process A reaches sockets that joined the room on process B — the
+standard socket.io multi-process story and the defense-in-depth that keeps the
+tier correct (not just fast) as it scales.
+
+The adapter attaches to the per-site namespace (`realtime`). Since that live
+instance only exists inside vendored `apps/frappe/realtime/index.js`, it is wired
+the same way as the join handler + auth cache — a marker-guarded INSERT before
+`realtime.on("connection", on_connection);`, independent of the other two
+anchors so all three compose:
+
+```bash
+scripts/dev/wire-socketio-redis-adapter.sh          # insert the guarded adapter-attach block
+bench restart                                         # reload the realtime node server(s)
+scripts/dev/wire-socketio-redis-adapter.sh --check   # assert wired: exit 0 ok / 1 absent
+# undo:
+scripts/dev/wire-socketio-redis-adapter.sh --revert
+```
+
+The wiring creates two node-redis clients from the bench's `redis_socketio` URL
+(via frappe's `get_redis_subscriber`), connects them, and attaches the adapter.
+The adapter **logic + opts** live in flock_os
+(`realtime/adapters/flock_redis_adapter.js`); only the guarded block lands in
+vendored Frappe. **Prereq:** `@socket.io/redis-adapter` is declared in the
+repo-root `package.json`; run `npm install` there once (or let
+`scale-socketio.sh start` do it). Without the package the wiring is still
+inserted (armed) but the runtime `try/catch` logs the missing-package error and
+the tier falls back to the events-pub/sub path only (defensive, not the full
+multi-process story).
+
+It survives a `bench update` by the **same self-healing guards** as the other
+two wirings: an `after_migrate` + `after_install` hook
+(`flock_os.utils.realtime_setup.rewire_socketio_redis_adapter`, sharing the
+handler/cache drive+verify core) re-runs the script on every migrate, then
+**verifies** the marker landed and raises `RealtimeWiringError` if it is missing.
+The cache + opts logic is unit-tested under `node --test`
+(`realtime/adapters/flock_redis_adapter.test.mjs`); the wiring harness under
+`pytest` (`flock_os/tests/test_realtime_redis_adapter_setup.py`) — neither needs
+a bench.
+
+### Running the scaled tier
+
+`scripts/dev/scale-socketio.sh` brings the scaled tier up in one command:
+N socketio backends (each `node apps/frappe/socketio.js` with
+`FRAPPE_SOCKETIO_PORT` set) behind `scripts/dev/socketio-lb.js`, a dependency-free
+pure-node TCP round-robin proxy. The LB listens on the smoke's default WS port
+(9000) so k6 needs no `WS_BASE_URL` override.
+
+```bash
+scripts/dev/scale-socketio.sh start        # bring up the scaled tier (N = nproc, capped 8)
+scripts/dev/scale-socketio.sh status       # pids + per-backend connection distribution
+# run the §8 gate against the scaled tier:
+k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120 load/ws_event_room.js
+scripts/dev/scale-socketio.sh stop         # tear down (single-process restored by `bench restart`)
+```
+
+> **Why a TCP round-robin LB (not sticky L7).** The smoke uses
+> `transport=websocket` only — no engine.io polling upgrade — so each client is
+> exactly ONE independent TCP connection whose full lifecycle stays on whichever
+> backend it first lands on. There is no separate polling handshake that must
+> revisit the same backend, so plain per-connection round-robin distributes
+> cleanly and no sticky session is needed. A mixed/polling production tier would
+> instead need sticky L7 (nginx `ip_hash` / cookie) so the WS upgrade revisits
+> the backend that owns the polling session. The LB logs per-backend
+> `accepted/active/failed` counters so a run can verify connections actually
+> spread across the tier.
 
 ## Room-join event shape (§5.1 client→server contract)
 

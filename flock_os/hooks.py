@@ -116,27 +116,34 @@ permission_query_conditions = {
 # ---------------------------------------------------------------------------- #
 
 # ---------------------------------------------------------------------------- #
-# Realtime-handler + auth-cache auto-wiring (FLO-109 / FLO-116)
+# Realtime-handler + auth-cache + redis-adapter auto-wiring (FLO-109 / FLO-116 / FLO-121)
 # ---------------------------------------------------------------------------- #
 # A `bench update` rewrites apps/frappe/realtime/index.js and would silently
-# drop two flock_os wirings:
+# drop three flock_os wirings:
 #   * the join handler inserted by scripts/dev/wire-socketio-handler.sh
-#     (FLO-107) — joins then no-op and broadcasts reach zero clients; and
+#     (FLO-107) — joins then no-op and broadcasts reach zero clients;
 #   * the auth-cache `.wrap(authenticate)` swap inserted by
 #     scripts/dev/wire-socketio-auth-cache.sh (FLO-116) — the per-connection
 #     `get_user_info` HTTP returns, bringing back the §8 15k WS auth wall
-#     (connect p95 > 2 s, flock_ws_receive_errors > 0).
-# Re-wire both automatically on every migrate (which `bench update` performs)
-# and on install, so neither line is ever missing without a manual runbook step.
-# Both wire scripts are idempotent + marker-guarded; the hooks fail loud on a
-# missing marker (RealtimeWiringError) rather than shipping a silent regression.
+#     (connect p95 > 2 s, flock_ws_receive_errors > 0); and
+#   * the `@socket.io/redis-adapter` attach block inserted by
+#     scripts/dev/wire-socketio-redis-adapter.sh (FLO-121) — without it the
+#     scaled socketio tier (N node processes behind a WS-aware LB) cannot fan
+#     Socket.IO room/broadcast coordination across workers, so the §8 15k WS
+#     connection-setup wall (the wall the auth cache did NOT clear) recurs.
+# Re-wire all three automatically on every migrate (which `bench update` performs)
+# and on install, so none is ever missing without a manual runbook step.
+# All three wire scripts are idempotent + marker-guarded; the hooks fail loud on
+# a missing marker (RealtimeWiringError) rather than shipping a silent regression.
 after_migrate = [
 	"flock_os.utils.realtime_setup.rewire_socketio_handler",
 	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
+	"flock_os.utils.realtime_setup.rewire_socketio_redis_adapter",
 ]
 after_install = [
 	"flock_os.utils.realtime_setup.rewire_socketio_handler",
 	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
+	"flock_os.utils.realtime_setup.rewire_socketio_redis_adapter",
 ]
 
 
