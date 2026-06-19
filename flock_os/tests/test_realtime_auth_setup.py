@@ -90,9 +90,7 @@ def _wired(index_path: Path) -> bool:
 
 
 def test_find_wire_script_locates_auth_script():
-	script = realtime_setup.find_wire_script(
-		realtime_setup.__file__, realtime_setup.AUTH_WIRE_SCRIPT_REL
-	)
+	script = realtime_setup.find_wire_script(realtime_setup.__file__, realtime_setup.AUTH_WIRE_SCRIPT_REL)
 	assert script and os.path.isfile(script)
 	assert script.endswith(os.path.join("scripts", "dev", "wire-socketio-auth-cache.sh"))
 
