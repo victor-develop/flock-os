@@ -1,0 +1,89 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{#
+  Flock OS — Fun Attendance template library (FLO-190 / FLO-9 §3, §7).
+  Lists the org's reusable Game + Questionnaire Templates. Facilitators launch
+  from one (deep-link into /engage-host with the template pre-selected); authors
+  (Org/Branch Admin + System Manager) additionally create/edit via the Desk Form.
+  Mobile-first, touch-friendly; loading/empty states included.
+#}
+
+{% block page_content %}
+<section class="flock-host" aria-label="{{ _('Engagement templates') }}">
+  <header class="flock-host__head">
+    <h1 class="flock-host__title">{{ _("Fun Attendance Templates") }}</h1>
+    <p class="flock-host__org text-muted">
+      {{ _("Organization") }}: <strong>{{ organization or "—" }}</strong>
+    </p>
+    <p class="flock-host__lede text-muted">
+      {{ _("Pick a template to launch a live session, or author a new one.") }}
+    </p>
+  </header>
+
+  {% if can_author %}
+  <nav class="flock-host__author" aria-label="{{ _('Author templates') }}">
+    {% for family, route in desk_routes.items() %}
+    <a class="btn btn-secondary btn-sm" href="{{ route }}/new" target="_blank" rel="noopener">
+      {{ _("New") }} {{ family }} {{ _("template") }}
+    </a>
+    {% endfor %}
+  </nav>
+  {% else %}
+  <p class="flock-host__lede text-muted">
+    {{ _("Ask an org or branch admin to author new templates.") }}
+  </p>
+  {% endif %}
+
+  {% for family, rows in templates_by_family.items() %}
+  <fieldset class="flock-host__section">
+    <legend>{{ _(family | capitalize) }} {{ _("templates") }}</legend>
+
+    {% if not rows %}
+    <p class="text-muted flock-empty">{{ _("No templates yet.") }}
+      {% if can_author %}
+      <a href="{{ desk_routes[family] }}/new" target="_blank" rel="noopener">{{ _("Create the first one") }}</a>.
+      {% endif %}
+    </p>
+    {% else %}
+    <ul class="flock-tpl-list" role="list">
+      {% for t in rows %}
+      <li class="flock-tpl-list__row{{ "" if t.is_active else " flock-tpl-list__row--inactive" }}">
+        <div class="flock-tpl-list__main">
+          <div class="flock-tpl-list__name">{{ t.template_name }}</div>
+          <div class="flock-tpl-list__meta text-muted">
+            <span class="flock-tpl-list__kind">{{ t.kind }}</span>
+            {% if t.accessibility_mode_default %}<span class="flock-tpl-list__a11y">{{ _("a11y default") }}</span>{% endif %}
+            {% if not t.is_active %}<span class="flock-tpl-list__off">{{ _("inactive") }}</span>{% endif %}
+            {% if not t.reviewed and can_author %}<span class="flock-tpl-list__rev">{{ _("needs review") }}</span>{% endif %}
+          </div>
+          {% if t.description %}<p class="flock-tpl-list__desc text-muted">{{ t.description }}</p>{% endif %}
+        </div>
+        <div class="flock-tpl-list__acts">
+          {% if t.is_active %}
+          <a class="btn btn-primary btn-sm flock-tpl-list__launch"
+             href="/engage-host?template={{ t.doctype }}:{{ t.name }}">
+            {{ _("Launch") }}
+          </a>
+          {% endif %}
+          {% if can_author %}
+          <a class="btn btn-default btn-sm"
+             href="/app/{{ t.doctype.lower().replace(' ', '-') }}/{{ t.name }}"
+             target="_blank" rel="noopener">{{ _("Edit") }}</a>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </fieldset>
+  {% endfor %}
+
+  <div class="flock-host__actions">
+    <a class="btn btn-secondary" href="/engage-host">{{ _("Go to facilitator console") }}</a>
+  </div>
+</section>
+
+<link rel="stylesheet" href="/assets/flock_os/css/engage.css">
+{% endblock %}
