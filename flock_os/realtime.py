@@ -35,9 +35,10 @@ realtime lags, attendance is still durable — correctness stays in the queue
 
 from __future__ import annotations
 
+import re
 import zlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from flock_os import events
@@ -467,3 +468,172 @@ def register_projector(bus: Any = events) -> EventRoomProjector:
 	projector.install_publisher(FrappeRealtimePublisher())
 	projector.register(bus)
 	return projector
+
+
+# ---------------------------------------------------------------------------- #
+# WebSocket room-subscribe scope gate (FLO-106 / FLO-14 §5.1, §8).
+# ---------------------------------------------------------------------------- #
+# Frappe's realtime node server (``apps/frappe/realtime/index.js`` +
+# ``handlers/frappe_handlers.js``) only auto-joins the builtin ``user_room`` /
+# ``WEBSITE_ROOM`` / ``SITE_ROOM`` + the ``doctype_room`` / ``task_room`` on
+# specific events. There is **no** generic ``socket.on("join", ...)`` for
+# arbitrary rooms, so the flock_os sharded event rooms (``flock_os:event:*``)
+# were never joinable: the publish half worked (the projector →
+# ``frappe.publish_realtime`` → redis ``events`` → ``io.of("/<site>").to(room)``),
+# the subscribe half was missing — every client sat outside the room and the
+# broadcast silently reached no one (FLO-53 §8 WS gate stayed at 0).
+#
+# The flock_os realtime entry (``flock_os/realtime/server.js``) registers a
+# ``join`` handler (``realtime/handlers/event_rooms.js``) that gates room
+# membership on :func:`event_room_join_allowed`: an authenticated user may join
+# a gathering's rooms iff the gathering's branch is within the user's branch
+# scope (ADR §6.2 / §6.5) — the single sanctioned branch decision reused from
+# :mod:`flock_os.permissions` (``can_access_branch``), mirroring how
+# ``tabFlock Attendance Record`` row-scope works.
+#
+# Hexagonal: the decision is pure given injected ports (the permission gateway +
+# a gathering→branch resolver), so the unit gate covers allow / deny / bypass /
+# not-found / invalid-room under plain ``pytest`` (no bench). The
+# ``@frappe.whitelist()`` endpoint is a thin adapter the node handler reaches
+# over HTTP via ``frappe_request`` (same shape as ``can_subscribe_doc``).
+# ---------------------------------------------------------------------------- #
+# A well-formed flock_os event room. ``segment`` is the broadcast channel or a
+# presence/room shard (FLO-10 §5.1). Pinned by :mod:`flock_os.realtime` +
+# ``load/lib/shards.js`` (the JS parity contract).
+EVENT_ROOM_RE = re.compile(
+	r"^" + EVENT_ROOM_PREFIX + r":(?P<event_id>.+?):"
+	r"(?:broadcast|shard:(?P<shard>\d+))"
+	r"$"
+)
+"""Matches ``flock_os:event:<event_id>:broadcast`` / ``flock_os:event:<event_id>:shard:<k>``."""
+
+
+@dataclass(frozen=True)
+class EventRoomRef:
+	"""A parsed flock_os event-room channel (the subscribe-side scope target)."""
+
+	event_id: str
+	"""The ``Flock Gathering`` name the room is scoped to (ADR §5.4 ``gathering``)."""
+
+	is_broadcast: bool = False
+	"""True for the shared broadcast room (admin pushes / room-wide ticks)."""
+
+	shard: int | None = field(default=None)
+	"""The shard index for a presence/room shard room (``None`` for broadcast)."""
+
+
+def parse_event_room(room: str) -> EventRoomRef | None:
+	"""Parse a flock_os event-room channel name, or ``None`` if not one / malformed.
+
+	Only ``flock_os:event:*`` rooms route through the scope gate; every other
+	``join`` payload (a Frappe builtin, a foreign app's room) is ignored by the
+	handler. A negative / non-numeric shard is rejected so a malformed room can
+	never become an unscoped subscription.
+	"""
+	match = EVENT_ROOM_RE.match(room or "")
+	if not match:
+		return None
+	event_id = match.group("event_id")
+	shard_raw = match.group("shard")
+	if shard_raw is None:
+		return EventRoomRef(event_id=event_id, is_broadcast=True)
+	shard = int(shard_raw)
+	if shard < 0:
+		return None
+	return EventRoomRef(event_id=event_id, shard=shard)
+
+
+@runtime_checkable
+class EventBranchResolver(Protocol):
+	"""Port: resolve the row-level branch anchor for a gathering (ADR §6.2).
+
+	Production: :class:`FrappeEventBranchResolver` (lazy Frappe import). Unit
+	tests inject a mapping fake. A gathering is branch-bound (``validate_gathering_branch_binding``
+	requires ``Flock Gathering.branch``), so a real gathering always resolves to
+	a branch; ``None`` therefore means *not found* and the gate fails closed.
+	"""
+
+	def branch_for_gathering(self, gathering: str) -> str | None:
+		"""The ``Flock Gathering.branch`` for ``gathering``, or ``None`` if absent."""
+		...
+
+
+class FrappeEventBranchResolver:
+	"""Production adapter: ``Flock Gathering.branch`` via ``frappe.db.get_value``.
+
+	Lazily imports Frappe so :mod:`flock_os.realtime` stays import-clean in CI.
+	"""
+
+	@property
+	def _db(self):  # type: ignore[no-untyped-def]
+		import frappe
+
+		return frappe.db
+
+	def branch_for_gathering(self, gathering: str) -> str | None:
+		if not gathering:
+			return None
+		return self._db.get_value("Flock Gathering", gathering, "branch")
+
+
+class _MappingEventBranchResolver:
+	"""In-memory resolver for unit tests: a fixed ``gathering → branch`` map."""
+
+	def __init__(self, branches: dict[str, str] | None = None) -> None:
+		self._branches: dict[str, str] = dict(branches or {})
+
+	def branch_for_gathering(self, gathering: str) -> str | None:  # noqa: ARG002
+		return self._branches.get(gathering)
+
+
+def event_room_join_allowed(
+	*,
+	room: str,
+	user: str,
+	gateway: Any,
+	resolver: EventBranchResolver,
+) -> bool:
+	"""Pure scope decision: may ``user`` join ``room`` (FLO-106 / ADR §6.2)?
+
+	Reuses the single sanctioned branch decision
+	(:func:`flock_os.permissions.can_access_branch`) — never an ad-hoc SQL check.
+	Global-branch roles (Org Admin / Auditor) pass; a Branch Admin / Group Leader
+	passes iff the gathering's branch is in their materialized allowed set (their
+	``Flock Branch`` User Permissions, which already contains the subtree).
+	Fails closed on an unparseable room or an unknown gathering.
+	"""
+	from flock_os.permissions import can_access_branch
+
+	ref = parse_event_room(room)
+	if ref is None:
+		return False
+	branch = resolver.branch_for_gathering(ref.event_id)
+	if branch is None:
+		# A real gathering always carries a branch (branch-bound, ADR §4.2), so
+		# ``None`` means the gathering does not exist → deny, never fall through
+		# to ``can_access_branch``'s org-wide (null-branch) allow.
+		return False
+	roles = gateway.get_user_roles(user)
+	allowed = gateway.list_branch_user_permissions(user)
+	return can_access_branch(branch=branch, allowed_branches=allowed, roles=roles)
+
+
+def can_join_event_room(room: str) -> bool:
+	"""``@frappe.whitelist()`` scope gate for the realtime ``join`` handler.
+
+	The node ``join`` handler reaches this over HTTP via ``frappe_request`` (the
+	same pattern as Frappe's own ``can_subscribe_doc``): the request carries the
+	socket's session cookie / authorization header, so ``frappe.session.user`` is
+	the authenticated subscriber. Returns ``True``/``False`` as JSON
+	(``{"message": true}``); a ``False`` keeps the socket out of the room.
+	"""
+	import frappe
+
+	from flock_os.permissions import get_gateway
+
+	return event_room_join_allowed(
+		room=room,
+		user=frappe.session.user,
+		gateway=get_gateway(),
+		resolver=FrappeEventBranchResolver(),
+	)

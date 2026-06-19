@@ -53,6 +53,8 @@ jobs:
       - name: JS shard parity matches Python zlib.crc32
         working-directory: load
         run: node --test lib/shards.test.mjs
+      - name: Realtime join-gate logic (FLO-107 + FLO-106)
+        run: node --test realtime/handlers/flock_room_handlers.test.mjs
 
   k6-smoke:
     name: k6 bulk + ws smoke (Phase 6 gate)
