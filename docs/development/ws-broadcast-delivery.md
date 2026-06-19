@@ -40,11 +40,12 @@ server call back to `:80` and reject the namespace with
 `Unauthorized: AggregateError`. `config.ws.origin` defaults to the web base for
 this reason.
 
-## Wire the handler (one-time, idempotent)
+## Wire the handler (auto-wired on migrate, idempotent)
 
 ```bash
 scripts/dev/wire-socketio-handler.sh          # insert the guarded require
 bench restart                                  # reload the realtime node server
+scripts/dev/wire-socketio-handler.sh --check   # assert wired: exit 0 ok / 1 absent
 # undo:
 scripts/dev/wire-socketio-handler.sh --revert
 ```
@@ -59,8 +60,30 @@ catch (err) { console.error("flock_os realtime handler:", (err && err.message) |
 
 The handler **logic** lives in flock_os (version-controlled); only this single
 require lands in vendored Frappe. It is idempotent (marker-guarded) and
-reversible. **Re-run it after a `bench update` / Frappe reinstall** — Frappe
-rewrites `index.js` and drops the line.
+reversible.
+
+### Surviving a `bench update` (FLO-109)
+
+A `bench update` / Frappe reinstall rewrites `apps/frappe/realtime/index.js`
+and **drops the guarded require** — joins then no-op and broadcasts reach zero
+clients, with no startup error (the runtime `try/catch` swallows the missing
+module). That is exactly the FLO-107 symptom recurring silently. The wiring is
+now **self-healing** through two independent guards:
+
+1. **Auto-wire hook.** flock_os registers `after_migrate` + `after_install`
+   hooks (`flock_os/utils/realtime_setup.py`) that re-run
+   `wire-socketio-handler.sh` against the bench. `bench update` performs a
+   `bench migrate`, so the handler is re-inserted automatically — no manual
+   runbook step. The hook is best-effort: it logs a warning on failure but
+   never breaks `migrate`/`install`.
+2. **`--check` assert.** `wire-socketio-handler.sh --check` is a non-mutating
+   gate that exits `1` when the marker is absent. Run it from CI / a deploy
+   runbook after an update to turn a dropped handler into a loud failure
+   instead of a silent regression.
+
+If you ever suspect the line went missing (e.g. a k6 run delivered 0
+broadcasts), the one-line confirm is `wire-socketio-handler.sh --check`; if it
+fails, a plain `wire-socketio-handler.sh` + `bench restart` restores delivery.
 
 ### Why a patch (and not a framework hook)
 

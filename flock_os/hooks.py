@@ -115,6 +115,19 @@ permission_query_conditions = {
 # only when an explicit, ordered run is required. See flock_os/patches.txt.
 # ---------------------------------------------------------------------------- #
 
+# ---------------------------------------------------------------------------- #
+# Realtime-handler auto-wiring (FLO-109)
+# ---------------------------------------------------------------------------- #
+# A `bench update` rewrites apps/frappe/realtime/index.js and would silently
+# drop the flock_os join handler inserted by
+# scripts/dev/wire-socketio-handler.sh (FLO-107) — joins then no-op and
+# broadcasts reach zero clients with no startup error. Re-wire automatically on
+# every migrate (which `bench update` performs) and on install, so the line is
+# never missing without a manual runbook step. The wire script is idempotent +
+# marker-guarded; the hook never breaks migrate on failure (best-effort log).
+after_migrate = ["flock_os.utils.realtime_setup.rewire_socketio_handler"]
+after_install = ["flock_os.utils.realtime_setup.rewire_socketio_handler"]
+
 
 # ---------------------------------------------------------------------------- #
 # Realtime fan-out — sharded event-room channels + event projector (FLO-14)
