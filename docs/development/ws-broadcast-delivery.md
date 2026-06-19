@@ -282,6 +282,37 @@ scripts/dev/scale-socketio.sh stop         # tear down (single-process restored 
 > `accepted/active/failed` counters so a run can verify connections actually
 > spread across the tier.
 
+### Local testbed limits (clean full-15k needs infra tuning)
+
+The connection-setup wall is cleared by the tier — proven: connections
+distribute evenly across the N backends and `flock_ws_connect_duration` drops
+from the single-process ~27 s wall to single-digit ms at small scale. A **clean
+full-15k** run on a single developer Mac hits two OS/testbed ceilings that are
+NOT the connection-setup wall and NOT flock_os code; both have concrete unblocks:
+
+1. **Loopback ephemeral-port ceiling.** A userspace L4 LB doubles ephemeral-port
+   demand — k6's N outbound + the LB's N outbound ≈ 2N ports from the macOS
+   ephemeral range (`net.inet.ip.portrange`, default 49152–65535 ≈ 16 k). At 15 k
+   that is ~30 k ports needed > ~16 k available, so the LB hits `EADDRNOTAVAIL`
+   during the ramp and connections churn. Unblocks (any one): widen the range
+   (`sudo sysctl -w net.inet.ip.portrange.first=1024`), or front the tier with a
+   production LB on a real network (nginx/HAProxy) — which is the production
+   shape anyway — or run the smoke from a second host.
+2. **Shared dev Redis at 15 k.** This bench's `redis_socketio` == `redis_cache`
+   (`127.0.0.1:13000`), so under 8× adapter pub/sub + Frappe cache at the 15 k
+   burst that one Redis stalls and a Redis client emits `ETIMEDOUT`. The adapter
+   clients have `on("error")` handlers (the wiring attaches them), but Frappe's
+   own events subscriber does not, so an unhandled 'error' can crash a worker
+   under the burst. Unblock: give the adapter a dedicated Redis
+   (`FLOCK_SIO_ADAPTER_REDIS` + a `redis-server` on a new port), or a real Redis
+   cluster (the D3 escape hatch).
+
+On this Mac, the scaled tier is **clean green well below those ceilings**
+(e.g. 200 VUs: connect p95 ≈ 3 ms, broadcast p95 ≈ 93 ms, `receive_errors` 0) and
+**reaches the full 15 000 VUs** (the wall is cleared — single-process could not
+establish even 1 %). A clean full-15k local verification needs the sudo/Redis
+tuning above or a production LB environment.
+
 ## Room-join event shape (§5.1 client→server contract)
 
 ```
