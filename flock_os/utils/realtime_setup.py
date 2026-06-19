@@ -58,6 +58,17 @@ WIRING_MARKER = "FLOCK_OS_REALTIME_HANDLER_START"
 AUTH_WIRE_SCRIPT_REL = ("scripts", "dev", "wire-socketio-auth-cache.sh")
 AUTH_WIRING_MARKER = "FLOCK_OS_REALTIME_AUTH_CACHE_START"
 
+# FLO-121: the Redis-adapter wiring for the scaled socketio tier. The §8 15k WS
+# wall shifted (after FLO-116 cleared the auth-callback wall) to a single-process
+# node socketio *connection-setup* wall. The remedy is horizontal scaling of the
+# socketio tier (N node processes behind a WS-aware LB), which needs
+# ``@socket.io/redis-adapter`` so the cluster fans broadcasts + room machinery
+# across workers. This wiring INSERTS a guarded adapter-attach block before
+# ``realtime.on("connection", on_connection);`` (INSERT semantics, like the join
+# handler; a third independent anchor so all three wirings compose).
+REDIS_ADAPTER_WIRE_SCRIPT_REL = ("scripts", "dev", "wire-socketio-redis-adapter.sh")
+REDIS_ADAPTER_WIRING_MARKER = "FLOCK_OS_REALTIME_REDIS_ADAPTER_START"
+
 # Path to the vendored Frappe realtime server, relative to the bench root.
 _FRAPPE_REALTIME_INDEX = ("apps", "frappe", "realtime", "index.js")
 
@@ -262,4 +273,29 @@ def rewire_socketio_auth_cache() -> None:
 		script_name="wire-socketio-auth-cache.sh",
 		consequence=("the §8 15k WS auth wall would recur (connect p95 > 2 s, flock_ws_receive_errors > 0)"),
 		regression="FLO-116",
+	)
+
+
+def rewire_socketio_redis_adapter() -> None:
+	"""Frappe ``after_migrate`` / ``after_install`` hook: re-wire the Redis adapter.
+
+	FLO-121: a ``bench update`` rewrites ``apps/frappe/realtime/index.js`` and
+	would silently drop the ``@socket.io/redis-adapter`` attach block. Without it
+	the scaled socketio tier (N node processes behind a WS-aware LB) cannot fan
+	Socket.IO room/broadcast coordination across workers, so the §8 15k WS
+	connection-setup wall (the wall the auth cache did NOT clear) recurs. This
+	re-applies the guarded INSERT (idempotent + fail-loud, same harness as the
+	join handler + auth cache). Runbook: docs/development/ws-broadcast-delivery.md
+	-> Scaling the socketio tier.
+	"""
+	_rewire_realtime(
+		script_rel=REDIS_ADAPTER_WIRE_SCRIPT_REL,
+		marker=REDIS_ADAPTER_WIRING_MARKER,
+		noun="realtime redis-adapter",
+		script_name="wire-socketio-redis-adapter.sh",
+		consequence=(
+			"the scaled socketio tier could not fan broadcasts/rooms across node "
+			"workers (§8 15k WS connection-setup wall would recur)"
+		),
+		regression="FLO-121",
 	)
