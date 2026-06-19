@@ -57,7 +57,8 @@ BASE_PORT="${FLOCK_SIO_BASE_PORT:-9001}"
 LB_PORT="${FLOCK_SIO_LB_PORT:-9000}"
 NPROC="$(sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 DEFAULT_N="$NPROC"; (( DEFAULT_N > 8 )) && DEFAULT_N=8
-N="${1:-${FLOCK_SIO_PROCESSES:-$DEFAULT_N}}"
+# N is resolved INSIDE cmd_start (from its own positional arg, NOT the subcommand
+# in $1 at this scope — `scale-socketio.sh start 4` puts "start" in $1 here).
 
 STATE_DIR="$BENCH/logs/scaled-socketio"
 BACKENDS_FILE="$STATE_DIR/backends"
@@ -109,6 +110,7 @@ wait_for_port() {
 }
 
 cmd_start() {
+	local N="${1:-${FLOCK_SIO_PROCESSES:-$DEFAULT_N}}"
 	mkdir -p "$STATE_DIR"
 	ensure_adapter_dep || true
 
@@ -118,32 +120,40 @@ cmd_start() {
 		cmd_stop >/dev/null 2>&1 || true
 	fi
 	free_port "$LB_PORT"
-	for ((i = 0; i < N; i++)); do free_port $((BASE_PORT + i)); done
+	# Explicit `while` loops with a numeric counter: $N may be passed as a
+	# positional (e.g. `start 4`) — keeping it out of arithmetic-as-variable
+	# surprises on older bash. $i/$port/$blog/$bpid_file/$pid are local here.
+	local i=0 port blog bpid_file pid
+	while [[ $i -lt $N ]]; do free_port $((BASE_PORT + i)); i=$((i + 1)); done
 
 	log "starting $N socketio backend(s) on :$BASE_PORT..$((BASE_PORT + N - 1))"
 	: > "$BACKENDS_FILE"
-	for ((i = 0; i < N; i++)); do
-		local port=$((BASE_PORT + i))
-		local blog="$STATE_DIR/backend-$i.log"
-		local bpid_file="$STATE_DIR/backend-$i.pid"
+	i=0
+	while [[ $i -lt $N ]]; do
+		port=$((BASE_PORT + i))
+		blog="$STATE_DIR/backend-$i.log"
+		bpid_file="$STATE_DIR/backend-$i.pid"
 		# node apps/frappe/socketio.js resolves the bench root itself; the env var
 		# overrides the listen port (node_utils.get_conf reads FRAPPE_SOCKETIO_PORT).
 		FRAPPE_SOCKETIO_PORT="$port" FRAPPE_BENCH_ROOT="$BENCH" \
 			node "$SOCKETIO_JS" >"$blog" 2>&1 &
-		local pid=$!
+		pid=$!
 		echo "$pid" > "$bpid_file"
 		echo "127.0.0.1:$port" >> "$BACKENDS_FILE"
 		log "  backend[$i] pid=$pid :$port (log: $blog)"
+		i=$((i + 1))
 	done
 
 	# Gate on backends listening before the LB tries to forward to them.
-	for ((i = 0; i < N; i++)); do
-		local port=$((BASE_PORT + i))
+	i=0
+	while [[ $i -lt $N ]]; do
+		port=$((BASE_PORT + i))
 		if ! wait_for_port "$port"; then
 			err "backend[$i] on :$port did not listen in time — check $STATE_DIR/backend-$i.log"
 			cmd_stop >/dev/null 2>&1 || true
 			exit 1
 		fi
+		i=$((i + 1))
 	done
 	log "all $N backends listening"
 
