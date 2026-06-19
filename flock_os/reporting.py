@@ -80,6 +80,20 @@ allows. See [FLO-76](/FLO/issues/FLO-76).
 BULK_ATTENDANCE_MAX_RETRY = 5
 """Max retries with exponential backoff before dead-lettering a batch."""
 
+BULK_ATTENDANCE_IN_PLACE_ATTEMPTS = 10
+"""In-place retries for transient concurrency errors before the slow backoff path.
+
+MariaDB raises error 1020 ("record has changed since last read") / deadlock on
+concurrent ``UPDATE``s of the single shared ``Event Attendance Summary`` row
+even under READ COMMITTED (FLO-100). Those errors are transient and the batch
+is idempotent (``filter_unseen`` dedupes), so the queue job retries the whole
+``service.submit`` in-place with a tiny jittered backoff. That keeps the
+§8 drain fast (batches succeed once the contended X-lock frees) instead of
+flooding the slow exponential-backoff re-enqueue path, which backs the queue
+up past the 60s budget. Only after these in-place attempts are exhausted does
+the batch fall through to ``_deadletter_or_retry``.
+"""
+
 # ---------------------------------------------------------------------------- #
 # Domain event names (ADR-0001 §5.3 / §5.4). The canonical catalog
 # (``flock_os.events``) is the single source of truth for event names; these
