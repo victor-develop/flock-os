@@ -105,7 +105,7 @@ def test_wire_script_inserts_anchor_round_trip_idempotent(tmp_path):
 	# 1. Wire -> marker present, adapter attach block landed, anchor still there.
 	assert _wire(bench).returncode == 0, _wire(bench).stderr
 	assert _wired(index)
-	assert "realtime.adapter(createRedisAdapter(" in index.read_text()
+	assert "io.adapter(createRedisAdapter(" in index.read_text()
 	assert 'realtime.on("connection", on_connection);' in index.read_text(), "anchor must survive insert"
 
 	# 2. Idempotent: wiring again is a no-op (still exactly one marker block).
@@ -183,7 +183,7 @@ def test_rewire_adapter_hook_drives_real_script_end_to_end(monkeypatch, tmp_path
 	realtime_setup.rewire_socketio_redis_adapter()
 
 	assert _wired(index), "hook should leave the redis adapter wired"
-	assert "realtime.adapter(createRedisAdapter(" in index.read_text()
+	assert "io.adapter(createRedisAdapter(" in index.read_text()
 
 
 def test_rewire_adapter_hook_short_circuits_when_already_wired(monkeypatch, tmp_path):
@@ -276,7 +276,7 @@ def test_all_three_wirings_compose_on_real_frappe_index(monkeypatch, tmp_path):
 	assert realtime_setup.AUTH_WIRING_MARKER in text, "auth cache wired"
 	assert REDIS_ADAPTER_WIRING_MARKER in text, "redis adapter wired"
 	assert ".wrap(authenticate)" in text
-	assert "realtime.adapter(createRedisAdapter(" in text
+	assert "io.adapter(createRedisAdapter(" in text
 	# Each marker appears exactly once (no duplication under composition).
 	assert text.count(realtime_setup.WIRING_MARKER) == 1
 	assert text.count(realtime_setup.AUTH_WIRING_MARKER) == 1

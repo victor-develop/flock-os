@@ -13,15 +13,17 @@
 #
 # What it inserts: ONE marker-guarded block into the bench's vendored
 # `apps/frappe/realtime/index.js`, right before
-# `realtime.on("connection", on_connection);`. The block attaches the adapter to
-# the per-site namespace (`realtime`) using two node-redis clients created from
+# `realtime.on("connection", on_connection);`. The block sets the adapter on the
+# `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server method that
+# applies to ALL namespaces, including the per-site parent) using two node-redis
+# clients created from
 # the bench's `redis_socketio` URL via frappe's own `get_redis_subscriber`. The
 # adapter LOGIC + opts live in flock_os
 # (`realtime/adapters/flock_redis_adapter.js`); only this guarded block lands in
 # vendored Frappe.
 #
-# Why a patch and not a framework hook: `@socket.io/redis-adapter` attaches to
-# the live `io` namespace instance, which only exists inside vendored
+# Why a patch and not a framework hook: `@socket.io/redis-adapter` is set on the
+# live `io` Server instance, which only exists inside vendored
 # `index.js`. There is no Frappe extension point for it, so — exactly like the
 # room-join handler (FLO-107) and the auth cache (FLO-116) — the least-invasive
 # flock_os-owned option is a single guarded block, composed independently with
@@ -131,14 +133,17 @@ fi
 # and identical in shape to the join-handler + auth-cache wirings' relative requires.
 ADAPTER_REL="../../flock_os/realtime/adapters/flock_redis_adapter"
 
-# Insert the guarded block BEFORE the anchor (so the adapter is attached to the
-# namespace before connections arrive). `get_redis_subscriber` is already in
-# scope in index.js (destructured from ../node_utils at the top of the file); the
-# block creates + connects two node-redis clients off the bench's redis_socketio
-# URL and attaches the adapter to the `realtime` namespace. Clients are connected
-# fire-and-forget (socket.io-redis-adapter tolerates a not-yet-connected client;
-# the connect promise just ensures pub/sub is live). On ANY error (e.g. the npm
-# package missing) the try/catch logs and the server keeps booting single-process.
+# Insert the guarded block BEFORE the anchor (so the adapter is set before
+# connections arrive). `get_redis_subscriber` is already in scope in index.js
+# (destructured from ../node_utils at the top of the file); the block creates +
+# connects two node-redis clients off the bench's redis_socketio URL and sets the
+# adapter on the `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server
+# method that applies the adapter to ALL namespaces, including the per-site
+# `io.of(/^\/.*$/)` parent + its dynamic child namespaces — calling it on the
+# Namespace would fail with "realtime.adapter is not a function"). Clients are
+# connected fire-and-forget (socket.io-redis-adapter tolerates a not-yet-connected
+# client; the connect promise just ensures pub/sub is live). On ANY error (e.g.
+# the npm package missing) the try/catch logs and the server keeps booting.
 cp "$INDEX" "$INDEX.bak"
 awk -v s="$MARK_START" -v e="$MARK_END" -v a="$ADAPTER_REL" '
 	/realtime\.on\("connection", on_connection\);/ {
@@ -148,7 +153,7 @@ awk -v s="$MARK_START" -v e="$MARK_END" -v a="$ADAPTER_REL" '
 		print "\tconst _flockAdapterPub = get_redis_subscriber(\"redis_socketio\");"
 		print "\tconst _flockAdapterSub = _flockAdapterPub.duplicate();"
 		print "\tPromise.all([_flockAdapterPub.connect(), _flockAdapterSub.connect()]).catch((err) => console.error(\"flock_os redis-adapter connect:\", (err && err.message) || err));"
-		print "\trealtime.adapter(createRedisAdapter(_flockAdapterPub, _flockAdapterSub));"
+		print "\tio.adapter(createRedisAdapter(_flockAdapterPub, _flockAdapterSub));"
 		print "} catch (err) { console.error(\"flock_os realtime redis-adapter:\", (err && err.message) || err); }"
 		print "// " e
 	}
