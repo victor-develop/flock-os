@@ -44,6 +44,16 @@ which owns the sharded RQ write, the idempotency on
 emission (ADR-0001 §5.4). Engagement emits ``flock.engagement.opened`` /
 ``flock.engagement.closed`` itself; the bulk-recorded event is emitted by the
 reporting path it delegates to.
+
+This module is also the **frontend contract** layer for the live engagement UI
+(FLO-12 / FLO-9 §12): the engagement-kind catalog, the WCAG 2.1 AA accessibility
+defaults, the JS realtime parity contract (so a player lands on the same shard
+the server fans out to — ADR §5.1), and the facilitator console scope (the no-
+leakage targetable subtree a facilitator may host engagement for). The portal
+pages + client JS read these constants via JSON injected from the page, so
+Python stays the single source of truth and the browser never hard-codes a
+channel/event name. FLO-11's runtime is the superset; FLO-12's a11y/catalog/
+facilitator-context additions are folded in here (FLO-207 reconciliation).
 """
 
 from __future__ import annotations
@@ -55,12 +65,19 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from flock_os import realtime as rt
 from flock_os.events import (
 	ENGAGEMENT_SESSION_CLOSED,
 	ENGAGEMENT_SESSION_OPENED,
 )
 from flock_os.events import (
 	emit as emit_event,
+)
+from flock_os.permissions import (
+	GLOBAL_BRANCH_ROLES,
+	ROLE_BRANCH_ADMIN,
+	ROLE_GROUP_LEADER,
+	ROLE_ORG_ADMIN,
 )
 from flock_os.reporting import (
 	AttendanceItem,
@@ -111,6 +128,186 @@ def engagement_type_for(kind: str) -> str:
 	if kind in QUESTIONNAIRE_KINDS:
 		return ENGAGEMENT_TYPE_QUESTIONNAIRE
 	raise ValueError(f"unknown engagement kind: {kind!r}")
+
+
+# ---------------------------------------------------------------------------- #
+# Engagement-kind catalog (FLO-9 §3 / FLO-12) — the single source for the UI's
+# kind router + i18n keys. The runtime's frozensets (above) cover validation;
+# this catalog carries the richer per-kind metadata the portal page + client
+# kind-router need: family, component tag, scoring, timing, the Calm Check-in
+# availability, and the i18n key. The backend DocType ``engagement_kind`` select
+# options (FLO-11) mirror these discriminators exactly.
+# ---------------------------------------------------------------------------- #
+FAMILY_GAME = ENGAGEMENT_TYPE_GAME
+FAMILY_QUESTIONNAIRE = ENGAGEMENT_TYPE_QUESTIONNAIRE
+
+KIND_TAP_BURST = "tap_burst"
+KIND_QUIZ_RACE = "quiz_race"
+KIND_REACTION = "reaction"
+KIND_BINGO = "bingo"
+KIND_TEAM_CHALLENGE = "team_challenge"
+KIND_POLL = "poll"
+KIND_WORD_CLOUD = "word_cloud"
+KIND_QA = "qa"
+KIND_PULSE = "pulse"
+
+#: The component tag for each kind in the client kind-router (FLO-9 §12).
+COMPONENT_BY_KIND: dict[str, str] = {
+	KIND_TAP_BURST: "TapBurst",
+	KIND_QUIZ_RACE: "QuizRace",
+	KIND_REACTION: "ReactionTap",
+	KIND_BINGO: "BingoCard",
+	KIND_TEAM_CHALLENGE: "TeamChallenge",
+	KIND_POLL: "LivePoll",
+	KIND_WORD_CLOUD: "WordCloud",
+	KIND_QA: "LiveQA",
+	KIND_PULSE: "PulseSurvey",
+}
+
+
+class EngagementKind:
+	"""One starter kind from FLO-9 §3 (frozen data; a small class for clarity).
+
+	``calm_checkin`` is True for every timed game (FLO-9 §7 — "every timed game
+	has a calm equivalent"); pure questionnaires are untimed so the toggle is a
+	no-op there but still offered for consistency.
+	"""
+
+	__slots__ = ("kind", "family", "component", "scored", "timed", "calm_checkin", "i18n_key")
+
+	def __init__(
+		self,
+		*,
+		kind: str,
+		family: str,
+		component: str,
+		scored: bool,
+		timed: bool,
+		calm_checkin: bool,
+		i18n_key: str,
+	) -> None:
+		self.kind = kind
+		self.family = family
+		self.component = component
+		self.scored = scored
+		self.timed = timed
+		self.calm_checkin = calm_checkin
+		self.i18n_key = i18n_key
+
+	def as_dict(self) -> dict[str, Any]:
+		return {
+			"kind": self.kind,
+			"family": self.family,
+			"component": self.component,
+			"scored": self.scored,
+			"timed": self.timed,
+			"calm_checkin": self.calm_checkin,
+			"i18n_key": self.i18n_key,
+		}
+
+
+#: The 9 starter kinds (FLO-9 §3.1 + §3.2). Attendance trigger for games =
+#: "complete >=1 round"; for questionnaires = the per-kind capture column.
+ENGAGEMENT_CATALOG: tuple[EngagementKind, ...] = (
+	EngagementKind(
+		kind=KIND_TAP_BURST,
+		family=FAMILY_GAME,
+		component="TapBurst",
+		scored=True,
+		timed=True,
+		calm_checkin=True,
+		i18n_key="Tap to Check In",
+	),
+	EngagementKind(
+		kind=KIND_QUIZ_RACE,
+		family=FAMILY_GAME,
+		component="QuizRace",
+		scored=True,
+		timed=True,
+		calm_checkin=True,
+		i18n_key="Live Quiz Race",
+	),
+	EngagementKind(
+		kind=KIND_REACTION,
+		family=FAMILY_GAME,
+		component="ReactionTap",
+		scored=True,
+		timed=True,
+		calm_checkin=True,
+		i18n_key="Reaction Tap",
+	),
+	EngagementKind(
+		kind=KIND_BINGO,
+		family=FAMILY_GAME,
+		component="BingoCard",
+		scored=True,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Team Bingo",
+	),
+	EngagementKind(
+		kind=KIND_TEAM_CHALLENGE,
+		family=FAMILY_GAME,
+		component="TeamChallenge",
+		scored=True,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Team Challenge",
+	),
+	EngagementKind(
+		kind=KIND_POLL,
+		family=FAMILY_QUESTIONNAIRE,
+		component="LivePoll",
+		scored=False,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Live Poll",
+	),
+	EngagementKind(
+		kind=KIND_WORD_CLOUD,
+		family=FAMILY_QUESTIONNAIRE,
+		component="WordCloud",
+		scored=False,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Word Cloud",
+	),
+	EngagementKind(
+		kind=KIND_QA,
+		family=FAMILY_QUESTIONNAIRE,
+		component="LiveQA",
+		scored=False,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Live Q&A",
+	),
+	EngagementKind(
+		kind=KIND_PULSE,
+		family=FAMILY_QUESTIONNAIRE,
+		component="PulseSurvey",
+		scored=False,
+		timed=False,
+		calm_checkin=False,
+		i18n_key="Pulse Survey",
+	),
+)
+
+_CATALOG_BY_KIND: dict[str, EngagementKind] = {k.kind: k for k in ENGAGEMENT_CATALOG}
+
+
+def get_kind(kind: str) -> EngagementKind | None:
+	"""Look up a catalog kind by its discriminator (``None`` if unknown)."""
+	return _CATALOG_BY_KIND.get(kind)
+
+
+def catalog_json() -> list[dict[str, Any]]:
+	"""The catalog as JSON-serializable rows for portal-page injection."""
+	return [k.as_dict() for k in ENGAGEMENT_CATALOG]
+
+
+def valid_kinds() -> tuple[str, ...]:
+	"""The ordered kind discriminators (the ``engagement_kind`` select options)."""
+	return tuple(k.kind for k in ENGAGEMENT_CATALOG)
 
 
 # ---------------------------------------------------------------------------- #
@@ -1035,44 +1232,319 @@ def validate_kind(kind: str) -> None:
 		raise FlockEngagementError(f"unknown engagement kind {kind!r}; expected one of {sorted(ALL_KINDS)}")
 
 
+# ---------------------------------------------------------------------------- #
+# Accessibility config (FLO-9 §7, WCAG 2.1 AA — FLO-12). Defaults the UI
+# applies; the player's saved preference overrides per-session.
+# ---------------------------------------------------------------------------- #
+#: Minimum tap-target side in CSS px (WCAG 2.5.5 / 2.1 AA target size ~48dp).
+A11Y_MIN_TARGET_PX = 48
+
+#: localStorage key for the player's accessibility-mode preference (persisted
+#: across sessions; the portal page reads it before first paint to avoid a
+#: flash of the default motion palette).
+A11Y_PREF_KEY = "flock:engage:a11y"
+
+#: Default accessibility profile (all fields overridable by the saved pref).
+DEFAULT_A11Y_PROFILE: dict[str, Any] = {
+	"enabled": False,
+	"reduced_motion": False,
+	"high_contrast": False,
+	"colorblind_safe": False,
+	"captions": False,
+	"haptics": True,
+}
+
+#: Every timed game offers a Calm Check-in (FLO-9 §7) — attendance credits
+#: without scoring reaction time. Pure questionnaires are untimed already.
+CALM_CHECKIN_KINDS: frozenset[str] = frozenset(k.kind for k in ENGAGEMENT_CATALOG if k.calm_checkin)
+
+
+def resolve_a11y_profile(saved: dict[str, Any] | None) -> dict[str, Any]:
+	"""Merge a saved a11y preference over the defaults (unknown keys dropped)."""
+	merged = dict(DEFAULT_A11Y_PROFILE)
+	if saved:
+		for key in DEFAULT_A11Y_PROFILE:
+			if key in saved:
+				merged[key] = bool(saved[key])
+	return merged
+
+
+# ---------------------------------------------------------------------------- #
+# JS parity contract (ADR §5.1 / FLO-10 §5.1 — FLO-12). The single source the
+# browser replicates so a player's shard room matches the server's fan-out
+# target. realtime.shard_for is ``crc32(utf8(ref)) % N``; the browser computes
+# the same via the parity helper in engagement-core.js. Kept here (not in
+# realtime.py) so the frontend has one import for everything it needs to sync.
+# ---------------------------------------------------------------------------- #
+def js_parity_contract(shard_count: int = rt.DEFAULT_SHARD_COUNT) -> dict[str, Any]:
+	"""The realtime constants the browser must replicate (injected as JSON).
+
+	The shard-assignment algorithm is documented as a string so the JS parity
+	test can assert it; the numeric ``shard_count`` is the ``N`` in ``% N``.
+	"""
+	return {
+		"realtime_events": {
+			"game_state": rt.RT_GAME_STATE,
+			"attendance_presence": rt.RT_ATTENDANCE_PRESENCE,
+			"attendance_count": rt.RT_ATTENDANCE_COUNT,
+		},
+		"channels": {
+			"prefix": rt.EVENT_ROOM_PREFIX,
+			"broadcast_segment": rt.BROADCAST_SEGMENT,
+			"shard_segment": rt.SHARD_SEGMENT,
+		},
+		"shard_count": shard_count,
+		"shard_algorithm": "crc32(utf8(attendee_ref)) >>> 0) % shard_count",
+		"broadcast_channel": "flock_os:event:<session_id>:broadcast",
+		"shard_channel": "flock_os:event:<session_id>:shard:<n>",
+	}
+
+
+#: REST surface the client calls (design FLO-9 §11; implemented by FLO-11).
+#: Method paths so ``frappe.call({method})`` works the same as the announce page.
+ENGAGEMENT_ENDPOINTS: dict[str, str] = {
+	"create_session": "flock_os.engagement_views.create_session",
+	"open_session": "flock_os.engagement_views.open_session",
+	"close_session": "flock_os.engagement_views.close_session",
+	"join_session": "flock_os.engagement_views.join_session",
+	"participate": "flock_os.engagement_views.participate",
+	"session_state": "flock_os.engagement_views.session_state",
+	"flush_offline": "flock_os.engagement_views.flush_offline_queue",
+	"facilitator_context": "flock_os.engagement_views.facilitator_context",
+	"review_queue": "flock_os.engagement_views.suspect_review_queue",
+	"manual_override": "flock_os.engagement_views.manual_override",
+}
+
+
+# ---------------------------------------------------------------------------- #
+# Facilitator console context — mirrors portal.build_compose_context (FLO-60).
+# The no-leakage boundary for hosting engagement: a facilitator may only bind a
+# session to a gathering inside their targetable subtree.
+#
+# NOTE (FLO-207 reconciliation): the runtime I/O port above keeps the name
+# ``EngagementGateway`` (it is FLO-11's, the superset). This console-scope port
+# is a distinct concern (role + tree-membership + gathering reads), so it is
+# named ``FacilitatorGateway`` to avoid the pre-merge name clash.
+# ---------------------------------------------------------------------------- #
+#: Roles that may run the facilitator console (host engagement).
+FACILITATOR_ROLES: frozenset[str] = frozenset({ROLE_ORG_ADMIN, ROLE_BRANCH_ADMIN, ROLE_GROUP_LEADER})
+
+
+@runtime_checkable
+class FacilitatorGateway(Protocol):
+	"""Port: the role + tree-membership + gathering reads the console needs.
+
+	``facilitator_branches`` is the no-leakage boundary (mirrors
+	:meth:`ComposeGateway.targetable_branches`): the exact branch set the
+	facilitator may host engagement for. ``gatherings_for_branches`` is confined
+	to those branches so the gathering picker cannot surface a cross-subtree
+	gathering.
+	"""
+
+	def get_user_roles(self, user: str) -> tuple[str, ...]: ...
+
+	def get_user_organization(self, user: str) -> str | None: ...
+
+	def facilitator_branches(self, user: str) -> tuple[str, ...]: ...
+
+	def branch_label(self, branch: str) -> str | None: ...
+
+	def gatherings_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]: ...
+
+	def groups_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]: ...
+
+
+class NullFacilitatorGateway:
+	"""Empty gateway — yields no targets (default before wiring)."""
+
+	def get_user_roles(self, user: str) -> tuple[str, ...]:  # noqa: ARG002
+		return ()
+
+	def get_user_organization(self, user: str) -> str | None:  # noqa: ARG002
+		return None
+
+	def facilitator_branches(self, user: str) -> tuple[str, ...]:  # noqa: ARG002
+		return ()
+
+	def branch_label(self, branch: str) -> str | None:  # noqa: ARG002
+		return None
+
+	def gatherings_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]:  # noqa: ARG002
+		return ()
+
+	def groups_for_branches(self, branches: tuple[str, ...]) -> tuple[dict[str, Any], ...]:  # noqa: ARG002
+		return ()
+
+
+def _role_set(roles: tuple[str, ...]) -> frozenset[str]:
+	return frozenset(roles)
+
+
+def is_facilitator(roles: tuple[str, ...]) -> bool:
+	"""True iff ``roles`` may open the facilitator console."""
+	return bool(_role_set(roles) & FACILITATOR_ROLES)
+
+
+def build_facilitator_context(*, user: str, gateway: FacilitatorGateway) -> dict[str, Any]:
+	"""Build the facilitator console picker context (FLO-12 — no-leakage scope).
+
+	Returns the option set the console UI renders: the facilitator's targetable
+	branches, the hostable gatherings within them, the group picker, the
+	engagement-kind catalog, the a11y defaults, the JS parity contract, and the
+	REST endpoints the client calls. The branch set is
+	:meth:`facilitator_branches` verbatim — siblings never appear.
+
+	Raises :class:`FlockEngagementError` if ``user`` lacks a facilitator role.
+	"""
+	roles = gateway.get_user_roles(user)
+	if not is_facilitator(roles):
+		raise FlockEngagementError(
+			f"User {user!r} lacks a facilitator role (needs one of {sorted(FACILITATOR_ROLES)})."
+		)
+
+	organization = gateway.get_user_organization(user)
+	branches = gateway.facilitator_branches(user)
+	gatherings = gateway.gatherings_for_branches(branches)
+	groups = gateway.groups_for_branches(branches)
+
+	branch_rows = [{"name": b, "label": gateway.branch_label(b) or b} for b in branches]
+	targetable = set(branches)
+	gathering_rows = [
+		{
+			"name": g["name"],
+			"branch": g["branch"],
+			"label": g.get("label") or g["name"],
+		}
+		for g in gatherings
+		if g["branch"] in targetable
+	]
+	group_rows = [
+		{"name": g["name"], "branch": g["branch"], "label": g.get("label") or g["name"]}
+		for g in groups
+		if g["branch"] in targetable
+	]
+
+	return {
+		"user": user,
+		"roles": list(roles),
+		"organization": organization,
+		"branches": branch_rows,
+		"gatherings": gathering_rows,
+		"groups": group_rows,
+		"kinds": catalog_json(),
+		"a11y_defaults": DEFAULT_A11Y_PROFILE,
+		"parity": js_parity_contract(),
+		"endpoints": dict(ENGAGEMENT_ENDPOINTS),
+		"is_facilitator": True,
+	}
+
+
+def assert_host_target_in_context(
+	*, branch: str | None, group: str | None, gathering: str | None, context: dict[str, Any]
+) -> None:
+	"""Guard: the picked host scope must be inside the offered console context.
+
+	The client-side complement to the backend engagement-scope guard (FLO-11):
+	never trust the client for enforcement — the backend remains the source of
+	truth — but reject a forged target here too so a tampered request never
+	reaches session creation.
+
+	Raises :class:`FlockEngagementError` if any picked scope is outside the
+	offered set.
+	"""
+	offered_branches = {b["name"] for b in context.get("branches", ())}
+	if not branch:
+		raise FlockEngagementError("A host branch is required.")
+	if branch not in offered_branches:
+		raise FlockEngagementError(
+			f"Branch {branch!r} is outside your targetable scope (no cross-subtree leakage)."
+		)
+	if group:
+		offered_groups = {g["name"] for g in context.get("groups", ())}
+		if group not in offered_groups:
+			raise FlockEngagementError(
+				f"Group {group!r} is outside your targetable scope (no cross-subtree leakage)."
+			)
+	if gathering:
+		offered_gatherings = {g["name"] for g in context.get("gatherings", ())}
+		if gathering not in offered_gatherings:
+			raise FlockEngagementError(
+				f"Gathering {gathering!r} is outside your targetable scope (no cross-subtree leakage)."
+			)
+
+
 __all__ = [
+	"A11Y_MIN_TARGET_PX",
+	"A11Y_PREF_KEY",
 	"ALL_KINDS",
 	"BulkServiceFactory",
+	"CALM_CHECKIN_KINDS",
 	"CloseOutcome",
+	"COMPONENT_BY_KIND",
+	"DEFAULT_A11Y_PROFILE",
 	"DEFAULT_ATTENDANCE_STATUS",
 	"DEFAULT_ATTENDEE_ROLE",
 	"DEFAULT_ENGAGEMENT_SOURCE",
 	"DEFAULT_GRACE_SECONDS",
 	"DEFAULT_PARTICIPATION_THROTTLE_PER_SEC",
 	"DEFAULT_TICKET_TTL_SECONDS",
+	"ENGAGEMENT_CATALOG",
+	"ENGAGEMENT_ENDPOINTS",
 	"ENGAGEMENT_TYPE_GAME",
 	"ENGAGEMENT_TYPE_QUESTIONNAIRE",
 	"EngagementGateway",
+	"EngagementKind",
 	"EngagementService",
 	"EngagementSession",
+	"FACILITATOR_ROLES",
+	"FAMILY_GAME",
+	"FAMILY_QUESTIONNAIRE",
+	"FacilitatorGateway",
 	"FlockEngagementError",
 	"GAME_KINDS",
+	"GLOBAL_BRANCH_ROLES",
 	"InMemoryEngagementGateway",
+	"KIND_BINGO",
+	"KIND_POLL",
+	"KIND_PULSE",
+	"KIND_QA",
+	"KIND_QUIZ_RACE",
+	"KIND_REACTION",
+	"KIND_TAP_BURST",
+	"KIND_TEAM_CHALLENGE",
+	"KIND_WORD_CLOUD",
+	"NullFacilitatorGateway",
 	"ParticipateRequest",
 	"Participation",
 	"ParticipationReceipt",
 	"QUESTIONNAIRE_KINDS",
+	"ROLE_BRANCH_ADMIN",
+	"ROLE_GROUP_LEADER",
+	"ROLE_ORG_ADMIN",
 	"STATUS_ARCHIVED",
 	"STATUS_CLOSED",
 	"STATUS_CLOSING",
 	"STATUS_DRAFT",
 	"STATUS_OPEN",
 	"STATUS_SCHEDULED",
-	"SessionTicket",
 	"SUSPECT_REACTION_MS",
 	"SUSPECT_SAME_IP_ATTENDEES",
+	"SessionTicket",
+	"assert_host_target_in_context",
 	"attendee_key",
+	"build_facilitator_context",
+	"catalog_json",
 	"detect_suspect_pattern",
 	"engagement_type_for",
+	"get_kind",
+	"is_facilitator",
 	"issue_session_ticket",
+	"js_parity_contract",
 	"normalize_score",
+	"resolve_a11y_profile",
 	"sign_ticket",
 	"status_flags_for",
+	"valid_kinds",
 	"validate_kind",
 	"validate_session_window",
 	"validate_state_transition",
