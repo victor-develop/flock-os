@@ -36,9 +36,26 @@ export const write = {
 // -- Websocket room smoke (ws_event_room.js) --------------------------------
 // 15k concurrent ws clients, each joining exactly one presence shard + the
 // shared broadcast room for the event (FLO-10 §5.1).
+//
+// Frappe v15 realtime (`apps/frappe/realtime/index.js`) namespaces per site via
+// `io.of(/^\/.*$/)` and authenticates each namespace with the `sid` cookie /
+// `Authorization` header (realtime/middlewares/authenticate.js). So a client
+// must CONNECT the `/<site>` Socket.IO namespace AND present a valid session
+// (FLO-107 — previously the smoke hit the unauth default `/` namespace, which
+// shares no rooms with the site namespace the projector publishes to).
 export const ws = {
-	baseUrl: (__ENV.WS_BASE_URL || "ws://flock_os.localhost:8000").replace(/^http/, "ws"),
+	// Socket.IO server port. The web (gunicorn) port 8000 404s /socket.io; the
+	// realtime node server listens on 9000 (conf.socketio_port). Override for a
+	// remote/tunneled bench.
+	baseUrl: (__ENV.WS_BASE_URL || "ws://flock_os.localhost:9000").replace(/^http/, "ws"),
 	socketioPath: __ENV.SOCKETIO_PATH || "/socket.io",
+	// Frappe per-site realtime namespace. ``frappe.publish_realtime`` emits to
+	// ``/<site>``; the client must CONNECT the same namespace to land in the
+	// projector's room universe. Leading ``/`` is added by the smoke.
+	site: __ENV.SITE || "flock_os.localhost",
+	// HTTP origin the realtime auth middleware cross-checks against the Host
+	// header (authenticate.js: get_hostname(host) == get_hostname(origin)).
+	origin: __ENV.WS_ORIGIN || "http://flock_os.localhost",
 	eventId: __ENV.EVENT_ID || write.eventId,
 	// Default 10 shards == DEFAULT_SHARD_COUNT in flock_os.realtime.
 	shardCount: parseInt(__ENV.SHARD_COUNT || "10", 10),
@@ -46,6 +63,10 @@ export const ws = {
 	durationSec: parseInt(__ENV.WS_DURATION_SEC || "120", 10),
 	// A broadcast is "seen" within this many ms (FLO-10 §8: ws broadcast < 1s).
 	broadcastBudgetMillis: parseInt(__ENV.BROADCAST_BUDGET_MILLIS || "1000", 10),
+	// Auth: a Frappe user (defaults to the bulk leader). The site namespace
+	// requires a valid ``sid`` (validated via frappe.realtime.get_user_info).
+	username: __ENV.FLOCK_USER || write.username,
+	password: __ENV.FLOCK_PASSWORD || write.password,
 };
 
 // Compose the full bulk_submit URL.
