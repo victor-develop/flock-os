@@ -28,7 +28,14 @@ const connectDuration = new Trend("flock_ws_connect_duration", true);
 // flock_ws_broadcast_latency: producer publish -> client receipt (ms).
 const broadcastLatency = new Trend("flock_ws_broadcast_latency", true);
 const roomsJoined = new Counter("flock_ws_rooms_joined");
+// flock_ws_receive_errors: in-session protocol errors (establishment failure or
+// a malformed broadcast EVENT). Thresholded at 0 — a non-zero count is a real
+// bug (e.g. the FLO-105 slice bug that swallowed every broadcast).
 const receiveErrors = new Counter("flock_ws_receive_errors");
+// flock_ws_teardown_errors: socket errors from forced teardown at gracefulStop /
+// ramp-down. NOT in-session errors — k6 closes established sockets at stage
+// transitions, so these are expected and not thresholded (FLO-105).
+const teardownErrors = new Counter("flock_ws_teardown_errors");
 
 // Socket.IO over engine.io v4 packet codes (EIO=4 / SIO=5).
 const EIO_OPEN = "0";
@@ -66,6 +73,10 @@ export default function () {
 		`${cfg.baseUrl}${cfg.socketioPath}/?EIO=4&transport=websocket`,
 		{},
 		(socket) => {
+			// Tracks whether this socket has established + subscribed. Socket
+			// errors after join are teardown (expected); before join they are
+			// establishment failures (gate-relevant). FLO-105.
+			let joined = false;
 			socket.on("open", () => {
 				// Wait for the engine.io OPEN packet in on('message') then CONNECT.
 			});
@@ -83,13 +94,17 @@ export default function () {
 						socket.send(sioEvent("join", { room }));
 						roomsJoined.add(1);
 					}
+					joined = true;
 					connectDuration.add(Date.now() - started);
 					return;
 				}
 				// Socket.IO EVENT ("42[...]") — a broadcast to a joined room.
 				if (data.startsWith("42")) {
 					try {
-						const [_code, payload] = JSON.parse(data.slice(1));
+						// Skip the "42" packet-type prefix (2 chars), not 1: slice(1)
+						// leaves "2[...]" which is invalid JSON and silently turned
+						// every broadcast into a receive error (FLO-105).
+						const [_code, payload] = JSON.parse(data.slice(2));
 						const ts = payload && (payload.ts || (payload.payload && payload.payload.ts));
 						if (ts) {
 							broadcastLatency.add(Date.now() - Number(ts));
@@ -100,7 +115,16 @@ export default function () {
 				}
 			});
 
-			socket.on("error", () => receiveErrors.add(1));
+			socket.on("error", () => {
+				// Pre-join error = establishment failure (gate-relevant). A socket
+				// that already joined is being torn down by k6 at gracefulStop /
+				// ramp-down — expected, route to the separate counter (FLO-105).
+				if (joined) {
+					teardownErrors.add(1);
+				} else {
+					receiveErrors.add(1);
+				}
+			});
 		},
 	);
 
