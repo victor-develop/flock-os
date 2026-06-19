@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 #
-# Seed the Flock OS §8 smoke fixtures (FLO-112 / FLO-53 §8 WS gate).
+# Seed the Flock OS §8 smoke fixtures (FLO-112 / FLO-114 / FLO-53 §8 WS gate).
 #
 # Materializes the runtime fixtures `load/README.md` -> "Runtime fixtures"
-# assumes (tenant org -> branch -> group -> gathering, plus the scoped leader
-# user) so the WS room-join scope gate resolves `gathering-smoke` ->
-# `branch-smoke` and `flock_os.realtime_views.can_join_event_room` returns true
-# for the leader. The `Flock Gathering` DocType (FLO-54) already ships in the
-# app; without a seeded gathering the resolver raises -> the gate fails closed
-# -> the smoke records zero broadcasts.
+# assumes (branch -> group -> gathering, plus the scoped leader user) so the WS
+# room-join scope gate resolves `gathering-smoke` -> `branch-smoke` and
+# `flock_os.realtime_views.can_join_event_room` returns true for the leader. The
+# `Flock Gathering` DocType (FLO-54) already ships in the app; without a seeded
+# gathering the resolver raises -> the gate fails closed -> the smoke records
+# zero broadcasts.
+#
+# The smoke reuses the site's singleton `Flock Organization` (1 per site, FLO-5
+# §8.1) — it does NOT create a parallel `org-smoke` (that was the FLO-114 stale-
+# runbook failure). The seeder resolves the existing org and attaches the
+# branch/group/gathering to it, creating the singleton only on an empty site.
 #
 # These are runtime smoke rows, NOT canonical catalog fixtures — intentionally
 # not run on `bench migrate` (no prod pollution). This is a thin wrapper over

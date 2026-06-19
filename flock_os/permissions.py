@@ -813,10 +813,13 @@ def install_gateway(gateway: PermissionGateway) -> PermissionGateway:
 #
 # Registered in hooks.py for every name in SCOPED_DOCTYPES. Returns "" for the
 # bypass / no-scope cases (Frappe composes a no-op); returns the OR-fragment for
-# a leader/member. Frappe calls this with (doctype, user); under plain pytest it
-# is exercised directly against a RecordingPermissionGateway.
+# a leader/member. Frappe dispatches the hook as ``frappe.call(method, user,
+# doctype=doctype)`` — ``user`` positional, ``doctype`` keyword
+# (apps/frappe/frappe/model/db_query.py:1130); the signature matches that
+# convention. Under plain pytest it is exercised directly against a
+# RecordingPermissionGateway.
 # ---------------------------------------------------------------------------- #
-def get_group_scoped_conditions(doctype: str, user: str | None = None) -> str:
+def get_group_scoped_conditions(user: str | None = None, doctype: str | None = None) -> str:
 	"""``permission_query_conditions`` hook — the one custom group-axis mechanism.
 
 	ADR §6.3: appends a single OR-fragment to the existing ``WHERE``. Bypass
@@ -871,4 +874,4 @@ def has_group_scope(doctype: str, user: str) -> bool:
 	test can confirm leader scoping actually fires on the group list (the §6.3
 	self-predication regression risk).
 	"""
-	return bool(get_group_scoped_conditions(doctype, user).strip())
+	return bool(get_group_scoped_conditions(user=user, doctype=doctype).strip())

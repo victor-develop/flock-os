@@ -58,7 +58,7 @@ FLOCK_GATHERING_TYPE_NAMES: tuple[str, ...] = tuple(t["gathering_type_name"] for
 
 # ---------------------------------------------------------------------------- #
 # Smoke fixtures for the FLO-10 §8 load / WS gate (load/README.md -> Runtime
-# fixtures, [FLO-112](/FLO/issues/FLO-112)).
+# fixtures, [FLO-112](/FLO/issues/FLO-112), [FLO-114](/FLO/issues/FLO-114)).
 #
 # These are **runtime smoke data, not canonical catalog fixtures** — they are
 # NOT auto-seeded on `bench migrate` (that would pollute every production site
@@ -67,10 +67,19 @@ FLOCK_GATHERING_TYPE_NAMES: tuple[str, ...] = tuple(t["gathering_type_name"] for
 # `gathering-smoke` -> `branch-smoke` and the leader can join (the same chain
 # the k6 smoke + the broadcast producer assume). Kept here (pure data, no
 # Frappe import) so the seed shape is unit-testable under plain pytest.
+#
+# Org note (FLO-114): ``Flock Organization`` is a singleton (1 per site, FLO-5
+# §8.1). The smoke does NOT create a parallel ``org-smoke`` — that violates the
+# 1-org-per-site invariant (the stale runbook's failure). The seeder reuses the
+# site's existing single org, falling back to creating the singleton (labeled
+# below) only on a completely empty site. So there is no smoke-owned org PK;
+# branch/group/gathering attach to the site's real tenant org.
 # ---------------------------------------------------------------------------- #
-#: Tenant floor for the smoke (a Flock Organization row).
-FLOCK_SMOKE_ORG = "org-smoke"
-#: The branch the leader is scoped to (a Flock Branch row -> FLOCK_SMOKE_ORG).
+#: The ``organization_name`` label for the smoke org, used ONLY when the seeder
+#: must create the singleton on an empty site (FLO-114). NOT a row PK — the
+#: smoke reuses the site's existing single ``Flock Organization``.
+FLOCK_SMOKE_ORG_NAME = "Flock Smoke Org"
+#: The branch the leader is scoped to (a Flock Branch row -> the site org).
 FLOCK_SMOKE_BRANCH = "branch-smoke"
 #: A branch-bound group the gathering attaches to (Flock Group -> branch).
 FLOCK_SMOKE_GROUP = "group-smoke"
