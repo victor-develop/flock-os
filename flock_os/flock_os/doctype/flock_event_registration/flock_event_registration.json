@@ -1,0 +1,231 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-20 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "is_submittable": 0,
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "EVREG-.#####",
+   "default": "EVREG-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "search_index": 1,
+   "description": "Tenant floor (ADR §3). Denormalized from the branch."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Scoping key (FLO-5 contract). The gathering's branch — scoped natively by Frappe User Permissions on Flock Branch (ADR §6.2)."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Registration context — the gathering's originating group. Group-axis hook surface (ADR §6.3); branch-bound to the gathering's group."
+  },
+  {
+   "fieldname": "event_section",
+   "fieldtype": "Section Break",
+   "label": "Registration"
+  },
+  {
+   "fieldname": "gathering",
+   "fieldtype": "Link",
+   "label": "Gathering",
+   "options": "Flock Gathering",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The one-time Flock Gathering (event_category = One-time) this registration belongs to (FLO-7 §3.5)."
+  },
+  {
+   "fieldname": "registrant",
+   "fieldtype": "Link",
+   "label": "Registrant",
+   "options": "Flock Member",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "description": "The person. Visitors are Flock Member rows with status = Visitor (login-less). The self-membership column for the group-axis hook (ADR §6.3 edit #4)."
+  },
+  {
+   "fieldname": "registrant_name",
+   "fieldtype": "Data",
+   "label": "Registrant Name",
+   "in_list_view": 1,
+   "search_index": 1,
+   "translatable": 0,
+   "read_only": 1,
+   "description": "Denormalized full_name for search/lists (mirrors Flock Attendance Record attendee_ref)."
+  },
+  {
+   "fieldname": "registration_status",
+   "fieldtype": "Select",
+   "label": "Registration Status",
+   "options": "Registered\nWaitlisted\nCancelled\nChecked-in\nNo-show",
+   "default": "Registered",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "Registration lifecycle (FLO-7 §3.5): Registered → {Checked-in | Cancelled}, Waitlisted → Registered (capacity frees), terminal Checked-in/No-show/Cancelled."
+  },
+  {
+   "fieldname": "registered_at",
+   "fieldtype": "Datetime",
+   "label": "Registered At",
+   "search_index": 1,
+   "read_only": 1,
+   "description": "When the registration row was created (index for branch-scoped reads, FLO-7 §3.5)."
+  },
+  {
+   "fieldname": "registered_via",
+   "fieldtype": "Select",
+   "label": "Registered Via",
+   "options": "Self\nLeader\nInvite\nBulk",
+   "default": "Self",
+   "description": "Provenance (FLO-7 §3.5). Self/Leader are the MVP paths ([FLO-62]); Invite/Bulk land with Phase B ([FLO-79])."
+  },
+  {
+   "fieldname": "checked_in_attendance",
+   "fieldtype": "Link",
+   "label": "Checked-in Attendance",
+   "options": "Flock Attendance Record",
+   "search_index": 1,
+   "read_only": 1,
+   "description": "Bridge to the FLO-6 attendance row when the registrant attends (FLO-7 §5 #5). Nullable until check-in."
+  },
+  {
+   "fieldname": "invite",
+   "fieldtype": "Link",
+   "label": "Invite",
+   "options": "Flock Event Invitation",
+   "description": "If registered via an invitation (Phase B, FLO-7 §3.6). Nullable for the MVP Self/Leader paths."
+  },
+  {
+   "fieldname": "metadata",
+   "fieldtype": "JSON",
+   "label": "Metadata",
+   "description": "Provenance + audit detail (FLO-7 §3.5)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-20 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Event Registration",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Member",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Visitor",
+   "write": 1
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "registrant_name",
+ "track_changes": 1
+}

@@ -271,6 +271,30 @@ def _sync_gathering_status(approval: FlockEventApproval, gathering_status: str) 
 	)
 
 
+def _open_registration_on_final_approval(approval: FlockEventApproval) -> None:
+	"""On final approval, confirm the registration scope on the gathering (§4.2 #2).
+
+	The leader's ``proposed_registration_scope`` is copied to the gathering's
+	``registration_scope`` so the eligibility gate + the ``registration.opened``
+	event fire on the confirmed scope. Emits ``flock.registration.opened`` via
+	the canonical emitter (FLO-7 §7). The window itself (opens_on/closes_on +
+	capacity) is set by the leader at propose time and confirmed implicitly here
+	— the gathering is now Approved + scoped, so ``is_registration_window_open``
+	can read True once the window bounds are met.
+	"""
+	confirmed_scope = approval.proposed_registration_scope or "None"
+	frappe.db.set_value("Flock Gathering", approval.gathering, "registration_scope", confirmed_scope)
+	events.emit(
+		events.REGISTRATION_OPENED,
+		payload={
+			"approval": approval.name,
+			"gathering": approval.gathering,
+			"scope": confirmed_scope,
+		},
+		scope=_scope_for_event(approval),
+	)
+
+
 # ---------------------------------------------------------------------------- #
 # Approval actions (FLO-7 §4 / §8) — scoped ``@frappe.whitelist()`` endpoints.
 #
@@ -387,6 +411,9 @@ def approve_event(approval_id: str, comment: str | None = None) -> dict:
 		approval.final_decision_at = frappe.utils.now()
 		approval.save(ignore_permissions=True)
 		_sync_gathering_status(approval, approvals.APPROVAL_APPROVED)
+		# §4.2 #2: confirm the registration scope + open registration. Emits
+		# ``flock.registration.opened`` (the registration gate FLO-62 owns).
+		_open_registration_on_final_approval(approval)
 		events.emit(
 			events.APPROVAL_APPROVED,
 			payload={
