@@ -1,12 +1,11 @@
 """
-Realtime-handler auto-wiring harness (FLO-109, FLO-107 follow-up).
+Realtime-handler auto-wiring harness (FLO-109 / FLO-110, FLO-107 follow-up).
 
 A ``bench update`` rewrites ``apps/frappe/realtime/index.js`` and silently drops
 the guarded ``require`` that registers flock_os's ``join`` handler
 (``scripts/dev/wire-socketio-handler.sh``). flock_os's ``after_migrate`` /
-``after_install`` hooks re-run that script automatically. These tests pin both
-halves of that belt-and-suspenders guard so a silent regression becomes a red
-gate instead:
+``after_install`` hooks re-run that script automatically. These tests pin the
+guard so a silent regression becomes a red gate instead:
 
 1. The wire script round-trips on a temp bench layout: it inserts the marker,
    a simulated reinstall (restoring the pristine file) drops it, and re-running
@@ -14,7 +13,11 @@ gate instead:
 2. ``--check`` is a non-mutating assert (exit 0 wired / 1 absent).
 3. The hook locates the bench + script via anchor walk-up (robust to the
    flock_os symlink) and drives the real script end-to-end with only ``frappe``
-   stubbed — and never raises on failure.
+   stubbed.
+4. FLO-110 fail-loud: after driving the script the hook *verifies* the marker
+   landed and RAISES :class:`RealtimeWiringError` if it is missing — a dropped
+   wiring can never ship silently (the prior best-effort log hid a total failure
+   on the live bench for a whole heartbeat).
 
 Runs under plain ``pytest`` (no bench) on any host with ``bash``.
 """
@@ -27,7 +30,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from flock_os.utils import realtime_setup
+from flock_os.utils.realtime_setup import WIRING_MARKER, RealtimeWiringError
 
 # The real wiring script, located the same way the hook locates it.
 WIRE_SCRIPT = realtime_setup.find_wire_script(realtime_setup.__file__)
@@ -191,8 +197,40 @@ def test_rewire_hook_logs_warning_when_bench_not_found(monkeypatch, tmp_path):
 	assert not sink.get("info")
 
 
-def test_rewire_hook_never_raises_on_subprocess_failure(monkeypatch, tmp_path):
-	"""A failing wire script must log + swallow, never break migrate/install."""
+def test_rewire_hook_short_circuits_when_already_wired(monkeypatch, tmp_path):
+	"""An already-wired index must not invoke the script (no-op, no raise)."""
+	bench = _bench(tmp_path)
+	index = bench / "apps" / "frappe" / "realtime" / "index.js"
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	# Pre-wire so the marker is present.
+	assert _wire(bench).returncode == 0
+	assert _wired(index)
+
+	calls = []
+	sink: dict = {}
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, sink))
+
+	def _must_not_run(*a, **k):
+		calls.append(k)
+		raise AssertionError("subprocess.run must not be called when already wired")
+
+	monkeypatch.setattr(realtime_setup.subprocess, "run", _must_not_run)
+
+	# Must not raise and must not invoke the script.
+	realtime_setup.rewire_socketio_handler()
+	assert calls == [], "already-wired path must short-circuit before subprocess.run"
+	assert sink.get("info"), "already-wired path should log info"
+
+
+def test_rewire_hook_raises_loud_when_wiring_still_missing(monkeypatch, tmp_path):
+	"""FLO-110: a wire attempt that leaves the marker absent RAISES, never silent.
+
+	Simulates the exact regression: a ``bench update`` dropped the marker and the
+	re-wire failed (subprocess error / Frappe restructured the anchor). The hook
+	must fail the migrate loudly with a remediation, not swallow it.
+	"""
 	bench = _bench(tmp_path)
 	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
 	frappe_file.parent.mkdir(parents=True)
@@ -205,5 +243,41 @@ def test_rewire_hook_never_raises_on_subprocess_failure(monkeypatch, tmp_path):
 
 	monkeypatch.setattr(realtime_setup.subprocess, "run", boom)
 
+	with pytest.raises(RealtimeWiringError) as exc_info:
+		realtime_setup.rewire_socketio_handler()
+
+	message = str(exc_info.value)
+	assert "MISSING" in message
+	assert "FLO-107" in message  # names the regression it prevents
+	assert "bench restart" in message  # concrete remediation
+	assert sink.get("warning"), "the underlying script error should still be logged"
+
+
+def test_rewire_hook_warns_and_skips_when_index_absent(monkeypatch, tmp_path):
+	"""No vendored realtime index -> best-effort warn+return (nothing to wire)."""
+	bench = _bench(tmp_path)
+	# Remove the realtime index so there is nothing to wire.
+	(bench / "apps" / "frappe" / "realtime" / "index.js").unlink()
+	frappe_file = bench / "apps" / "frappe" / "frappe" / "__init__.py"
+	frappe_file.parent.mkdir(parents=True)
+	frappe_file.write_text("")
+	sink: dict = {}
+	calls = []
+	monkeypatch.setitem(sys.modules, "frappe", _stub_frappe(frappe_file, sink))
+	monkeypatch.setattr(realtime_setup.subprocess, "run", lambda *a, **k: calls.append(k))
+
 	realtime_setup.rewire_socketio_handler()  # must not raise
-	assert sink.get("warning"), "hook should log a warning when wiring fails"
+
+	assert sink.get("warning"), "missing index should warn"
+	assert calls == [], "must not run the script when there is no index to wire"
+
+
+def test_python_marker_matches_script_mark_start():
+	"""The two sources of truth for "is the handler wired?" must agree.
+
+	``realtime_setup.WIRING_MARKER`` is what the hook verifies;
+	``wire-socketio-handler.sh`` inserts/keys on ``MARK_START``. If they drift the
+	hook would raise forever (marker never matches) or never detect a drop.
+	"""
+	script = Path(WIRE_SCRIPT).read_text(encoding="utf-8")
+	assert f'MARK_START="{WIRING_MARKER}"' in script
