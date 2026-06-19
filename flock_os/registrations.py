@@ -47,6 +47,7 @@ Layering (ADR-0001 §2 separation of concerns)::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -184,7 +185,12 @@ def validate_registration_transition(*, from_status: str, to_status: str) -> Non
 # ---------------------------------------------------------------------------- #
 @runtime_checkable
 class RegistrationScopeGateway(Protocol):
-	"""Port: the membership / branch / subtree reads eligibility needs (§5)."""
+	"""Port: the membership / branch / subtree reads eligibility needs (§5).
+
+	Phase B ([FLO-79]) adds :meth:`has_valid_invitation` so the ``Invited Only``
+	scope (§5) can be honored without a Frappe import here — the production
+	adapter delegates to the ``Flock Event Invitation`` table.
+	"""
 
 	def member_branch(self, member: str) -> str | None:
 		"""The ``Flock Branch`` the member belongs to (their home branch)."""
@@ -218,6 +224,17 @@ class RegistrationScopeGateway(Protocol):
 		"""The gathering's originating group (the ``Own Group`` anchor)."""
 		...
 
+	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
+		"""True iff ``member`` holds a non-expired, non-declined invitation (§5).
+
+		``Invited Only`` eligibility: a ``Flock Event Invitation`` row exists for
+		(gathering, member) whose status is ``Sent`` or ``Accepted`` and whose
+		``expires_on`` has not lapsed. Declined/Expired invitations are out of
+		scope. Group-subtree invitations (``invitee_group``) qualify a member
+		who belongs to that subtree. Phase B ([FLO-79]).
+		"""
+		...
+
 
 class NullRegistrationScopeGateway:
 	"""Empty gateway — the default before production wiring; nothing is in scope."""
@@ -245,6 +262,25 @@ class NullRegistrationScopeGateway:
 
 	def gathering_group(self, gathering: str) -> str | None:  # noqa: ARG002
 		return None
+
+	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:  # noqa: ARG002
+		return False
+
+
+# ---------------------------------------------------------------------------- #
+# Invitation expiry (§3.6 / §5 Invited Only). Pure so the controller + the
+# eligibility gate share one verdict; ``now`` is passed in to keep this testable
+# without a clock. A null ``expires_on`` means the invitation never lapses.
+# ---------------------------------------------------------------------------- #
+def is_invitation_expired(expires_on: str | None, *, now: str) -> bool:
+	"""True iff ``expires_on`` is set and has passed (``now`` >= ``expires_on``).
+
+	Pure: the controller passes ``frappe.utils.now()``. A null/empty
+	``expires_on`` means the invitation does not expire (§3.6).
+	"""
+	if not expires_on:
+		return False
+	return now >= expires_on
 
 
 # ---------------------------------------------------------------------------- #
@@ -303,10 +339,12 @@ def is_member_in_scope(*, member: str, gathering: str, scope: str, gateway: Regi
 			return False
 		return gateway.member_organization(member) == gathering_org
 	if scope == SCOPE_INVITED_ONLY:
-		# Invitations are the Phase B path ([FLO-79]); until they land, no
-		# member is in scope for an ``Invited Only`` event. The controller
-		# surfaces a clear message rather than silently allowing.
-		return False
+		# Phase B ([FLO-79]): the eligible set is the holders of a valid,
+		# non-expired ``Flock Event Invitation``. The gateway's
+		# ``has_valid_invitation`` honors Sent/Accepted, non-expired rows
+		# (group-subtree invitations qualify a member in that subtree). Fail
+		# closed if the gateway cannot resolve an invitation.
+		return gateway.has_valid_invitation(gathering=gathering, member=member)
 	# Unknown scope string — fail closed (never silently admit).
 	raise FlockRegistrationError(f"Unknown registration scope {scope!r} (FLO-7 §5).")
 
@@ -321,7 +359,11 @@ def eligibility_reason(*, member: str, gathering: str, scope: str, gateway: Regi
 	if scope in CLOSED_SCOPES:
 		return f"Registration is closed for this event (scope={scope!r})."
 	if scope == SCOPE_INVITED_ONLY:
-		return "This event is Invited Only; invitations are not yet enabled."
+		# Phase B ([FLO-79]): the verdict now rides the gateway, so the reason
+		# reflects the real invitation state.
+		if is_member_in_scope(member=member, gathering=gathering, scope=scope, gateway=gateway):
+			return f"Member is eligible (matches scope {scope!r})."
+		return f"Member is out of scope ({scope!r}) — no valid invitation for this event."
 	if is_member_in_scope(member=member, gathering=gathering, scope=scope, gateway=gateway):
 		return f"Member is eligible (matches scope {scope!r})."
 	return f"Member is out of scope ({scope!r}) for this event."
@@ -387,6 +429,11 @@ def capacity_decision(*, capacity: int | None, registered_count: int) -> Capacit
 	UPDATE is the race-correctness backstop at 15k concurrency — this helper
 	only computes the optimistic intent so the controller can emit the right
 	event (``created`` vs ``waitlisted``) on the affected-rows verdict.
+
+	The policy's ``enable_waitlist`` toggle (§3.4, Phase B/[FLO-79]) is honored
+	at the controller: when the waitlist is disabled and the event is full, the
+	controller rejects rather than queuing — this helper stays the single seat/
+	no-seat verdict that both the waitlist-on and waitlist-off paths branch on.
 	"""
 	if capacity is None or capacity <= 0:
 		return CapacityDecision(status=REGISTRATION_REGISTERED, seated=True)
@@ -421,6 +468,76 @@ def is_gathering_registration_eligible(
 	)
 
 
+# ---------------------------------------------------------------------------- #
+# Waitlist auto-promotion (FLO-7 §5 #6, Phase B/[FLO-79]).
+#
+# On a ``Registered → Cancelled`` transition a capacity seat frees; the oldest
+# ``Waitlisted`` row is atomically promoted to ``Registered``. The selection
+# rule (oldest-first FIFO) is pure so the gate can test it without a DB; the
+# atomic promotion ``UPDATE`` (race-free at 15k) lives in the controller.
+# ---------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class WaitlistCandidate:
+	"""A waitlisted registration's promotion-relevant fields (§5 #6)."""
+
+	name: str
+	gathering: str
+	registrant: str
+	registered_at: str
+
+
+def select_waitlist_promotion_candidate(
+	candidates: Sequence[WaitlistCandidate],
+) -> WaitlistCandidate | None:
+	"""Pick the oldest ``Waitlisted`` candidate to promote (§5 #6, FIFO).
+
+	Pure over an already-ordered-or-not candidate list: the oldest by
+	``registered_at`` (earliest waitlist timestamp wins — first-come-first-
+	served). Ties break on ``name`` for determinism (stable across replays so
+	the at-least-once outbox replay ([FLO-4](/FLO/issues/FLO-4) §5.1) promotes
+	the same row). Returns ``None`` when the waitlist is empty (no promotion).
+
+	The controller supplies the candidate rows (read from the registration
+	table); this helper owns only the ordering rule so it is unit-testable.
+	"""
+	if not candidates:
+		return None
+	return min(candidates, key=lambda c: (c.registered_at, c.name))
+
+
+# ---------------------------------------------------------------------------- #
+# Bulk registration batching (FLO-7 §5, Phase B/[FLO-79]).
+#
+# ``register_bulk`` validates scope once then enqueues per-batch inserts on the
+# Frappe/RQ queue — the 15k path. The chunk shape (batch size) is pure so the
+# gate can test the partitioning without a worker; the enqueue + the per-batch
+# insert live in the controller.
+# ---------------------------------------------------------------------------- #
+#: Default per-batch size for bulk registration (mirrors the FLO-6 §5 attendance
+#: bulk path; small enough to keep each transaction's lock window tight at 15k
+#: burst, large enough to avoid 15k round-trips). The controller may override.
+DEFAULT_BULK_BATCH_SIZE = 500
+
+
+def chunk_members(members: Sequence[str], *, batch_size: int = DEFAULT_BULK_BATCH_SIZE) -> list[list[str]]:
+	"""Partition ``members`` into ordered batches for queue-backed insert (§5).
+
+	Pure: the bulk path's only pure concern is the partition shape. Validates
+	``batch_size`` (>=1) and preserves input order within + across batches so
+	the per-batch jobs are deterministic (idempotent on replay via the unique
+	``(gathering, registrant)`` constraint). De-duplicates members first so a
+	15k list with repeats never double-inserts (the unique index is the
+	backstop, but de-dup here keeps the batch counts honest).
+	"""
+	if batch_size < 1:
+		raise FlockRegistrationError(f"batch_size must be >= 1 (got {batch_size}).")
+	# De-duplicate preserving order (the unique constraint backstops a race, but
+	# a pre-pass keeps the reported totals accurate + the batches tight).
+	seen: dict[str, None] = dict.fromkeys(m for m in members if m)
+	unique = list(seen)
+	return [unique[i : i + batch_size] for i in range(0, len(unique), batch_size)]
+
+
 __all__ = (
 	"CLOSED_SCOPES",
 	"DEFAULT_REGISTRATION_SCOPE",
@@ -449,17 +566,22 @@ __all__ = (
 	"VIA_LEADER",
 	"VIA_SELF",
 	"CapacityDecision",
+	"DEFAULT_BULK_BATCH_SIZE",
 	"FlockRegistrationError",
 	"NullRegistrationScopeGateway",
 	"RegistrationScopeGateway",
 	"RegistrationWindow",
+	"WaitlistCandidate",
 	"capacity_decision",
+	"chunk_members",
 	"eligibility_reason",
 	"is_capacity_full",
 	"is_gathering_registration_eligible",
+	"is_invitation_expired",
 	"is_member_in_scope",
 	"is_registration_window_open",
 	"is_terminal_registration_status",
 	"is_valid_registration_transition",
+	"select_waitlist_promotion_candidate",
 	"validate_registration_transition",
 )

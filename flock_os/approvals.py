@@ -122,9 +122,15 @@ class FlockApprovalError(ValueError):
 # Cancelled}; Rejected/Withdrawn → Draft (resubmit, decided steps preserved for
 # audit). Approved/Cancelled are terminal.
 # ---------------------------------------------------------------------------- #
-#: Legal ``from -> {to, ...}`` approval transitions (§3.2 diagram).
+#: Legal ``from -> {to, ...}`` approval transitions (§3.2 diagram + §3.4
+#: auto-approve fast path). The Phase B ([FLO-79]) ``Draft → Approved`` edge is
+#: the small-group auto-approve path: an event under the policy's
+#: ``auto_approve_below_capacity`` threshold skips the chain on submit and lands
+#: terminal directly. The controller guards it with
+#: :func:`is_auto_approved` (capacity < threshold); the state machine only
+#: licenses the edge — the threshold predicate is the actual gate.
 APPROVAL_TRANSITIONS: dict[str, frozenset[str]] = {
-	APPROVAL_DRAFT: frozenset({APPROVAL_PENDING, APPROVAL_WITHDRAWN, APPROVAL_CANCELLED}),
+	APPROVAL_DRAFT: frozenset({APPROVAL_PENDING, APPROVAL_APPROVED, APPROVAL_WITHDRAWN, APPROVAL_CANCELLED}),
 	APPROVAL_PENDING: frozenset({APPROVAL_APPROVED, APPROVAL_REJECTED, APPROVAL_CANCELLED}),
 	APPROVAL_REJECTED: frozenset({APPROVAL_DRAFT}),
 	APPROVAL_WITHDRAWN: frozenset({APPROVAL_DRAFT}),
@@ -170,6 +176,14 @@ def validate_approval_transition(*, from_status: str | None, to_status: str) -> 
 # Approval policy (FLO-7 §3.4). Chain rules resolved from a ``Flock Event
 # Approval Policy`` row. Kept as plain frozen data so chain resolution stays
 # pure — the controller loads the row and builds this struct.
+#
+# Phase B ([FLO-79]) richens the policy with the four §3.4 knobs the MVP left
+# defaulted: ``auto_approve_below_capacity`` (the small-group fast path),
+# ``approval_timeout_hours`` (remind/escalate, consumed by [FLO-8]),
+# ``default_registration_scope`` (the leader-proposal floor), and
+# ``enable_waitlist`` (the capacity-overflow toggle). They ride the same frozen
+# struct + the same ``_approval_policy_from_row`` mapper so the policy stays a
+# single source of truth.
 # ---------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class ApprovalPolicy:
@@ -178,12 +192,54 @@ class ApprovalPolicy:
 	require_branch_admin_final: bool = True
 	max_approval_levels: int | None = None
 	allow_self_approval: bool = False
+	auto_approve_below_capacity: int | None = None
+	"""Small-group fast path (§3.4): an event whose capacity is strictly below
+	this threshold skips the chain entirely and lands ``Approved`` on submit
+	([FLO-79]). ``None``/``0`` disables the fast path (every event routes)."""
+
+	approval_timeout_hours: int | None = None
+	"""Remind/escalate after N hours (§3.4, consumed by [FLO-8]). ``None`` = no
+	timeout. Surfaced on the approval doc so the notification scheduler can read
+	it without re-querying the policy row."""
+
+	default_registration_scope: str | None = None
+	"""The leader-proposal floor (§3.4) — copied to the approval's
+	``proposed_registration_scope`` when the leader does not pick one. ``None``
+	leaves the choice to the leader."""
+
+	enable_waitlist: bool = True
+	"""Whether over-capacity registrants land ``Waitlisted`` (§3.4/§5). When
+	``False`` a full event rejects instead of waitlisting (mirrors the
+	:func:`registrations.capacity_decision` ``enable_waitlist`` axis)."""
 
 
 #: The default policy when no ``Flock Event Approval Policy`` applies (§3.4 —
 #: the nearest policy to the gathering's branch wins; absent one, the branch
-#: admin is the terminal approver, self-approval is off, depth uncapped).
+#: admin is the terminal approver, self-approval is off, depth uncapped,
+#: auto-approve/timeout disabled, waitlist on).
 DEFAULT_POLICY = ApprovalPolicy()
+
+
+def is_auto_approved(*, capacity: int | None, policy: ApprovalPolicy) -> bool:
+	"""True iff an event of ``capacity`` clears the auto-approve fast path (§3.4).
+
+	The small-group convenience: an event whose capacity is strictly below
+	``policy.auto_approve_below_capacity`` skips the approval chain on submit
+	and lands ``Approved`` directly (a routine cell-group meeting does not need
+	the full up-tree walk). A ``None``/``0`` threshold disables the path; an
+	uncapped event (``capacity is None``) never clears a finite threshold (an
+	unbounded event cannot be "small"). The threshold is *strict*: an event at
+	exactly the threshold still routes (``capacity < threshold``, not ``<=``).
+
+	Pure: the controller reads the gathering's capacity + the resolved policy
+	and runs this before materializing the chain.
+	"""
+	threshold = policy.auto_approve_below_capacity
+	if threshold is None or threshold <= 0:
+		return False
+	if capacity is None:
+		return False
+	return capacity < threshold
 
 
 # ---------------------------------------------------------------------------- #
@@ -496,6 +552,7 @@ __all__ = (
 	"StepView",
 	"current_step_index",
 	"first_pending_step",
+	"is_auto_approved",
 	"is_chain_complete",
 	"is_terminal_approval_status",
 	"is_valid_approval_transition",

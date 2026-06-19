@@ -89,6 +89,9 @@ class RecordingRegistrationScopeGateway(RegistrationScopeGateway):
 	branch_by_gathering: dict[str, str] = field(default_factory=dict)
 	org_by_gathering: dict[str, str] = field(default_factory=dict)
 	group_by_gathering: dict[str, str] = field(default_factory=dict)
+	# Phase B ([FLO-79]): set of (gathering, member) pairs holding a valid,
+	# non-expired invitation — the ``Invited Only`` eligible set.
+	valid_invitations: set[tuple[str, str]] = field(default_factory=set)
 
 	def member_branch(self, member: str) -> str | None:
 		return self.branch_by_member.get(member)
@@ -114,6 +117,9 @@ class RecordingRegistrationScopeGateway(RegistrationScopeGateway):
 
 	def gathering_group(self, gathering: str) -> str | None:
 		return self.group_by_gathering.get(gathering)
+
+	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
+		return (gathering, member) in self.valid_invitations
 
 
 def _world() -> RecordingRegistrationScopeGateway:
@@ -234,9 +240,24 @@ def test_org_wide_rejects_other_org_member():
 	)
 
 
-def test_invited_only_is_phase_b_and_fails_closed():
-	# Invitations are Phase B ([FLO-79]); until they land nothing is in scope.
+def test_invited_only_admits_with_valid_invitation_else_fails_closed():
+	# Phase B ([FLO-79]): ``Invited Only`` now rides the gateway. With no
+	# invitation the predicate fails closed (an uninvited member is rejected);
+	# with a valid (gathering, member) invitation the member is in scope.
 	assert _eligible(member="M_in", scope=SCOPE_INVITED_ONLY) is False
+	gw = _world()
+	gw.valid_invitations.add(("G_N", "M_in"))
+	assert (
+		registrations.is_member_in_scope(member="M_in", gathering="G_N", scope=SCOPE_INVITED_ONLY, gateway=gw)
+		is True
+	)
+	# A different member without an invitation is still out of scope.
+	assert (
+		registrations.is_member_in_scope(
+			member="M_other", gathering="G_N", scope=SCOPE_INVITED_ONLY, gateway=gw
+		)
+		is False
+	)
 
 
 def test_none_scope_is_closed():
@@ -297,9 +318,17 @@ def test_eligibility_reason_closed_and_invited():
 	assert "closed" in registrations.eligibility_reason(
 		member="M_in", gathering="G_N", scope=SCOPE_NONE, gateway=gw
 	)
-	assert "Invited Only" in registrations.eligibility_reason(
+	# Phase B ([FLO-79]): Invited Only reason reflects the real invitation
+	# state — out of scope without one, eligible with one.
+	assert "out of scope" in registrations.eligibility_reason(
 		member="M_in", gathering="G_N", scope=SCOPE_INVITED_ONLY, gateway=gw
 	)
+	gw.valid_invitations.add(("G_N", "M_in"))
+	reason_in = registrations.eligibility_reason(
+		member="M_in", gathering="G_N", scope=SCOPE_INVITED_ONLY, gateway=gw
+	)
+	assert "eligible" in reason_in
+	assert "Invited Only" in reason_in
 
 
 # --------------------------------------------------------------------------- #
@@ -731,6 +760,42 @@ def test_registration_index_patch_registered_in_patches_txt():
 
 
 # --------------------------------------------------------------------------- #
+# Invitation index contract (FLO-7 §3.6, Phase B/FLO-79).
+# --------------------------------------------------------------------------- #
+def test_invitation_index_contract_targets_real_columns():
+	"""The v0_3 invitation patch indexes real Flock Event Invitation columns
+	and declares the hot-path eligibility lookups (no composite UNIQUE — the
+	invite_token single-column unique is in the DocType JSON)."""
+	from flock_os.patches.v0_3.add_invitation_indexes import INDEXES
+
+	schema = json.loads(_INVITATION_JSON)
+	field_names = {f["fieldname"] for f in schema["fields"]}
+	for doctype, _index_name, columns_sql, unique in INDEXES:
+		assert doctype == "Flock Event Invitation", f"patch index targets {doctype!r}"
+		columns = tuple(c.strip().strip("`") for c in columns_sql.strip("()").split(","))
+		for col in columns:
+			assert col in field_names, f"invitation index column {col!r} is not a field"
+		# No composite UNIQUE in the patch (invite_token unique is JSON-side).
+		assert unique is False
+
+
+def test_invitation_index_patch_declares_eligibility_hot_paths():
+	# §3.6: (gathering, invitee, status) direct lookup + (gathering,
+	# invitee_group, status) group-subtree lookup — the has_valid_invitation paths.
+	from flock_os.patches.v0_3.add_invitation_indexes import INDEXES
+
+	assert any(
+		"invitee" in columns and "invitee_group" not in columns for _dt, _name, columns, _unique in INDEXES
+	)
+	assert any("invitee_group" in columns for _dt, _name, columns, _unique in INDEXES)
+
+
+def test_invitation_index_patch_registered_in_patches_txt():
+	patches_txt = (Path(__file__).resolve().parent.parent / "patches.txt").read_text()
+	assert "flock_os.patches.v0_3.add_invitation_indexes" in patches_txt
+
+
+# --------------------------------------------------------------------------- #
 # Capacity-race + insert-ordering contract (FLO-7 §5 #3 / §5 #4).
 #
 # The controller (Flock Event Registration) is coverage-omitted (runs under
@@ -777,3 +842,160 @@ def test_counter_bumped_after_insert_not_before():
 	# The duplicate-race path rolls back a lost uniqueness race (no phantom seat).
 	assert "DuplicateEntryError" in register_body
 	assert "frappe.db.rollback()" in register_body
+
+
+# --------------------------------------------------------------------------- #
+# Phase B (FLO-79) — waitlist auto-promotion + bulk chunking + invitation
+# expiry + Flock Event Invitation schema/scoping contract.
+# --------------------------------------------------------------------------- #
+
+
+def test_select_waitlist_promotion_picks_oldest_fifo():
+	# §5 #6: the oldest Waitlisted row (earliest registered_at) is promoted.
+	cands = [
+		registrations.WaitlistCandidate(
+			name="REG-3", gathering="G", registrant="C", registered_at="2026-06-20 09:00:00"
+		),
+		registrations.WaitlistCandidate(
+			name="REG-1", gathering="G", registrant="A", registered_at="2026-06-20 08:00:00"
+		),
+		registrations.WaitlistCandidate(
+			name="REG-2", gathering="G", registrant="B", registered_at="2026-06-20 08:30:00"
+		),
+	]
+	choice = registrations.select_waitlist_promotion_candidate(cands)
+	assert choice is not None
+	assert choice.name == "REG-1"  # earliest timestamp wins
+
+
+def test_select_waitlist_promotion_breaks_ties_on_name_for_determinism():
+	# Same timestamp → name ordering keeps the replay deterministic (at-least-
+	# once outbox replay promotes the same row).
+	cands = [
+		registrations.WaitlistCandidate(
+			name="REG-2", gathering="G", registrant="B", registered_at="2026-06-20 08:00:00"
+		),
+		registrations.WaitlistCandidate(
+			name="REG-1", gathering="G", registrant="A", registered_at="2026-06-20 08:00:00"
+		),
+	]
+	choice = registrations.select_waitlist_promotion_candidate(cands)
+	assert choice is not None
+	assert choice.name == "REG-1"
+
+
+def test_select_waitlist_promotion_empty_yields_none():
+	# An empty waitlist → no promotion (the freed seat simply stays open).
+	assert registrations.select_waitlist_promotion_candidate([]) is None
+
+
+def test_chunk_members_partitions_into_ordered_batches():
+	# §5 bulk path: members are partitioned into batches of batch_size.
+	members = [f"M{i}" for i in range(12)]
+	batches = registrations.chunk_members(members, batch_size=5)
+	assert len(batches) == 3
+	assert batches[0] == ["M0", "M1", "M2", "M3", "M4"]
+	assert batches[1] == ["M5", "M6", "M7", "M8", "M9"]
+	assert batches[2] == ["M10", "M11"]
+
+
+def test_chunk_members_deduplicates_preserving_order():
+	# The unique (gathering, registrant) index backstops a race, but the
+	# pre-pass keeps the reported totals honest (15k list with repeats).
+	batches = registrations.chunk_members(["A", "B", "A", "C", "B"], batch_size=10)
+	assert batches == [["A", "B", "C"]]
+
+
+def test_chunk_members_drops_empties():
+	# Falsy member ids are dropped (defensive).
+	assert registrations.chunk_members(["A", "", None, "B"], batch_size=10) == [["A", "B"]]
+
+
+def test_chunk_members_rejects_non_positive_batch_size():
+	with pytest.raises(registrations.FlockRegistrationError):
+		registrations.chunk_members(["A"], batch_size=0)
+	with pytest.raises(registrations.FlockRegistrationError):
+		registrations.chunk_members(["A"], batch_size=-1)
+
+
+def test_chunk_members_empty_list_yields_no_batches():
+	assert registrations.chunk_members([], batch_size=500) == []
+
+
+def test_is_invitation_expired_null_expires_on_never_expires():
+	# §3.6: a null expires_on means the invitation does not lapse.
+	assert registrations.is_invitation_expired(None, now="2026-12-31 23:59:59") is False
+	assert registrations.is_invitation_expired("", now="2026-12-31 23:59:59") is False
+
+
+def test_is_invitation_expired_past_expiry_is_expired():
+	assert registrations.is_invitation_expired("2026-06-01 00:00:00", now="2026-06-20 12:00:00") is True
+
+
+def test_is_invitation_expired_before_expiry_is_valid():
+	assert registrations.is_invitation_expired("2026-12-31 00:00:00", now="2026-06-20 12:00:00") is False
+
+
+# --------------------------------------------------------------------------- #
+# Flock Event Invitation schema + scoping contract (FLO-7 §3.6, Phase B/FLO-79).
+# --------------------------------------------------------------------------- #
+_INVITATION_JSON = (DOCTYPE_DIR / "flock_event_invitation" / "flock_event_invitation.json").read_text()
+
+
+def test_invitation_doctype_exists_with_scoping_contract():
+	schema = json.loads(_INVITATION_JSON)
+	assert schema["name"] == "Flock Event Invitation"
+	assert schema["module"] == "flock_os"
+	fields = {f["fieldname"]: f for f in schema["fields"]}
+	# §3.6 scoping contract: branch + group + organization + gathering.
+	for required in ("organization", "branch", "group", "gathering"):
+		assert required in fields, f"invitation missing required scope field {required!r}"
+	# §3.6 invitation fields: invitee, invitee_group, invite_token, status, expires_on.
+	for required in (
+		"invitee",
+		"invitee_group",
+		"invite_token",
+		"status",
+		"expires_on",
+		"accepted_registration",
+	):
+		assert required in fields, f"invitation missing required field {required!r}"
+	# invite_token is unique (link-based RSVP dedup, §3.6).
+	assert fields["invite_token"].get("unique") == 1
+	# status Select covers the §3.6 lifecycle.
+	assert "Sent" in fields["status"]["options"]
+	assert "Accepted" in fields["status"]["options"]
+	assert "Declined" in fields["status"]["options"]
+	assert "Expired" in fields["status"]["options"]
+
+
+def test_flock_event_invitation_registered_in_scoped_doctypes():
+	# §6.2: the invitation is a group-level DocType → SCOPED_DOCTYPES so the
+	# central permission_query_conditions hook narrows it.
+	assert "Flock Event Invitation" in perms.SCOPED_DOCTYPES
+
+
+def test_flock_event_invitation_member_anchored_on_invitee():
+	# §6.2 self-membership: an invitee sees their own invitation rows via the
+	# ``invitee`` column (mirrors registration's ``registrant``).
+	assert perms.MEMBER_ANCHORED_DOCTYPES.get("Flock Event Invitation") == "invitee"
+
+
+@pytest.mark.parametrize(
+	"event_name",
+	[
+		events.REGISTRATION_PROMOTED,
+		events.REGISTRATION_BULK_QUEUED,
+		events.REGISTRATION_BULK_COMPLETED,
+		events.INVITATION_SENT,
+		events.INVITATION_ACCEPTED,
+		events.INVITATION_DECLINED,
+	],
+)
+def test_phase_b_events_emit_via_canonical_bus(event_name):
+	# FLO-7 §7: the Phase B event additions flow through the single sanctioned
+	# emitter, not scattered in the DocTypes.
+	sink = events.RecordingEventSink()
+	bus = events.EventBus(sink)
+	bus.emit(event_name, payload={"gathering": "GATH-1"}, scope={"branch": "North"})
+	assert event_name in [ev.name for ev, _, _ in sink.published]

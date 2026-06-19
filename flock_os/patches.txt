@@ -38,3 +38,8 @@ flock_os.patches.v0_1.add_engagement_indexes
 # (FLO-7 §3.5/§5). Declared here because DocType JSON cannot express composite
 # unique indexes. Runs after the Flock Event Registration table is synced.
 flock_os.patches.v0_2.add_registration_indexes
+# FLO-79: hot-path indexes for one-time-event invitations (FLO-7 §3.6). The
+# Invited Only eligibility lookup filters on (gathering, invitee, status) /
+# (gathering, invitee_group, status). Runs after the Flock Event Invitation
+# table is synced.
+flock_os.patches.v0_3.add_invitation_indexes

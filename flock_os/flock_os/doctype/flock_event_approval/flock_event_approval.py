@@ -196,7 +196,10 @@ def _approval_policy_from_row(policy_name: str | None) -> approvals.ApprovalPoli
 	"""Build the frozen :class:`ApprovalPolicy` from a policy row (§3.4).
 
 	The nearest policy to the gathering's branch wins; absent one, the default
-	(Branch Admin terminal, self-approval off, depth uncapped) applies.
+	(Branch Admin terminal, self-approval off, depth uncapped, auto-approve/
+	timeout disabled, waitlist on) applies. Phase B ([FLO-79]) maps the full
+	rich §3.4 knob set so chain resolution + the submit fast path see the same
+	resolved struct.
 	"""
 	if not policy_name:
 		return approvals.DEFAULT_POLICY
@@ -204,24 +207,45 @@ def _approval_policy_from_row(policy_name: str | None) -> approvals.ApprovalPoli
 		frappe.db.get_value(
 			"Flock Event Approval Policy",
 			policy_name,
-			["require_branch_admin_final", "max_approval_levels", "allow_self_approval"],
+			[
+				"require_branch_admin_final",
+				"max_approval_levels",
+				"allow_self_approval",
+				"auto_approve_below_capacity",
+				"approval_timeout_hours",
+				"default_registration_scope",
+				"enable_waitlist",
+			],
 			as_dict=True,
 		)
 		or {}
 	)
+	max_levels = row.get("max_approval_levels")
+	auto_cap = row.get("auto_approve_below_capacity")
+	timeout = row.get("approval_timeout_hours")
 	return approvals.ApprovalPolicy(
 		require_branch_admin_final=bool(row.get("require_branch_admin_final", 1)),
-		max_approval_levels=row.get("max_approval_levels"),
+		max_approval_levels=int(max_levels) if max_levels not in (None, "") else None,
 		allow_self_approval=bool(row.get("allow_self_approval", 0)),
+		auto_approve_below_capacity=int(auto_cap) if auto_cap not in (None, "") else None,
+		approval_timeout_hours=int(timeout) if timeout not in (None, "") else None,
+		default_registration_scope=row.get("default_registration_scope") or None,
+		enable_waitlist=bool(row.get("enable_waitlist", 1)),
 	)
 
 
-def _resolve_chain_for(approval: FlockEventApproval) -> list[approvals.StepSpec]:
-	"""Resolve the approval chain for ``approval`` via the Frappe gateway (§4.1)."""
+def _resolve_chain_for(
+	approval: FlockEventApproval, *, policy: approvals.ApprovalPolicy | None = None
+) -> list[approvals.StepSpec]:
+	"""Resolve the approval chain for ``approval`` via the Frappe gateway (§4.1).
+
+	``policy`` is optional only to preserve the old call shape; the submit path
+	passes the already-resolved policy so the row is read once (DRY).
+	"""
 	return approvals.resolve_approval_chain(
 		group=approval.group,
 		requested_by=approval.requested_by,
-		policy=_approval_policy_from_row(approval.approval_policy),
+		policy=policy or _approval_policy_from_row(approval.approval_policy),
 		gateway=FrappeApprovalChainGateway(),
 	)
 
@@ -334,12 +358,19 @@ def preview_approval_chain(group: str, requested_by: str | None = None) -> list[
 
 @frappe.whitelist()
 def submit_for_approval(approval_id: str) -> dict:
-	"""Materialize the chain + move the request to ``Pending Approval`` (§4.1).
+	"""Materialize the chain + move the request to ``Pending Approval`` (§4.1),
+	or land ``Approved`` directly via the §3.4 auto-approve fast path.
 
-	Only the requester may submit. Emits ``flock.approval.requested``.
+	Only the requester may submit. For events under the policy's
+	``auto_approve_below_capacity`` threshold (§3.4), the chain is skipped — the
+	request lands terminal ``Approved`` with ``auto_approved=1`` and the
+	terminal ``flock.approval.approved`` event carries the ``auto_approved``
+	marker. Otherwise the chain is materialized and ``flock.approval.requested``
+	is emitted. The policy's ``approval_timeout_hours`` is denormalized onto the
+	approval row so the FLO-8 reminder/escalation scheduler reads it without
+	re-querying the policy (§3.4).
 	"""
 	approval: FlockEventApproval = frappe.get_doc("Flock Event Approval", approval_id)
-	approvals.validate_approval_transition(from_status=approval.status, to_status=approvals.APPROVAL_PENDING)
 	if approval.requested_by != frappe.db.get_value(
 		"Flock Member", {"linked_user": frappe.session.user}, "name"
 	):
@@ -348,11 +379,43 @@ def submit_for_approval(approval_id: str) -> dict:
 		frappe.throw(
 			"Only the requester may submit an approval for approval (FLO-7 §4.1).", frappe.PermissionError
 		)
+	policy = _approval_policy_from_row(approval.approval_policy)
+	# Denormalize the timeout so FLO-8's scheduler reads it off the row (§3.4).
+	if policy.approval_timeout_hours is not None:
+		approval.timeout_hours = policy.approval_timeout_hours
+	approval.requested_at = frappe.utils.now()
 
-	specs = _resolve_chain_for(approval)
+	# §3.4 small-group fast path: capacity < threshold skips the chain.
+	capacity = frappe.db.get_value("Flock Gathering", approval.gathering, "capacity")
+	capacity_int = int(capacity) if capacity not in (None, "") else None
+	if approvals.is_auto_approved(capacity=capacity_int, policy=policy):
+		approvals.validate_approval_transition(
+			from_status=approval.status, to_status=approvals.APPROVAL_APPROVED
+		)
+		approval.status = approvals.APPROVAL_APPROVED
+		approval.auto_approved = 1
+		approval.final_decision_by = frappe.session.user
+		approval.final_decision_at = frappe.utils.now()
+		approval.save(ignore_permissions=True)
+		_sync_gathering_status(approval, approvals.APPROVAL_APPROVED)
+		_open_registration_on_final_approval(approval)
+		events.emit(
+			events.APPROVAL_APPROVED,
+			payload={
+				"approval": approval.name,
+				"gathering": approval.gathering,
+				"scope": approval.proposed_registration_scope,
+				"auto_approved": True,
+			},
+			scope=_scope_for_event(approval),
+		)
+		return {"approval": approval.name, "status": approval.status, "auto_approved": True}
+
+	# Standard chain path (§4.1).
+	approvals.validate_approval_transition(from_status=approval.status, to_status=approvals.APPROVAL_PENDING)
+	specs = _resolve_chain_for(approval, policy=policy)
 	_materialize_steps(approval, specs)
 	approval.status = approvals.APPROVAL_PENDING
-	approval.requested_at = frappe.utils.now()
 	approval.current_step = approvals.current_step_index(specs) or 0
 	approval.save(ignore_permissions=True)
 	_sync_gathering_status(approval, approvals.APPROVAL_PENDING)
