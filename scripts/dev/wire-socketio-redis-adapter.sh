@@ -16,8 +16,10 @@
 # `realtime.on("connection", on_connection);`. The block sets the adapter on the
 # `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server method that
 # applies to ALL namespaces, including the per-site parent) using two node-redis
-# clients created from
-# the bench's `redis_socketio` URL via frappe's own `get_redis_subscriber`. The
+# clients resolved by `resolveAdapterClients` (in flock_os) — which honors a
+# dedicated adapter Redis (`FLOCK_SIO_ADAPTER_REDIS=redis://...`) before falling
+# back to frappe's `get_redis_subscriber("redis_socketio")` (FLO-127 §2 unblock:
+# the shared dev Redis stalls under 8x adapter pub/sub at the 15k burst). The
 # adapter LOGIC + opts live in flock_os
 # (`realtime/adapters/flock_redis_adapter.js`); only this guarded block lands in
 # vendored Frappe.
@@ -135,10 +137,13 @@ ADAPTER_REL="../../flock_os/realtime/adapters/flock_redis_adapter"
 
 # Insert the guarded block BEFORE the anchor (so the adapter is set before
 # connections arrive). `get_redis_subscriber` is already in scope in index.js
-# (destructured from ../node_utils at the top of the file); the block creates +
-# connects two node-redis clients off the bench's redis_socketio URL and sets the
-# adapter on the `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server
-# method that applies the adapter to ALL namespaces, including the per-site
+# (destructured from ../node_utils at the top of the file); the block calls
+# `resolveAdapterClients` with `{ get_redis_subscriber, createRedisClient }` so
+# the clients come from a DEDICATED adapter Redis when `FLOCK_SIO_ADAPTER_REDIS`
+# is set, else from `get_redis_subscriber("redis_socketio")` (the shared dev
+# instance). It then connects the two node-redis clients and sets the adapter on
+# the `io` SERVER instance (socket.io v4: `.adapter(fn)` is a Server method that
+# applies the adapter to ALL namespaces, including the per-site
 # `io.of(/^\/.*$/)` parent + its dynamic child namespaces — calling it on the
 # Namespace would fail with "realtime.adapter is not a function"). The pub/sub
 # clients get `on("error")` handlers so a Redis blip under load (e.g. ETIMEDOUT)
@@ -152,9 +157,10 @@ awk -v s="$MARK_START" -v e="$MARK_END" -v a="$ADAPTER_REL" '
 	/realtime\.on\("connection", on_connection\);/ {
 		print "// " s " (managed by scripts/dev/wire-socketio-redis-adapter.sh — do not edit)"
 		print "try {"
-		print "\tconst { createRedisAdapter } = require(\"" a "\");"
-		print "\tconst _flockAdapterPub = get_redis_subscriber(\"redis_socketio\");"
-		print "\tconst _flockAdapterSub = _flockAdapterPub.duplicate();"
+		print "\tconst { createRedisAdapter, resolveAdapterClients } = require(\"" a "\");"
+		print "\tconst _flockAdapterClients = resolveAdapterClients({ get_redis_subscriber, createRedisClient: require(\"@redis/client\").createClient });"
+		print "\tconst _flockAdapterPub = _flockAdapterClients[0];"
+		print "\tconst _flockAdapterSub = _flockAdapterClients[1];"
 		print "\t_flockAdapterPub.on(\"error\", (e) => console.error(\"flock_os redis-adapter pub:\", (e && e.message) || e));"
 		print "\t_flockAdapterSub.on(\"error\", (e) => console.error(\"flock_os redis-adapter sub:\", (e && e.message) || e));"
 		print "\tPromise.all([_flockAdapterPub.connect(), _flockAdapterSub.connect()]).catch((err) => console.error(\"flock_os redis-adapter connect:\", (err && err.message) || err));"

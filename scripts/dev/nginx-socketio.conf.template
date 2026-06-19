@@ -1,0 +1,61 @@
+# Flock OS production-shape WS load balancer for the scaled socketio tier (FLO-127).
+#
+# Rendered by scripts/dev/scale-socketio.sh (--lb nginx) from the live backend
+# list into <bench>/logs/scaled-socketio/nginx.conf. Placeholders __STATE_DIR__,
+# __LB_PORT__ and the `# BACKENDS_INJECTED_HERE` marker are substituted at render
+# time — keep them verbatim when editing this template.
+#
+# Why nginx (not the node round-robin proxy) in PROD:
+#   - On a real (non-loopback) network the LB and backends sit on different hosts,
+#     so proxying does NOT double each client's ephemeral-port demand on a single
+#     kernel. The macOS loopback EADDRNOTAVAIL ceiling (~2N ports > the ~16k
+#     default `net.inet.ip.portrange`) is a dev-Mac artifact, not a prod shape.
+#   - nginx gives sticky L7 (ip_hash / cookie) for a mixed/polling production
+#     tier so a WS upgrade revisits the backend that owns the polling session.
+#   - A clean full-15k §8 gate therefore runs where this config ships (prod /
+#     staging host), or on the dev Mac with the ephemeral range widened first
+#     (`sudo sysctl -w net.inet.ip.portrange.first=1024`) — see the runbook.
+
+worker_processes auto;
+error_log __STATE_DIR__/nginx-error.log warn;
+pid __STATE_DIR__/nginx.pid;
+
+events {
+	# Each proxied WS connection is 2 fds on the LB (client side + backend side),
+	# so size for >= 2x peak concurrent connections. 32k covers a 15k gate.
+	worker_connections 32768;
+}
+
+http {
+	upstream flock_socketio {
+		# BACKENDS_INJECTED_HERE
+		# Default round-robin is correct for the k6 ws-only smoke: each client is
+		# exactly ONE independent connection (no engine.io polling upgrade), so
+		# plain per-connection round-robin distributes cleanly — same semantics as
+		# scripts/dev/socketio-lb.js. For a mixed/polling PRODUCTION tier, switch to
+		# sticky routing so the WS upgrade revisits the polling-session backend:
+		#   ip_hash;            # sticky by source IP (one source => one backend)
+		#   # or a sticky cookie via nginx sticky modules for finer control.
+		# Note: ip_hash collapses a single-host load generator onto one backend, so
+		# leave it OFF for k6 validation (all VUs share the LB's source IP).
+	}
+
+	server {
+		listen __LB_PORT__;
+		server_name flock_os.localhost;
+
+		location / {
+			proxy_pass http://flock_socketio;
+			# WebSocket upgrade — the core of a WS-aware LB.
+			proxy_http_version 1.1;
+			proxy_set_header Upgrade $http_upgrade;
+			proxy_set_header Connection "upgrade";
+			proxy_set_header Host $host;
+			proxy_set_header X-Real-IP $remote_addr;
+			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+			# Hold WS sessions open across the full §8 gate window (120s+) and beyond.
+			proxy_read_timeout 3600s;
+			proxy_send_timeout 3600s;
+		}
+	}
+}

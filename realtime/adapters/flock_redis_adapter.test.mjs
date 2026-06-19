@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 
 import {
 	createRedisAdapter,
+	resolveAdapterClients,
 	resolveAdapterOptions,
 	requireRedisAdapter,
 	DEFAULT_KEY,
@@ -69,6 +70,118 @@ test("resolveAdapterOptions forwards publishOnSpecificResponseChannel only when 
 	assert.equal(
 		resolveAdapterOptions({ publishOnSpecificResponseChannel: true }).publishOnSpecificResponseChannel,
 		true,
+	);
+});
+
+// --- resolveAdapterClients ------------------------------------------------- #
+
+// A fake frappe `get_redis_subscriber(kind)` that records the conf key and
+// returns a client whose `duplicate()` yields a marked clone (node-redis v4
+// shape). The wiring relies on `duplicate()` so the pub/sub pair shares config.
+function fakeSubscriberFactory(calls) {
+	return function get_redis_subscriber(kind) {
+		calls.push(kind);
+		return {
+			kind,
+			duplicate() {
+				return { kind, duplicated: true };
+			},
+		};
+	};
+}
+
+// A fake `@redis/client`.createClient({ url }) that records the URL and returns
+// a client with a working `duplicate()` — mirrors the dedicated-Redis path.
+function fakeRedisClientFactory(calls) {
+	return function createRedisClient(opts) {
+		calls.push(opts);
+		const client = { url: opts && opts.url, duplicated: false };
+		client.duplicate = function () {
+			return { url: opts && opts.url, duplicated: true };
+		};
+		return client;
+	};
+}
+
+test("resolveAdapterClients defaults to get_redis_subscriber(redis_socketio)", () => {
+	const subCalls = [];
+	const [pub, sub] = resolveAdapterClients({ get_redis_subscriber: fakeSubscriberFactory(subCalls) });
+	assert.deepEqual(subCalls, ["redis_socketio"]);
+	assert.equal(pub.kind, "redis_socketio");
+	assert.equal(sub.duplicated, true);
+	assert.equal(sub.kind, "redis_socketio");
+});
+
+test("resolveAdapterClients honors FLOCK_SIO_ADAPTER_CONF_KEY", () => {
+	process.env.FLOCK_SIO_ADAPTER_CONF_KEY = "redis_socketio_adapter";
+	try {
+		const subCalls = [];
+		const [pub, sub] = resolveAdapterClients({ get_redis_subscriber: fakeSubscriberFactory(subCalls) });
+		assert.deepEqual(subCalls, ["redis_socketio_adapter"]);
+		assert.equal(pub.kind, "redis_socketio_adapter");
+		assert.equal(sub.kind, "redis_socketio_adapter");
+	} finally {
+		delete process.env.FLOCK_SIO_ADAPTER_CONF_KEY;
+	}
+});
+
+test("resolveAdapterClients uses a dedicated Redis when FLOCK_SIO_ADAPTER_REDIS is set", () => {
+	process.env.FLOCK_SIO_ADAPTER_REDIS = "redis://127.0.0.1:13010";
+	try {
+		const subCalls = [];
+		const clientCalls = [];
+		const factory = fakeSubscriberFactory(subCalls);
+		// get_redis_subscriber must NOT be called when a dedicated URL is set.
+		const [pub, sub] = resolveAdapterClients({
+			get_redis_subscriber: factory,
+			createRedisClient: fakeRedisClientFactory(clientCalls),
+		});
+		assert.deepEqual(subCalls, [], "dedicated path must bypass get_redis_subscriber");
+		assert.deepEqual(clientCalls, [{ url: "redis://127.0.0.1:13010" }]);
+		assert.equal(pub.url, "redis://127.0.0.1:13010");
+		assert.equal(pub.duplicated, false);
+		assert.equal(sub.url, "redis://127.0.0.1:13010");
+		assert.equal(sub.duplicated, true);
+	} finally {
+		delete process.env.FLOCK_SIO_ADAPTER_REDIS;
+	}
+});
+
+test("resolveAdapterClients: a client without duplicate() falls back to the factory", () => {
+	// Defensive branch: if some client impl lacks duplicate(), build a second
+	// client via the same factory instead of crashing.
+	process.env.FLOCK_SIO_ADAPTER_REDIS = "redis://127.0.0.1:13010";
+	try {
+		const clientCalls = [];
+		const createRedisClient = function (opts) {
+			clientCalls.push(opts);
+			return { url: opts && opts.url }; // NOTE: no duplicate()
+		};
+		const [pub, sub] = resolveAdapterClients({ createRedisClient });
+		assert.equal(clientCalls.length, 2);
+		assert.equal(pub.url, "redis://127.0.0.1:13010");
+		assert.equal(sub.url, "redis://127.0.0.1:13010");
+	} finally {
+		delete process.env.FLOCK_SIO_ADAPTER_REDIS;
+	}
+});
+
+test("resolveAdapterClients throws a loud, actionable error when no factory is injected", () => {
+	// Dedicated URL set but createRedisClient missing.
+	process.env.FLOCK_SIO_ADAPTER_REDIS = "redis://127.0.0.1:13010";
+	try {
+		assert.throws(
+			() => resolveAdapterClients({ get_redis_subscriber: fakeSubscriberFactory([]) }),
+			(err) => err.code === "FLOCK_REDIS_ADAPTER_NO_FACTORY" && /createRedisClient/.test(err.message),
+		);
+	} finally {
+		delete process.env.FLOCK_SIO_ADAPTER_REDIS;
+	}
+
+	// No dedicated URL and no get_redis_subscriber.
+	assert.throws(
+		() => resolveAdapterClients({}),
+		(err) => err.code === "FLOCK_REDIS_ADAPTER_NO_FACTORY" && /get_redis_subscriber/.test(err.message),
 	);
 });
 

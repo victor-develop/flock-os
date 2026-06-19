@@ -32,6 +32,16 @@
 #   FLOCK_SIO_PROCESSES   backend count (default: nproc, capped at 8)
 #   FLOCK_SIO_BASE_PORT   first backend port (default 9001)
 #   FLOCK_SIO_LB_PORT     LB listen port (default 9000 — the smoke default)
+#   FLOCK_SIO_LB          LB kind: "node" (default — the dependency-free TCP
+#                         round-robin proxy scripts/dev/socketio-lb.js) or "nginx"
+#                         (the production WS-upstream shape; see
+#                         scripts/dev/nginx-socketio.conf.template). `start --lb
+#                         nginx` overrides. nginx must be on PATH when selected.
+#   FLOCK_SIO_ADAPTER_REDIS  optional `redis://` URL for a DEDICATED adapter Redis.
+#                         Backends inherit this process's env, so the redis-adapter
+#                         wiring binds to it instead of the shared `redis_socketio`
+#                         (FLO-127 §2 unblock). Bring one up with
+#                         scripts/dev/start-adapter-redis.sh.
 #   FLOCK_SIO_BENCH       bench root (default: same resolution as the wire scripts)
 #   STATS_INTERVAL_MS     LB per-backend stats cadence (default 5000; 0 = off)
 #
@@ -109,8 +119,78 @@ wait_for_port() {
 	return 1
 }
 
+# Launch the dependency-free node round-robin TCP proxy on the LB port. This is
+# the default LB kind (FLOCK_SIO_LB=node) and the original FLO-121 local tier.
+start_node_lb() {
+	local backends
+	backends="$(paste -sd, "$BACKENDS_FILE")"
+	PORT="$LB_PORT" BACKENDS="$backends" STATS_INTERVAL_MS="${STATS_INTERVAL_MS:-5000}" \
+		node "$REPO_ROOT/scripts/dev/socketio-lb.js" >"$LB_LOG" 2>&1 &
+	local lbpid=$!
+	echo "$lbpid" > "$LB_PID_FILE"
+	echo "node" > "$STATE_DIR/lb-kind"
+	log "LB (node) pid=$lbpid on :$LB_PORT (log: $LB_LOG)"
+	if ! wait_for_port "$LB_PORT"; then
+		err "LB did not bind :$LB_PORT — check $LB_LOG"
+		cmd_stop >/dev/null 2>&1 || true
+		exit 1
+	fi
+}
+
+# Launch the production-shape nginx WS-upstream LB (FLOCK_SIO_LB=nginx). Renders
+# scripts/dev/nginx-socketio.conf.template with the live backend list. nginx must
+# be on PATH — this is the prod topology, not the dev default.
+start_nginx_lb() {
+	command -v nginx >/dev/null 2>&1 || {
+		err "nginx not found on PATH — required for --lb nginx (the prod WS shape)."
+		err "install it (brew install nginx) or omit --lb to use the node round-robin proxy."
+		exit 1
+	}
+	local tmpl="$REPO_ROOT/scripts/dev/nginx-socketio.conf.template"
+	[[ -f "$tmpl" ]] || { err "nginx template missing: $tmpl"; exit 1; }
+	local conf="$STATE_DIR/nginx.conf"
+	# Render the __STATE_DIR__ / __LB_PORT__ placeholders.
+	awk -v state="$STATE_DIR" -v lbport="$LB_PORT" '
+		{ gsub(/__STATE_DIR__/, state); gsub(/__LB_PORT__/, lbport); print }
+	' "$tmpl" > "$conf"
+	# Inject one `server host:port;` line per backend at the marker.
+	local injected
+	injected="$(awk '{printf "\t\tserver %s;\n", $0}' "$BACKENDS_FILE")"
+	awk -v inj="$injected" '
+		/# BACKENDS_INJECTED_HERE/ { print inj; next } { print }
+	' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+
+	echo "nginx" > "$STATE_DIR/lb-kind"
+	nginx -c "$conf" -p "$STATE_DIR/" 2>>"$STATE_DIR/nginx-start.log" || {
+		err "nginx failed to start — check $STATE_DIR/nginx-error.log and $STATE_DIR/nginx-start.log"
+		exit 1
+	}
+	log "LB (nginx) on :$LB_PORT (conf: $conf)"
+	if ! wait_for_port "$LB_PORT"; then
+		err "nginx did not bind :$LB_PORT — check $STATE_DIR/nginx-error.log"
+		cmd_stop >/dev/null 2>&1 || true
+		exit 1
+	fi
+}
+
 cmd_start() {
-	local N="${1:-${FLOCK_SIO_PROCESSES:-$DEFAULT_N}}"
+	local LB_KIND="${FLOCK_SIO_LB:-node}"
+	local N=""
+	# Positional N + optional `--lb {node,nginx}` flag, in any order. `--lb`
+	# overrides the FLOCK_SIO_LB env (the production-shape opt-in).
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--lb) LB_KIND="$2"; shift 2 ;;
+			--lb=*) LB_KIND="${1#--lb=}"; shift ;;
+			-h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
+			*) N="$1"; shift ;;
+		esac
+	done
+	case "$LB_KIND" in
+		node|nginx) ;;
+		*) err "invalid --lb '$LB_KIND' (expected: node | nginx)"; exit 2 ;;
+	esac
+	[[ -z "$N" ]] && N="${FLOCK_SIO_PROCESSES:-$DEFAULT_N}"
 	mkdir -p "$STATE_DIR"
 	ensure_adapter_dep || true
 
@@ -157,26 +237,21 @@ cmd_start() {
 	done
 	log "all $N backends listening"
 
-	local backends
-	backends="$(paste -sd, "$BACKENDS_FILE")"
-	PORT="$LB_PORT" BACKENDS="$backends" STATS_INTERVAL_MS="${STATS_INTERVAL_MS:-5000}" \
-		node "$REPO_ROOT/scripts/dev/socketio-lb.js" >"$LB_LOG" 2>&1 &
-	local lbpid=$!
-	echo "$lbpid" > "$LB_PID_FILE"
-	log "LB pid=$lbpid on :$LB_PORT (log: $LB_LOG)"
-
-	# Confirm the LB bound.
-	if ! wait_for_port "$LB_PORT"; then
-		err "LB did not bind :$LB_PORT — check $LB_LOG"
-		cmd_stop >/dev/null 2>&1 || true
-		exit 1
+	if [[ "$LB_KIND" == "nginx" ]]; then
+		start_nginx_lb
+	else
+		start_node_lb
 	fi
 
 	echo
 	log "scaled socketio tier is UP:"
-	log "  LB:          ws://flock_os.localhost:$LB_PORT  (k6 default WS_BASE_URL — no override needed)"
+	log "  LB:          ws://flock_os.localhost:$LB_PORT  (kind: $LB_KIND; k6 default WS_BASE_URL — no override needed)"
 	log "  backends:    $N  (:$BASE_PORT..$((BASE_PORT + N - 1)))"
-	log "  adapter:     @socket.io/redis-adapter (cross-worker fan-out)"
+	if [[ -n "${FLOCK_SIO_ADAPTER_REDIS:-}" ]]; then
+		log "  adapter:     @socket.io/redis-adapter -> DEDICATED \$FLOCK_SIO_ADAPTER_REDIS (${FLOCK_SIO_ADAPTER_REDIS})"
+	else
+		log "  adapter:     @socket.io/redis-adapter -> shared redis_socketio (set FLOCK_SIO_ADAPTER_REDIS for a dedicated instance)"
+	fi
 	log "run the §8 gate:"
 	log "  k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120 load/ws_event_room.js"
 	log "teardown:"
@@ -185,12 +260,33 @@ cmd_start() {
 
 cmd_stop() {
 	local killed=0
-	# LB first so no new connections forward during backend teardown.
-	if [[ -f "$LB_PID_FILE" ]] && kill -0 "$(cat "$LB_PID_FILE")" 2>/dev/null; then
-		kill "$(cat "$LB_PID_FILE")" 2>/dev/null || true
-		killed=1
+	# LB first so no new connections forward during backend teardown. The kind is
+	# recorded at start time ($STATE_DIR/lb-kind): nginx tears down via its own
+	# pidfile (SIGTERM to the master); node via the LB_PID_FILE we wrote.
+	local lb_kind="node"
+	[[ -f "$STATE_DIR/lb-kind" ]] && lb_kind="$(cat "$STATE_DIR/lb-kind" 2>/dev/null || echo node)"
+	if [[ "$lb_kind" == "nginx" ]]; then
+		local ngx_pid="$STATE_DIR/nginx.pid"
+		if [[ -f "$ngx_pid" ]] && kill -0 "$(cat "$ngx_pid")" 2>/dev/null; then
+			kill "$(cat "$ngx_pid")" 2>/dev/null || true
+			killed=1
+			for _ in 1 2 3 4 5 6 7 8 9 10; do
+				{ kill -0 "$(cat "$ngx_pid")" 2>/dev/null || break; } && sleep 0.3
+			done
+		fi
+		# Belt-and-braces: ask nginx to stop if the pidfile kill did not take.
+		if [[ -f "$STATE_DIR/nginx.conf" ]]; then
+			nginx -c "$STATE_DIR/nginx.conf" -p "$STATE_DIR/" -s stop >/dev/null 2>&1 || true
+		fi
+		rm -f "$ngx_pid"
+	else
+		if [[ -f "$LB_PID_FILE" ]] && kill -0 "$(cat "$LB_PID_FILE")" 2>/dev/null; then
+			kill "$(cat "$LB_PID_FILE")" 2>/dev/null || true
+			killed=1
+		fi
+		rm -f "$LB_PID_FILE"
 	fi
-	rm -f "$LB_PID_FILE"
+	rm -f "$STATE_DIR/lb-kind"
 	# Backends.
 	if [[ -f "$BACKENDS_FILE" ]]; then
 		local i=0
@@ -215,10 +311,19 @@ cmd_stop() {
 cmd_status() {
 	echo "scaled-socketio tier (state dir: $STATE_DIR)"
 	echo "------------------------------------------------"
-	if [[ -f "$LB_PID_FILE" ]] && kill -0 "$(cat "$LB_PID_FILE")" 2>/dev/null; then
-		echo "LB    pid=$(cat "$LB_PID_FILE") :$LB_PORT  UP"
+	local lb_kind="node"
+	[[ -f "$STATE_DIR/lb-kind" ]] && lb_kind="$(cat "$STATE_DIR/lb-kind" 2>/dev/null || echo node)"
+	local lb_pid_file="$LB_PID_FILE"
+	[[ "$lb_kind" == "nginx" ]] && lb_pid_file="$STATE_DIR/nginx.pid"
+	if [[ -f "$lb_pid_file" ]] && kill -0 "$(cat "$lb_pid_file")" 2>/dev/null; then
+		echo "LB    kind=$lb_kind pid=$(cat "$lb_pid_file") :$LB_PORT  UP"
 	else
-		echo "LB    :$LB_PORT  DOWN"
+		echo "LB    kind=$lb_kind :$LB_PORT  DOWN"
+	fi
+	if [[ -n "${FLOCK_SIO_ADAPTER_REDIS:-}" ]]; then
+		echo "adapter dedicated: $FLOCK_SIO_ADAPTER_REDIS"
+	else
+		echo "adapter: shared redis_socketio (no FLOCK_SIO_ADAPTER_REDIS)"
 	fi
 	if [[ -f "$BACKENDS_FILE" ]]; then
 		local i=0

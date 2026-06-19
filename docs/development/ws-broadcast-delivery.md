@@ -1,4 +1,4 @@
-# WebSocket broadcast-delivery — runbook (FLO-107 / FLO-116 / FLO-121)
+# WebSocket broadcast-delivery — runbook (FLO-107 / FLO-116 / FLO-121 / FLO-127)
 
 > How a published realtime broadcast actually reaches a `ws_event_room.js`
 > client on this bench, the one-time wiring that makes it work on Frappe v15,
@@ -312,6 +312,87 @@ On this Mac, the scaled tier is **clean green well below those ceilings**
 **reaches the full 15 000 VUs** (the wall is cleared — single-process could not
 establish even 1 %). A clean full-15k local verification needs the sudo/Redis
 tuning above or a production LB environment.
+
+## Prod-equivalent tier — pre-launch 15k gate (FLO-127)
+
+> The pre-launch deployment gate for the first real 15k-attendee event
+> ([FLO-1](/FLO/issues/FLO-1)). Not a code blocker — the §8 wall is cleared
+> (FLO-121) and [FLO-10](/FLO/issues/FLO-10) §8 is closed. This stands up the
+> two prod-shape unblocks the runbook above names, so a clean full-15k §8 gate
+> can run where the prod topology lives.
+
+The two dev-testbed ceilings above each have a concrete **prod-equivalent**
+unblock, now wired as version-controlled infra (not ad-hoc tuning):
+
+### 1. Dedicated adapter Redis — clears the shared-Redis stall (ceiling #2)
+
+The bench's `redis_socketio == redis_cache` stalls under 8× adapter pub/sub +
+Frappe cache at the 15k burst. The adapter now resolves its pub/sub clients
+through `resolveAdapterClients`
+(`realtime/adapters/flock_redis_adapter.js`) with the priority:
+
+1. **`FLOCK_SIO_ADAPTER_REDIS`** env — a raw `redis://` URL for a dedicated
+   adapter instance (matches the runbook name). Set it on **every** backend.
+2. `get_redis_subscriber(FLOCK_SIO_ADAPTER_CONF_KEY)` — the Frappe-idiomatic
+   conf-keyed path (add a `redis_socketio_adapter` key to
+   `sites/common_site_config.json`). Defaults to `redis_socketio`.
+
+`scripts/dev/start-adapter-redis.sh` brings a dedicated in-memory Redis up on a
+new port and prints the URL to export (idempotent; `start`/`stop`/`status`):
+
+```bash
+scripts/dev/start-adapter-redis.sh start          # dedicated Redis on :13010
+# export on EVERY shell that runs a socketio backend, then start the tier:
+export FLOCK_SIO_ADAPTER_REDIS="redis://127.0.0.1:13010"
+scripts/dev/scale-socketio.sh start
+scripts/dev/start-adapter-redis.sh status         # PING + pid + URL
+scripts/dev/start-adapter-redis.sh stop
+```
+
+In production this is a managed/clustered Redis (the D3 escape hatch) — same env
+var, real instance. The wiring is fail-loud: if `FLOCK_SIO_ADAPTER_REDIS` is set
+but the `@redis/client` factory is not injected, the backend raises
+`FLOCK_REDIS_ADAPTER_NO_FACTORY` instead of silently binding the wrong instance.
+
+### 2. nginx WS-upstream LB — the prod load-balancer shape (ceiling #1)
+
+`scripts/dev/scale-socketio.sh` now accepts `--lb {node,nginx}` (or
+`FLOCK_SIO_LB`). `node` (default) is the FLO-121 dependency-free TCP round-robin
+proxy; `nginx` renders `scripts/dev/nginx-socketio.conf.template` with the live
+backend list and fronts the tier with a WebSocket upgrade — the production
+topology:
+
+```bash
+scripts/dev/scale-socketio.sh start --lb nginx      # nginx WS LB on :9000
+scripts/dev/scale-socketio.sh status                # shows LB kind + adapter Redis
+scripts/dev/scale-socketio.sh stop                  # kind-aware teardown
+```
+
+On a **real (non-loopback) network** the LB and backends sit on separate hosts,
+so proxying does not double each client's ephemeral-port demand on one kernel —
+the macOS loopback `EADDRNOTAVAIL` ceiling (~2N ports > the ~16k default
+`net.inet.ip.portrange`) is a dev-Mac artifact, not a prod shape. For a
+mixed/polling production tier the template documents the sticky-routing switch
+(`ip_hash` / sticky cookie) so a WS upgrade revisits the polling-session backend;
+the default round-robin is correct for the ws-only k6 smoke.
+
+### Running the clean full-15k §8 gate
+
+The infra above is what ships to the real event. A **clean full-15k** run needs
+one of:
+
+- **prod / staging host** running the nginx tier (no loopback self-pressure); or
+- the **dev Mac with the ephemeral range widened** first (it needs `sudo`):
+  `sudo sysctl -w net.inet.ip.portrange.first=1024` (1024–65535 ≈ 64k > the ~30k
+  ports a proxied 15k needs), then `k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120
+  load/ws_event_room.js`.
+
+| Signal | Target |
+| --- | --- |
+| WS connect p95 @ 15k concurrent | < 1 s |
+| WS broadcast p95 @ 15k concurrent | < 1 s |
+| `flock_ws_receive_errors` @ 15k | == 0 |
+| Sessions established @ 15k | 100 % |
 
 ## Room-join event shape (§5.1 client→server contract)
 
