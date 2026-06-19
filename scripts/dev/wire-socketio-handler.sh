@@ -12,11 +12,18 @@
 # Why a patch and not a framework hook: Frappe v15 ships no extension point for
 # custom socket events (no `socketio_handler` app hook; index.js loads only
 # `frappe_handlers`). The least-invasive flock_os-owned option is a single
-# guarded require. Re-run this after a `bench update`/Frappe reinstall (it is
-# idempotent). Runbook: docs/development/ws-broadcast-delivery.md.
+# guarded require.
+#
+# Auto-wired: flock_os's `after_migrate`/`after_install` hooks call this script
+# (see flock_os/utils/realtime_setup.py), so a `bench update` (which runs
+# `bench migrate` and rewrites index.js) re-inserts the line automatically — no
+# manual runbook step, no silent regression (FLO-109). It stays idempotent +
+# reversible if you ever need to drive it by hand.
+# Runbook: docs/development/ws-broadcast-delivery.md.
 #
 # Usage:
 #   scripts/dev/wire-socketio-handler.sh              # wire (idempotent)
+#   scripts/dev/wire-socketio-handler.sh --check      # exit 0 wired / 1 absent (no change)
 #   scripts/dev/wire-socketio-handler.sh --revert     # remove the wiring
 #   scripts/dev/wire-socketio-handler.sh --bench /path/to/bench
 #
@@ -29,9 +36,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 BENCH=""
 REVERT=0
+CHECK=0
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--revert) REVERT=1; shift ;;
+		--check) CHECK=1; shift ;;
 		--bench) BENCH="$2"; shift 2 ;;
 		--bench=*) BENCH="${1#--bench=}"; shift ;;
 		-h|--help)
@@ -53,6 +62,22 @@ fi
 
 MARK_START="FLOCK_OS_REALTIME_HANDLER_START"
 MARK_END="FLOCK_OS_REALTIME_HANDLER_END"
+
+# --check: non-mutating assert. Exits 0 if the wiring marker is present, 1 if
+# absent. Use it in CI gates / runbooks to turn a dropped handler into a loud
+# failure instead of a silent regression (FLO-109).
+if [[ "$CHECK" -eq 1 ]]; then
+	if [[ "$REVERT" -eq 1 ]]; then
+		echo "$PROG: --check and --revert are mutually exclusive" >&2
+		exit 2
+	fi
+	if grep -q "$MARK_START" "$INDEX"; then
+		echo "$PROG: wired ($INDEX)."
+		exit 0
+	fi
+	echo "$PROG: NOT wired — marker '$MARK_START' absent from $INDEX" >&2
+	exit 1
+fi
 
 if grep -q "$MARK_START" "$INDEX"; then
 	if [[ "$REVERT" -eq 1 ]]; then
