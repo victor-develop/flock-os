@@ -85,7 +85,7 @@ awk -v s="$MARK_START" -v e="$MARK_END" -v h="$HANDLER_REL" '
 	/frappe_handlers\(realtime, socket\);/ {
 		print
 		print "\t// " s " (managed by scripts/dev/wire-socketio-handler.sh — do not edit)"
-		print "\ttry { require(\"" h "\")(socket); } catch (err) { console.error(\"flock_os realtime handler:\", (err && err.message) || err); }"
+		print "\ttry { require(\"" h "\")(socket, { frappe_request: require(\"./utils\").frappe_request }); } catch (err) { console.error(\"flock_os realtime handler:\", (err && err.message) || err); }"
 		print "\t// " e
 		next
 	}
