@@ -9,6 +9,12 @@ is the data half of the WS-broadcast delivery chain ([FLO-53](/FLO/issues/FLO-53
 without a seeded gathering the resolver raises -> the gate fails closed -> the
 smoke records zero broadcasts.
 
+The smoke reuses the site's singleton ``Flock Organization`` (1 per site, FLO-5
+§8.1) instead of creating a parallel ``org-smoke`` — that violated the singleton
+and made the seeder non-reproducible on a real site (the FLO-114 stale-runbook
+bug). ``_resolve_smoke_organization`` attaches branch/group/gathering to the
+existing org, creating the singleton only on an empty site.
+
 These are **runtime smoke rows, not canonical catalog fixtures** — intentionally
 NOT wired into ``flock_os/patches.txt`` (no ``bench migrate`` seeding), so they
 never pollute a production site. Invoke on demand against a bench:
@@ -61,18 +67,40 @@ def _ensure_has_role(user: str, role: str) -> None:
 	user_doc.save(ignore_permissions=True)
 
 
+def _resolve_smoke_organization() -> str:
+	"""Resolve the site's single ``Flock Organization`` (singleton, FLO-5 §8.1).
+
+	The smoke shares the site's real tenant org — a parallel ``org-smoke`` would
+	violate the 1-org-per-site invariant (the FLO-114 stale-runbook failure:
+	``ValidationError: Only one Flock Organization is allowed per site``).
+	Returns the existing org's PK, or — only on a completely empty site — creates
+	the singleton (labeled :data:`flock_os.fixtures.FLOCK_SMOKE_ORG_NAME`) and
+	returns its PK. Reads/writes bypass the group-axis hook (``db.get_value`` +
+	``insert(ignore_permissions=True)``), so this never trips a scoped list query.
+	"""
+	existing = frappe.db.get_value("Flock Organization", {}, "name")
+	if existing:
+		return existing
+	doc = frappe.get_doc(
+		{"doctype": "Flock Organization", "organization_name": fixtures.FLOCK_SMOKE_ORG_NAME}
+	)
+	doc.insert(ignore_permissions=True)
+	return doc.name
+
+
 def execute() -> dict[str, str]:
 	"""Create the §8 smoke fixtures if missing. Returns the seeded name map.
 
 	Callable via ``bench execute`` (Frappe resolves ``execute`` by convention) so
 	the wrapper script + the runbook both stay one line.
 	"""
-	# Tenant floor -> branch the leader is scoped to.
-	_ensure("Flock Organization", fixtures.FLOCK_SMOKE_ORG, {"organization_name": "Smoke Org"})
+	# Tenant floor -> branch the leader is scoped to. The org is the site's
+	# singleton (reused, not a parallel org-smoke — FLO-114).
+	organization = _resolve_smoke_organization()
 	_ensure(
 		"Flock Branch",
 		fixtures.FLOCK_SMOKE_BRANCH,
-		{"branch_name": "Smoke Branch", "organization": fixtures.FLOCK_SMOKE_ORG},
+		{"branch_name": "Smoke Branch", "organization": organization},
 	)
 	# A branch-bound group the gathering attaches to (Flock Gathering.group is reqd
 	# + validate_gathering_branch_binding requires gathering.branch == group.branch).
@@ -112,7 +140,7 @@ def execute() -> dict[str, str]:
 
 	frappe.db.commit()
 	return {
-		"organization": fixtures.FLOCK_SMOKE_ORG,
+		"organization": organization,
 		"branch": fixtures.FLOCK_SMOKE_BRANCH,
 		"group": fixtures.FLOCK_SMOKE_GROUP,
 		"gathering": fixtures.FLOCK_SMOKE_GATHERING,

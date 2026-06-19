@@ -26,18 +26,21 @@ class TestSmokeFixtureShape:
 		assert fixtures.FLOCK_SMOKE_USER_PASSWORD == "flock"
 
 	def test_org_and_group_are_branch_bound_anchors(self):
-		# The seed chain: org -> branch -> group(->branch) -> gathering(->branch+group).
-		# Non-empty anchors so the resolver always resolves a real branch.
-		assert fixtures.FLOCK_SMOKE_ORG
+		# The seed chain reuses the site's singleton org -> branch -> group(->branch)
+		# -> gathering(->branch+group). Non-empty anchors so the resolver always
+		# resolves a real branch + group (FLO-114: org is a label, not a row PK).
+		assert fixtures.FLOCK_SMOKE_ORG_NAME
 		assert fixtures.FLOCK_SMOKE_GROUP
 		assert fixtures.FLOCK_SMOKE_GATHERING_TITLE
 
 	def test_seed_names_are_distinct_rows(self):
+		# The smoke-owned row PKs (the org is reused from the site singleton, so it
+		# is not a smoke-owned PK — FLO-114). These four must stay distinct so the
+		# resolver binds a real branch -> group -> gathering chain.
 		names = {
-			fixtures.FLOCK_SMOKE_ORG,
 			fixtures.FLOCK_SMOKE_BRANCH,
 			fixtures.FLOCK_SMOKE_GROUP,
 			fixtures.FLOCK_SMOKE_GATHERING,
 			fixtures.FLOCK_SMOKE_USER,
 		}
-		assert len(names) == 5
+		assert len(names) == 4
