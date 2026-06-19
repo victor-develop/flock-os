@@ -101,22 +101,38 @@
    "search_index": 1,
    "description": "Approval state machine (FLO-7 \u00a73.2): Draft \u2192 Pending Approval \u2192 {Approved | Rejected | Cancelled | Withdrawn}, with a Rejected/Withdrawn \u2192 Draft resubmit path."
   },
-  {
-   "fieldname": "approval_policy",
-   "fieldtype": "Link",
-   "label": "Approval Policy",
-   "options": "Flock Event Approval Policy",
-   "description": "Chain rules. The nearest policy to the gathering's branch wins (FLO-7 \u00a73.4)."
-  },
-  {
-   "fieldname": "current_step",
-   "fieldtype": "Int",
-   "label": "Current Step",
-   "default": "0",
-   "non_negative": 1,
-   "read_only": 1,
-   "description": "Index into the chain currently pending (0-based, FLO-7 \u00a73.2). Auto-advances past Skipped steps."
-  },
+   {
+    "fieldname": "approval_policy",
+    "fieldtype": "Link",
+    "label": "Approval Policy",
+    "options": "Flock Event Approval Policy",
+    "description": "Chain rules. The nearest policy to the gathering's branch wins (FLO-7 \u00a73.4)."
+   },
+   {
+    "fieldname": "auto_approved",
+    "fieldtype": "Check",
+    "label": "Auto-Approved",
+    "default": "0",
+    "read_only": 1,
+    "description": "Set when the §3.4 small-group fast path skipped the chain (capacity < policy.auto_approve_below_capacity). Audit flag — the chain is empty in that case. Phase B (FLO-79)."
+   },
+   {
+    "fieldname": "timeout_hours",
+    "fieldtype": "Int",
+    "label": "Timeout (hours)",
+    "non_negative": 1,
+    "read_only": 1,
+    "description": "Denormalized from the policy's approval_timeout_hours (§3.4) so the FLO-8 reminder/escalation scheduler can read it off the approval row without re-querying the policy. Null = no timeout."
+   },
+   {
+    "fieldname": "current_step",
+    "fieldtype": "Int",
+    "label": "Current Step",
+    "default": "0",
+    "non_negative": 1,
+    "read_only": 1,
+    "description": "Index into the chain currently pending (0-based, FLO-7 \u00a73.2). Auto-advances past Skipped steps."
+   },
   {
    "fieldname": "proposed_registration_scope",
    "fieldtype": "Select",
@@ -157,14 +173,13 @@
    "fieldtype": "Section Break",
    "label": "Approval Chain"
   },
-  {
-   "fieldname": "steps",
-   "fieldtype": "Table",
-   "label": "Steps",
-   "options": "Flock Event Approval Step",
-   "reqd": 1,
-   "description": "One row per approver, materialized at submit by walking parent_group up to the branch-root (FLO-7 \u00a73.3 / \u00a74.1)."
-  }
+   {
+    "fieldname": "steps",
+    "fieldtype": "Table",
+    "label": "Steps",
+    "options": "Flock Event Approval Step",
+    "description": "One row per approver, materialized at submit by walking parent_group up to the branch-root (FLO-7 \u00a73.3 / \u00a74.1). Empty for the \u00a73.4 auto-approve fast path (capacity < threshold skips the chain)."
+   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],

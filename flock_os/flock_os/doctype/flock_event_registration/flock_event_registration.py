@@ -157,6 +157,64 @@ class FrappeRegistrationScopeGateway:
 			return None
 		return self._frappe.db.get_value("Flock Gathering", gathering, "group")
 
+	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
+		# Phase B ([FLO-79]): ``Invited Only`` eligibility (§5). A valid
+		# invitation is a Sent/Accepted, non-expired ``Flock Event Invitation``
+		# for (gathering, member) — either addressed directly (invitee=member)
+		# or via a group-subtree invitation (invitee_group in the member's
+		# active groups' subtree). Declined/Expired rows are out of scope.
+		if not gathering or not member:
+			return False
+		from flock_os.registrations import is_invitation_expired
+
+		now = self._frappe.utils.now()
+		# Direct person invitations.
+		direct = self._frappe.db.get_value(
+			"Flock Event Invitation",
+			{
+				"gathering": gathering,
+				"invitee": member,
+				"status": ["in", ["Sent", "Accepted"]],
+				"docstatus": ["<", 2],
+			},
+			["name", "expires_on"],
+			as_dict=True,
+		)
+		if direct and not is_invitation_expired(direct.get("expires_on"), now=now):
+			return True
+		# Group-subtree invitations: the member belongs to a group whose
+		# subtree intersects an invitation's ``invitee_group`` subtree.
+		invitee_groups = self._frappe.get_all(
+			"Flock Event Invitation",
+			filters={
+				"gathering": gathering,
+				"invitee_group": ["is", "set"],
+				"status": ["in", ["Sent", "Accepted"]],
+				"docstatus": ["<", 2],
+			},
+			pluck="invitee_group",
+		)
+		if not invitee_groups:
+			return False
+		member_groups = set(self.member_groups(member))
+		if not member_groups:
+			return False
+		for ig in dict.fromkeys(invitee_groups):
+			if not ig:
+				continue
+			invited_subtree = set(self.group_subtree(ig))
+			if member_groups & invited_subtree:
+				# Confirm at least one such invitation is not expired (the
+				# group-subtree row's own expires_on governs the subtree offer).
+				exp = self._frappe.db.get_value(
+					"Flock Event Invitation",
+					{"gathering": gathering, "invitee_group": ig, "status": ["in", ["Sent", "Accepted"]]},
+					"expires_on",
+				)
+				if not is_invitation_expired(exp, now=now):
+					return True
+		return False
+
 
 # ---------------------------------------------------------------------------- #
 # Gathering window/counter helpers (FLO-7 §3.1 / §5).
@@ -190,10 +248,15 @@ def _registration_window(gathering: str) -> registrations.RegistrationWindow:
 	)
 
 
-def _scope_for_event(gathering: str, branch: str | None, group: str | None) -> dict:
+def _scope_for_event(
+	gathering: str, branch: str | None, group: str | None, *, organization: str | None = None
+) -> dict:
 	"""Row-level scope anchors carried on every registration event (FLO-7 §7)."""
-	org = frappe.db.get_value("Flock Gathering", gathering, "organization") if gathering else None
-	return {"branch": branch, "group": group, "organization": org}
+	if organization is None:
+		organization = (
+			frappe.db.get_value("Flock Gathering", gathering, "organization") if gathering else None
+		)
+	return {"branch": branch, "group": group, "organization": organization}
 
 
 def _resolve_registrant_member() -> str | None:
@@ -456,13 +519,17 @@ def register_for_event(
 
 
 @frappe.whitelist()
-def cancel_registration(registration_id: str) -> dict[str, Any]:
-	"""Cancel a registration → ``Cancelled`` (§5). Releases the seat counter.
+def cancel_registration(registration_id: str) -> dict:
+	"""Cancel a registration → ``Cancelled`` (§5). Releases the seat counter and
+	atomically promotes the oldest waitlister (§5 #6, Phase B/[FLO-79]).
 
 	The registrant, their group leader, or a branch/org admin may cancel. A
-	``Cancelled`` row frees a capacity seat (``registered_count - 1``); the
-	Phase B waitlist auto-promotion ([FLO-79]) is intentionally NOT wired here —
-	this issue owns only the MVP cancel. Emits ``flock.registration.cancelled``.
+	``Cancelled`` ``Registered`` row frees a capacity seat
+	(``registered_count - 1``); if a ``Waitlisted`` row exists, the oldest is
+	promoted to ``Registered`` (the seat is re-claimed in the same transaction
+	so the counter stays consistent with the rows). Emits
+	``flock.registration.cancelled`` and, on a promotion,
+	``flock.registration.promoted``.
 	"""
 	if not registration_id:
 		frappe.throw("registration_id is required")
@@ -474,17 +541,31 @@ def cancel_registration(registration_id: str) -> dict[str, Any]:
 	was_seated = doc.registration_status == registrations.REGISTRATION_REGISTERED
 	doc.registration_status = registrations.REGISTRATION_CANCELLED
 	doc.save(ignore_permissions=True)
+	promoted = None
 	if was_seated:
 		# Release the seat in the same transaction as the status save (the
-		# counter + the row stay consistent). The waitlist auto-promotion is
-		# Phase B ([FLO-79]); this issue owns only the seat release.
+		# counter + the row stay consistent).
 		_bump_registered_count(doc.gathering, -1)
+		# §5 #6 waitlist auto-promotion (Phase B/[FLO-79]): atomically promote
+		# the oldest Waitlisted row → Registered, re-claiming the freed seat.
+		promoted = _promote_oldest_waitlisted(doc.gathering)
 	events.emit(
 		events.REGISTRATION_CANCELLED,
 		payload={"gathering": doc.gathering, "member": doc.registrant, "registration": doc.name},
 		scope=_scope_for_event(doc.gathering, doc.branch, doc.group),
 	)
-	return {"registration": doc.name, "status": doc.registration_status}
+	if promoted:
+		events.emit(
+			events.REGISTRATION_PROMOTED,
+			payload={
+				"gathering": doc.gathering,
+				"member": promoted["registrant"],
+				"registration": promoted["name"],
+				"promoted_from": registration_id,
+			},
+			scope=_scope_for_event(doc.gathering, doc.branch, doc.group),
+		)
+	return {"registration": doc.name, "status": doc.registration_status, "promoted": promoted}
 
 
 @frappe.whitelist()
@@ -523,6 +604,319 @@ def check_in_registration(registration_id: str, attendance_ref: str | None = Non
 		scope=_scope_for_event(doc.gathering, doc.branch, doc.group),
 	)
 	return {"registration": doc.name, "status": doc.registration_status}
+
+
+# ---------------------------------------------------------------------------- #
+# Waitlist auto-promotion (FLO-7 §5 #6, Phase B/[FLO-79]).
+#
+# Atomic single-statement promotion of the oldest Waitlisted row → Registered,
+# re-claiming the seat freed by a cancellation in the same transaction. The
+# selection rule (oldest-first FIFO) is pure in :func:`registrations.select_waitlist_promotion_candidate`;
+# this helper owns the race-free atomic UPDATE + counter bump.
+# ---------------------------------------------------------------------------- #
+def _promote_oldest_waitlisted(gathering: str) -> dict | None:
+	"""Atomically promote the oldest ``Waitlisted`` row → ``Registered`` (§5 #6).
+
+	The seat was just freed by the caller's cancellation (the counter already
+	decremented), so this re-claims it: a single conditional ``UPDATE`` flips
+	the oldest Waitlisted row to Registered (ordered by ``registered_at`` +
+	name for deterministic replay), then bumps the counter back. Returns the
+	promoted row's identity (for the event payload) or ``None`` if the waitlist
+	was empty (no promotion — the seat simply stays free).
+
+	Race-correctness: the conditional ``UPDATE ... ORDER BY ... LIMIT 1`` is one
+	statement, so concurrent cancellations each promote a distinct row (or none
+	if the waitlist drained). The counter bump shares the caller's transaction.
+	"""
+	# Read the oldest waitlisted candidate (the pure selector keys the ordering;
+	# the read-then-update is safe because the unique promotion is guarded by
+	# the ``registration_status`` predicate in the UPDATE itself).
+	rows = frappe.db.get_all(
+		"Flock Event Registration",
+		filters={
+			"gathering": gathering,
+			"registration_status": registrations.REGISTRATION_WAITLISTED,
+		},
+		fields=["name", "registrant", "registered_at"],
+		order_by="registered_at asc, name asc",
+		limit_page_length=1,
+	)
+	candidates = [
+		registrations.WaitlistCandidate(
+			name=r["name"],
+			gathering=gathering,
+			registrant=r["registrant"],
+			registered_at=str(r["registered_at"]),
+		)
+		for r in rows
+	]
+	choice = registrations.select_waitlist_promotion_candidate(candidates)
+	if choice is None:
+		return None
+	# Conditional UPDATE: only flips if the row is still Waitlisted (guards a
+	# concurrent promotion of the same row). One statement = atomic.
+	updated = frappe.db.sql(
+		"UPDATE `tabFlock Event Registration` "
+		"SET registration_status = %s WHERE name = %s AND registration_status = %s",
+		values=(
+			registrations.REGISTRATION_REGISTERED,
+			choice.name,
+			registrations.REGISTRATION_WAITLISTED,
+		),
+	)
+	# MariaDB affected rows — if 0, a concurrent job beat us; no promotion.
+	affected = frappe.db.row_count() if hasattr(frappe.db, "row_count") else (updated or 0)
+	if not affected:
+		return None
+	_bump_registered_count(gathering, +1)
+	return {"name": choice.name, "registrant": choice.registrant}
+
+
+# ---------------------------------------------------------------------------- #
+# Bulk registration (FLO-7 §5, Phase B/[FLO-79]) — the 15k path.
+#
+# ``register_bulk`` validates scope once (the leader's batch is pre-vetted),
+# chunks the member list, and enqueues per-batch inserts on the Frappe/RQ queue.
+# The background job runs idempotent inserts (the unique ``(gathering,
+# registrant)`` index backstops replays). Mirrors the FLO-6 §5 attendance bulk
+# posture: queue-backed, batched, atomic-per-batch.
+# ---------------------------------------------------------------------------- #
+@frappe.whitelist()
+def register_bulk(
+	gathering: str,
+	members: list[str] | str,
+	*,
+	batch_size: int = registrations.DEFAULT_BULK_BATCH_SIZE,
+) -> dict[str, Any]:
+	"""Queue-backed bulk registration for a 15k-scale one-time event (§5).
+
+	Validates the window once (approved + in-window + not-closed scope) and the
+	session user's branch authority, then chunks ``members`` and enqueues one
+	``flock_os.flock_os.doctype.flock_event_registration.process_bulk_batch``
+	background job per batch (Frappe/RQ). Per-row scope is the leader's
+	responsibility (the leader pre-vets the roster); the unique constraint
+	prevents double-counting on replay. Emits ``flock.registration.bulk_queued``
+	with the job/batch totals; per-batch completion emits
+	``flock.registration.bulk_completed`` when the last batch lands.
+	"""
+	if not gathering:
+		frappe.throw("gathering is required")
+	if isinstance(members, str):
+		# Frappe whitelisted lists arrive JSON-encoded; accept the raw string too.
+		import json
+
+		members = json.loads(members) if members.startswith("[") else [members]
+	if not members:
+		frappe.throw("members list is required", frappe.ValidationError)
+
+	# Window gate (approved + in-window). Scope is NOT re-checked per member —
+	# the leader pre-vets the roster; the unique index backstops idempotency.
+	window = _registration_window(gathering)
+	if not registrations.is_registration_window_open(window, now=frappe.utils.now()):
+		frappe.throw(
+			"Registration is not open for this event (not approved or outside the window).",
+			frappe.ValidationError,
+			title="Registration closed",
+		)
+	permissions.assert_branch_scope(
+		doc_branch=frappe.db.get_value("Flock Gathering", gathering, "branch"),
+		user=frappe.session.user,
+		gateway=permissions.get_gateway(),
+	)
+
+	batches = registrations.chunk_members(members, batch_size=batch_size)
+	branch = frappe.db.get_value("Flock Gathering", gathering, "branch") or ""
+	group = frappe.db.get_value("Flock Gathering", gathering, "group") or ""
+	org = frappe.db.get_value("Flock Gathering", gathering, "organization")
+	total_unique = sum(len(b) for b in batches)
+	job_id = f"bulk-{gathering}-{frappe.utils.random_string(8)}"
+
+	for idx, batch in enumerate(batches):
+		frappe.enqueue(
+			"flock_os.flock_os.doctype.flock_event_registration.process_bulk_batch",
+			queue="long",
+			job_name=f"{job_id}-batch-{idx}",
+			gathering=gathering,
+			members=batch,
+			registered_via=registrations.VIA_BULK,
+			bulk_job_id=job_id,
+			batch_index=idx,
+			total_batches=len(batches),
+		)
+	events.emit(
+		events.REGISTRATION_BULK_QUEUED,
+		payload={
+			"gathering": gathering,
+			"bulk_job_id": job_id,
+			"total_members": total_unique,
+			"batches": len(batches),
+		},
+		scope=_scope_for_event(gathering, branch, group, organization=org),
+	)
+	return {
+		"gathering": gathering,
+		"bulk_job_id": job_id,
+		"total_members": total_unique,
+		"batches": len(batches),
+		"status": "queued",
+	}
+
+
+def process_bulk_batch(
+	*,
+	gathering: str,
+	members: list[str],
+	registered_via: str,
+	bulk_job_id: str,
+	batch_index: int,
+	total_batches: int,
+) -> dict[str, Any]:
+	"""Background job: idempotently insert one bulk-registration batch (§5).
+
+	Runs on the RQ ``long`` queue. Per member: skip if a row already exists
+	(unique constraint backstop), else decide capacity atomically + insert. The
+	unique ``(gathering, registrant)`` index makes this safe under at-least-once
+	delivery (a replayed batch is a no-op for already-inserted rows). Emits
+	``flock.registration.created``/``waitlisted`` per row, and
+	``flock.registration.bulk_completed`` when the last batch finishes.
+	"""
+	now = frappe.utils.now()
+	gateway = FrappeRegistrationScopeGateway()
+	branch = gateway.gathering_branch(gathering) or ""
+	group = gateway.gathering_group(gathering) or ""
+	org = gateway.gathering_organization(gathering)
+	registrant_name_cache: dict[str, str] = {}
+	created = waitlisted = skipped = 0
+	for member in members:
+		if not member:
+			continue
+		existing = frappe.db.get_value(
+			"Flock Event Registration",
+			{"gathering": gathering, "registrant": member},
+			"name",
+		)
+		if existing:
+			skipped += 1
+			continue
+		status = _authoritative_registration_status(gathering)
+		name = registrant_name_cache.get(member)
+		if not name:
+			name = frappe.db.get_value("Flock Member", member, "full_name") or ""
+			registrant_name_cache[member] = name
+		try:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Flock Event Registration",
+					"organization": org,
+					"branch": branch,
+					"group": group,
+					"gathering": gathering,
+					"registrant": member,
+					"registrant_name": name,
+					"registration_status": status,
+					"registered_at": now,
+					"registered_via": registered_via,
+				}
+			)
+			doc.insert(ignore_permissions=True)
+		except (frappe.exceptions.DuplicateEntryError, frappe.exceptions.UniqueValidationError):
+			frappe.db.rollback()
+			skipped += 1
+			continue
+		if status == registrations.REGISTRATION_REGISTERED:
+			_bump_registered_count(gathering, +1)
+			created += 1
+			events.emit(
+				events.REGISTRATION_CREATED,
+				payload={
+					"gathering": gathering,
+					"member": member,
+					"registration": doc.name,
+					"status": status,
+				},
+				scope=_scope_for_event(gathering, branch, group),
+			)
+		else:
+			waitlisted += 1
+			events.emit(
+				events.REGISTRATION_WAITLISTED,
+				payload={"gathering": gathering, "member": member, "registration": doc.name},
+				scope=_scope_for_event(gathering, branch, group),
+			)
+	# Last batch signals completion so the dashboard/leader know the 15k ingest
+	# landed (best-effort; the counter is authoritative regardless).
+	if batch_index + 1 >= total_batches:
+		events.emit(
+			events.REGISTRATION_BULK_COMPLETED,
+			payload={"gathering": gathering, "bulk_job_id": bulk_job_id, "batch": batch_index},
+			scope=_scope_for_event(gathering, branch, group, organization=org),
+		)
+	return {"created": created, "waitlisted": waitlisted, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------- #
+# Dashboards (FLO-7 §10, Phase B/[FLO-79]) — counter-only reads.
+#
+# Leader/branch-admin views read the atomic ``registered_count`` /
+# ``checked_in_count`` counters on the gathering row, never ``COUNT(*)`` over
+# 15k registration rows on the fly (§10). The waitlist depth is the one
+# exception that needs a counted query — it is small (capped by overflow) and
+# not on the gathering row.
+# ---------------------------------------------------------------------------- #
+@frappe.whitelist()
+def get_registration_dashboard(gathering: str) -> dict[str, Any]:
+	"""Counter-based registration summary for leader/branch-admin views (§10).
+
+	Reads the gathering's atomic counters (``registered_count`` /
+	``checked_in_count``) directly — never a ``COUNT(*)`` over the 15k-row
+	registration table. The waitlist depth is a counted query (small, capped by
+	overflow; not denormalized). Scoped by the branch-axis guard.
+	"""
+	if not gathering:
+		frappe.throw("gathering is required")
+	permissions.assert_branch_scope(
+		doc_branch=frappe.db.get_value("Flock Gathering", gathering, "branch"),
+		user=frappe.session.user,
+		gateway=permissions.get_gateway(),
+	)
+	row = (
+		frappe.db.get_value(
+			"Flock Gathering",
+			gathering,
+			[
+				"registered_count",
+				"checked_in_count",
+				"capacity",
+				"registration_scope",
+				"approval_status",
+				"registration_opens_on",
+				"registration_closes_on",
+			],
+			as_dict=True,
+		)
+		or {}
+	)
+	# Waitlist depth: the only counted query (small + not on the gathering row).
+	waitlisted = frappe.db.count(
+		"Flock Event Registration",
+		filters={"gathering": gathering, "registration_status": registrations.REGISTRATION_WAITLISTED},
+	)
+	capacity = row.get("capacity")
+	cap_int = int(capacity) if capacity not in (None, "") else None
+	registered = int(row.get("registered_count") or 0)
+	checked_in = int(row.get("checked_in_count") or 0)
+	return {
+		"gathering": gathering,
+		"registered_count": registered,
+		"checked_in_count": checked_in,
+		"waitlisted_count": int(waitlisted or 0),
+		"capacity": cap_int,
+		"seats_remaining": None if cap_int is None else max(cap_int - registered, 0),
+		"registration_scope": row.get("registration_scope") or registrations.SCOPE_NONE,
+		"approval_status": row.get("approval_status") or "Not Required",
+		"registration_opens_on": row.get("registration_opens_on"),
+		"registration_closes_on": row.get("registration_closes_on"),
+	}
 
 
 # ---------------------------------------------------------------------------- #
