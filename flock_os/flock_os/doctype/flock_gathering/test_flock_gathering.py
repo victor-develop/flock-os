@@ -44,6 +44,12 @@ class TestFlockGathering(FrappeTestCase):
 		frappe.db.delete("Flock Gathering", {"branch": ("in", (self.branch_a, self.branch_b))})
 
 	def tearDown(self):
+		# Clean the report-workflow artifacts (FLO-56) before the gatherings they
+		# reference are removed, so no orphaned attendance/summary/member rows
+		# leak across runs (member uniqueness is (email, branch) — FLO-5 §8.3).
+		frappe.db.delete("Flock Attendance Record", {"branch": ("in", (self.branch_a, self.branch_b))})
+		frappe.db.delete("Event Attendance Summary", {"branch": ("in", (self.branch_a, self.branch_b))})
+		frappe.db.delete("Flock Member", {"branch": ("in", (self.branch_a, self.branch_b))})
 		frappe.db.delete("Flock Gathering", {"branch": ("in", (self.branch_a, self.branch_b))})
 
 	def test_create_gathering_denormalizes_org_and_group_path(self):
@@ -97,3 +103,86 @@ class TestFlockGathering(FrappeTestCase):
 		# Illegal jump Held -> Confirmed (must go via Reported) is rejected.
 		doc.status = "Confirmed"
 		self.assertRaises(frappe.ValidationError, doc.save, ignore_permissions=True)
+
+	# ------------------------------------------------------------------ #
+	# Leader attendance-report workflow (FLO-56 / FLO-6 §4)
+	# ------------------------------------------------------------------ #
+	def _make_member(self, first_name: str, status: str, email: str) -> str:
+		doc = frappe.get_doc(
+			{
+				"doctype": "Flock Member",
+				"first_name": first_name,
+				"branch": self.branch_a,
+				"email": email,
+				"status": status,
+			}
+		)
+		doc.insert(ignore_permissions=True)
+		return doc.name
+
+	def test_leader_report_workflow_records_attendance_and_advances(self):
+		# FLO-56: a leader report records members + visitors/pre-members through
+		# the canonical bulk path, drives Held -> Reported, stamps counters, and
+		# emits flock.attendance.reported through the single sanctioned emitter.
+		from flock_os.events import ATTENDANCE_REPORTED
+		from flock_os.leader_reporting import (
+			AttendeeReport,
+			FrappeLeaderReportingGateway,
+			LeaderReportingService,
+			ReportSubmission,
+		)
+
+		gathering = frappe.get_doc(
+			{
+				"doctype": "Flock Gathering",
+				"title": "Sunday Report",
+				"branch": self.branch_a,
+				"group": self.group_a,
+				"starts_on": "2026-06-21 10:00:00",
+				"status": "Held",
+			}
+		)
+		gathering.insert(ignore_permissions=True)
+
+		member = self._make_member("Grace", "Member", "grace-r@example.org")
+		visitor = self._make_member("Hope", "Visitor", "hope-r@example.org")
+		premember = self._make_member("Joy", "Pre-Member", "joy-r@example.org")
+
+		outcome = LeaderReportingService(FrappeLeaderReportingGateway()).submit_report(
+			ReportSubmission(
+				gathering=gathering.name,
+				branch=self.branch_a,
+				group=self.group_a,
+				reported_by=member,
+				attendees=[
+					AttendeeReport(member=member),
+					AttendeeReport(member=visitor),
+					AttendeeReport(member=premember, first_time=True),
+				],
+				client_batch_id="bench-report-1",
+			)
+		)
+
+		# Three attendees recorded through the bulk write path (one row each).
+		self.assertTrue(outcome.accepted)
+		self.assertEqual(outcome.inserted, 3)
+		self.assertEqual(outcome.member_count, 1)
+		self.assertEqual(outcome.visitor_count, 2)  # Visitor + Pre-Member
+		self.assertEqual(outcome.first_time_count, 1)
+		# Attendance rows landed in the canonical attendance DocType.
+		rows = frappe.db.get_all(
+			"Flock Attendance Record",
+			filters={"event": gathering.name},
+			pluck="attendee_ref",
+		)
+		self.assertEqual(sorted(rows), sorted([member, visitor, premember]))
+		# Gathering advanced Held -> Reported with stamped roll-up counters.
+		gathering.reload()
+		self.assertEqual(gathering.status, "Reported")
+		self.assertEqual(gathering.reported_by, member)
+		self.assertEqual(gathering.member_attendance_count, 1)
+		self.assertEqual(gathering.visitor_attendance_count, 2)
+		self.assertEqual(gathering.total_attendance_count, 3)
+		self.assertEqual(gathering.first_time_count, 1)
+		# The emitted event name is the canonical one (no dual emitter).
+		self.assertEqual(ATTENDANCE_REPORTED, "flock.attendance.reported")
