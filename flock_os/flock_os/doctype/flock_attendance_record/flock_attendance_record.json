@@ -7,69 +7,187 @@
  "doctype": "DocType",
  "document_type": "",
  "engine": "InnoDB",
- "fields": [
-  {
-   "fieldname": "record_section",
-   "fieldtype": "Section Break",
-   "label": "Attendance Record"
-  },
-  {
-   "fieldname": "event",
-   "fieldtype": "Data",
-   "label": "Event",
-   "reqd": 1,
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "search_index": 1,
-   "translatable": 0,
-   "description": "The gathering/event id this attendance row belongs to (Flock Gathering). Held as a raw string ref until the Gathering DocType lands; columns pinned to reporting.py §4.1."
-  },
-  {
-   "fieldname": "attendee_ref",
-   "fieldtype": "Data",
-   "label": "Attendee",
-   "reqd": 1,
-   "in_list_view": 1,
-   "search_index": 1,
-   "translatable": 0,
-   "description": "Member or visitor reference. UNIQUE per (event, attendee_ref) — the idempotency backstop (FLO-10 §4.1)."
-  },
-  {
-   "fieldname": "branch",
-   "fieldtype": "Link",
-   "label": "Branch",
-   "options": "Flock Branch",
-   "reqd": 1,
-   "in_standard_filter": 1,
-   "search_index": 1,
-   "description": "Org-tree node the row belongs to — the row-level permission anchor. Scoped natively by Frappe User Permissions on Flock Branch (ADR §6.2)."
-  },
-  {
-   "fieldname": "status",
-   "fieldtype": "Data",
-   "label": "Status",
-   "in_list_view": 1,
-   "default": "Present",
-   "translatable": 0
-  },
-  {
-   "fieldname": "source",
-   "fieldtype": "Data",
-   "label": "Source",
-   "in_list_view": 1,
-   "default": "bulk",
-   "translatable": 0,
-   "description": "Reporting source: bulk, game, questionnaire."
-  },
-  {
-   "fieldname": "client_req_id",
-   "fieldtype": "Data",
-   "label": "Client Request Id",
-   "search_index": 1,
-   "translatable": 0,
-   "description": "Per-item idempotency key. The UNIQUE (event, attendee_ref, client_req_id) index is materialized by the v0_1 patch (FLO-10 §4.1)."
-  }
- ],
+  "fields": [
+   {
+    "fieldname": "record_section",
+    "fieldtype": "Section Break",
+    "label": "Attendance Record"
+   },
+   {
+    "fieldname": "event",
+    "fieldtype": "Data",
+    "label": "Event",
+    "reqd": 1,
+    "in_list_view": 1,
+    "in_standard_filter": 1,
+    "search_index": 1,
+    "translatable": 0,
+     "description": "The gathering/event id this attendance row belongs to (Flock Gathering). Held as a raw string ref until the Gathering DocType lands; columns pinned to reporting.py §4.1. Both the manual-roster path and the engagement close path populate this with the gathering id (the engagement projection sets event=participation.gathering, FLO-11 §5). The proper FK lives in the `gathering` column below."
+   },
+   {
+    "fieldname": "attendee_ref",
+    "fieldtype": "Data",
+    "label": "Attendee",
+    "reqd": 1,
+    "in_list_view": 1,
+    "search_index": 1,
+    "translatable": 0,
+    "description": "Member or visitor reference. UNIQUE per (event, attendee_ref) — the idempotency backstop (FLO-10 §4.1). The engagement close path populates this with member_id (members) or attendee_key (visitors)."
+   },
+   {
+    "fieldname": "branch",
+    "fieldtype": "Link",
+    "label": "Branch",
+    "options": "Flock Branch",
+    "reqd": 1,
+    "in_standard_filter": 1,
+    "search_index": 1,
+    "description": "Primary row-level permission anchor — scoped natively by Frappe User Permissions on Flock Branch (ADR §6.2)."
+   },
+   {
+    "fieldname": "status",
+    "fieldtype": "Data",
+    "label": "Status",
+    "in_list_view": 1,
+    "default": "Present",
+    "translatable": 0
+   },
+   {
+    "fieldname": "source",
+    "fieldtype": "Data",
+    "label": "Source",
+    "in_list_view": 1,
+    "default": "bulk",
+    "translatable": 0,
+    "description": "Reporting source: bulk, engagement, game, questionnaire."
+   },
+   {
+    "fieldname": "client_req_id",
+    "fieldtype": "Data",
+    "label": "Client Request Id",
+    "search_index": 1,
+    "translatable": 0,
+    "description": "Per-item idempotency key. The UNIQUE (event, attendee_ref, client_req_id) index is materialized by the v0_1 patch (FLO-10 §4.1). The engagement path stores attendee_key here."
+   },
+   {
+    "fieldname": "engagement_section",
+    "fieldtype": "Section Break",
+    "label": "Engagement Provenance (FLO-11)"
+   },
+   {
+    "fieldname": "engagement_session",
+    "fieldtype": "Link",
+    "label": "Engagement Session",
+    "options": "Flock Engagement Session",
+    "search_index": 1,
+    "description": "Source engagement session when source=engagement (FLO-9 §5). Null for manual-roster rows."
+   },
+   {
+    "fieldname": "gathering",
+    "fieldtype": "Link",
+    "label": "Gathering",
+    "options": "Flock Gathering",
+    "search_index": 1,
+    "description": "The underlying Flock Gathering (denormalized for queries, ADR §3). Replaces the rev-1 event field as a proper FK."
+   },
+   {
+    "fieldname": "member",
+    "fieldtype": "Link",
+    "label": "Member",
+    "options": "Flock Member",
+    "search_index": 1,
+    "description": "The person FK (ADR §9 dedup key). Visitors upsert as Flock Member status=Visitor."
+   },
+   {
+    "fieldname": "organization",
+    "fieldtype": "Link",
+    "label": "Organization",
+    "options": "Flock Organization",
+    "search_index": 1,
+    "description": "Tenant floor (ADR §3)."
+   },
+   {
+    "fieldname": "group",
+    "fieldtype": "Link",
+    "label": "Group",
+    "options": "Flock Group",
+    "description": "Group-tree scoping axis (ADR §3). Nullable for branch/org-level sessions."
+   },
+   {
+    "fieldname": "attendee_display_name",
+    "fieldtype": "Data",
+    "label": "Attendee Display Name",
+    "translatable": 0,
+    "description": "Display name resolved at capture time (FLO-9 §5)."
+   },
+   {
+    "fieldname": "attendee_key",
+    "fieldtype": "Data",
+    "label": "Attendee Key",
+    "search_index": 1,
+    "translatable": 0,
+    "description": "sha256(session | member | device_fp) idempotency key (FLO-9 §5). UNIQUE per (engagement_session, attendee_key)."
+   },
+   {
+    "fieldname": "device_fingerprint",
+    "fieldtype": "Data",
+    "label": "Device Fingerprint",
+    "translatable": 0,
+    "description": "UA + IP + session-token hash (FLO-9 §5)."
+   },
+   {
+    "fieldname": "role",
+    "fieldtype": "Select",
+    "label": "Attendee Role",
+    "options": "member\nvisitor\nleader",
+    "default": "member"
+   },
+   {
+    "fieldname": "engagement_type",
+    "fieldtype": "Select",
+    "label": "Engagement Type",
+    "options": "game\nquestionnaire"
+   },
+   {
+    "fieldname": "engagement_kind",
+    "fieldtype": "Select",
+    "label": "Engagement Kind",
+    "options": "quiz_race\ntap_burst\nreaction\nbingo\nteam_challenge\npoll\nword_cloud\nqa\npulse",
+    "description": "The specific engagement kind (FLO-9 §3)."
+   },
+   {
+    "fieldname": "score",
+    "fieldtype": "Float",
+    "label": "Score",
+    "description": "Normalized 0–100 per kind (null for pure questionnaires). Persist-but-bounded — never surfaced per-member to other members (FLO-9 §14.2)."
+   },
+   {
+    "fieldname": "submitted_at",
+    "fieldtype": "Datetime",
+    "label": "Submitted At",
+    "search_index": 1,
+    "description": "Server-reconciled timestamp (FLO-9 §6.1)."
+   },
+   {
+    "fieldname": "client_submitted_at",
+    "fieldtype": "Datetime",
+    "label": "Client Submitted At",
+    "description": "Client claim — debug/audit only (FLO-9 §6.1)."
+   },
+   {
+    "fieldname": "geo_region",
+    "fieldtype": "Data",
+    "label": "Geo Region",
+    "translatable": 0,
+    "description": "Opt-in coarse region only (privacy). Off by default (FLO-9 §14.4)."
+   },
+   {
+    "fieldname": "status_flags",
+    "fieldtype": "JSON",
+    "label": "Status Flags",
+    "description": "{out_of_scope, offline_replay, suspect_pattern, facilitator_override} (FLO-9 §5)."
+   }
+  ],
  "index_web_pages_for_search": 1,
  "links": [],
  "modified": "2026-06-19 00:00:00.000000",

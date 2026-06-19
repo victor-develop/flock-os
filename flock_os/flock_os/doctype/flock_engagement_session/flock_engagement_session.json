@@ -1,0 +1,288 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "color": "",
+ "creation": "2026-06-19 00:00:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "document_type": "",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "ENG-.#####",
+   "default": "ENG-.#####",
+   "hidden": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "scoping_section",
+   "fieldtype": "Section Break",
+   "label": "Scoping"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Link",
+   "label": "Organization",
+   "options": "Flock Organization",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Tenant floor (ADR §3)."
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Flock Branch",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Primary row-level permission anchor — scoped natively by Frappe User Permissions on Flock Branch (ADR §6.2)."
+  },
+  {
+   "fieldname": "group",
+   "fieldtype": "Link",
+   "label": "Group",
+   "options": "Flock Group",
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Group-tree scoping axis (ADR §3). Nullable for org/branch-level sessions."
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "fieldname": "gathering",
+   "fieldtype": "Link",
+   "label": "Gathering",
+   "options": "Flock Gathering",
+   "reqd": 1,
+   "search_index": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The underlying Flock Gathering this session is bound to (FLO-9 §2 / FLO-6)."
+  },
+  {
+   "fieldname": "facilitator",
+   "fieldtype": "Link",
+   "label": "Facilitator",
+   "options": "Flock Member",
+   "in_list_view": 1,
+   "description": "The group leader / admin running the session (owns the room code)."
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "reqd": 1,
+   "in_list_view": 1,
+   "translatable": 0
+  },
+  {
+   "fieldname": "engagement_type",
+   "fieldtype": "Select",
+   "label": "Engagement Type",
+   "options": "game\nquestionnaire",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Top-level family (FLO-9 §3)."
+  },
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "label": "Engagement Kind",
+   "options": "quiz_race\ntap_burst\nreaction\nbingo\nteam_challenge\npoll\nword_cloud\nqa\npulse",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The specific engagement kind (FLO-9 §3)."
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "draft\nscheduled\nopen\nclosing\nclosed\narchived",
+   "default": "draft",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Lifecycle (FLO-9 §4): draft → scheduled → open → closing → closed → archived."
+  },
+  {
+   "fieldname": "lifecycle_section",
+   "fieldtype": "Section Break",
+   "label": "Lifecycle Windows"
+  },
+  {
+   "fieldname": "scheduled_at",
+   "fieldtype": "Datetime",
+   "label": "Scheduled At",
+   "description": "When the session is scheduled to open."
+  },
+  {
+   "fieldname": "open_at",
+   "fieldtype": "Datetime",
+   "label": "Open At",
+   "search_index": 1,
+   "description": "Server-stamped open timestamp (FLO-9 §6.1)."
+  },
+  {
+   "fieldname": "close_at",
+   "fieldtype": "Datetime",
+   "label": "Close At",
+   "search_index": 1,
+   "description": "Server-stamps close timestamp (FLO-9 §6.1)."
+  },
+  {
+   "fieldname": "grace_seconds",
+   "fieldtype": "Int",
+   "label": "Grace Seconds",
+   "default": "30",
+   "description": "Closing grace window (FLO-9 §4)."
+  },
+  {
+   "fieldname": "config_section",
+   "fieldtype": "Section Break",
+   "label": "Config & Scope"
+  },
+  {
+   "fieldname": "config",
+   "fieldtype": "JSON",
+   "label": "Config",
+   "description": "Engagement parameters (rounds, questions, bingo template, etc., FLO-9 §2)."
+  },
+  {
+   "fieldname": "geofence",
+   "fieldtype": "JSON",
+   "label": "Geofence",
+   "description": "Optional geofence (radius around venue). Off by default; opt-in per session (FLO-9 §14.4)."
+  },
+  {
+   "fieldname": "room_code",
+   "fieldtype": "Data",
+   "label": "Room Code",
+   "translatable": 0,
+   "description": "6-digit join code (FLO-9 §2)."
+  },
+  {
+   "fieldname": "accessibility_mode_default",
+   "fieldtype": "Check",
+   "label": "Accessibility Mode Default",
+   "description": "Default accessibility-mode toggle for the session (FLO-9 §7)."
+  },
+  {
+   "fieldname": "languages",
+   "fieldtype": "Data",
+   "label": "Languages",
+   "translatable": 0,
+   "description": "Comma-separated session languages (i18n, FLO-9 §7)."
+  },
+  {
+   "fieldname": "results_section",
+   "fieldtype": "Section Break",
+   "label": "Close Results (read-only)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "attendee_count",
+   "fieldtype": "Int",
+   "label": "Attendee Count",
+   "read_only": 1,
+   "description": "Headcount materialized on close (the in-window participation set)."
+  },
+  {
+   "fieldname": "batch_id",
+   "fieldtype": "Data",
+   "label": "Bulk Batch Id",
+   "translatable": 0,
+   "read_only": 1,
+   "description": "The bulk-reporting batch_id emitted by the close path (FLO-15)."
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "flock_os",
+ "name": "Flock Engagement Session",
+ "naming_rule": "By naming series",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Org Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Branch Admin",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "permlevel": 0,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Group Leader",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "permlevel": 0,
+   "read": 1,
+   "role": "Flock Member"
+  },
+  {
+   "permlevel": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Flock Auditor"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}

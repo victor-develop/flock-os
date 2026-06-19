@@ -91,6 +91,8 @@ SCOPED_DOCTYPES: tuple[str, ...] = (
 	"Flock Gathering",
 	"Flock Announcement",
 	"Flock Event Approval",
+	"Flock Engagement Session",
+	"Flock Attendance Record",
 	"Flock Event Registration",
 )
 """DocTypes the group-axis ``permission_query_conditions`` hook narrows.
@@ -122,12 +124,13 @@ have no such column, so emitting one would yield invalid SQL (FLO-54)."""
 #: intentionally absent — they have no such column, so the ``.member`` clause
 #: is suppressed for them (FLO-54). Mapped doctype → the exact member-column
 #: name on that table (``member`` for ``Flock Group Member``; ``registrant`` for
-#: ``Flock Event Registration`` per FLO-7 §3.5) so the emitted SQL matches each
-#: table's real schema. ``Flock Attendance Record`` appends itself here when it
-#: gains its member link.
+#: ``Flock Event Registration`` per FLO-7 §3.5; ``member`` for ``Flock
+#: Attendance Record`` per FLO-9 §5) so the emitted SQL matches each table's
+#: real schema.
 MEMBER_ANCHORED_DOCTYPES: dict[str, str] = {
 	"Flock Group Member": "member",
 	"Flock Event Registration": "registrant",
+	"Flock Attendance Record": "member",
 }
 
 #: The branch doctype the native User-Permission axis rides on (ADR §6.2).
