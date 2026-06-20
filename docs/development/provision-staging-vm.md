@@ -49,7 +49,22 @@ they clear, provisioning is a straight-line execution.
 > company, no payment method is on file. These are real-world commercial
 > relationships, not code/infra. Do **not** attempt to script around them.
 
-## 1. Pick the staging Server plan SKU
+### How to read this runbook (draft vs execute)
+
+Sections are flagged so it is obvious which lines are **draftable now** (no
+infra, no account) vs which **execute only after the gate clears**:
+
+- **BLOCKED-ON-PROVISIONING** — the step needs the Frappe Cloud VM/account,
+  i.e. it cannot run until both blockers in the table above resolve. These are
+  the lines that move from "drafted" to "executed" the moment
+  [FLO-249](/FLO/issues/FLO-249) unblocks.
+- **draftable now** — the step can be prepared today (keypairs generated,
+  bundle shape validated, DNS/Cloudflare planned, commands rehearsed) so
+  execution is a straight-line copy-paste once the VM exists.
+
+Every §1–§8 section header carries one of these flags.
+
+## 1. Pick the staging Server plan SKU — BLOCKED-ON-PROVISIONING
 
 Per the [ADR](/FLO/issues/FLO-245) and the [hosting-quote](/FLO/issues/FLO-231#document-hosting-quote),
 **staging accepts a smaller dedicated VM than prod** (staging only has to host
@@ -77,11 +92,15 @@ Record the chosen plan in the [FLO-249](/FLO/issues/FLO-249) thread when you
 provision (provider, vCPU/RAM/disk, monthly $) so prod sizing in
 [FLO-251](/FLO/issues/FLO-251) can reuse the data point.
 
-## 2. SSH key setup
+## 2. SSH key setup — keygen draftable now · upload BLOCKED-ON-PROVISIONING
 
 The deploy pipeline ships the image over SSH + `docker pull`
 ([`deploy-runbook.md` → Wire FLOCK_DEPLOY_CMD](deploy-runbook.md#wire-flock_deploy_cmd)),
 so a dedicated **deploy key** (not a personal key) must be authorized on the VM.
+
+> The `ssh-keygen` below is **draftable now** (step 2 storing the private key
+> in the GitHub secret is also draftable). Steps 1 and 3 (upload to VM, smoke
+> from VM) are **BLOCKED-ON-PROVISIONING** — they need the VM up.
 
 ```bash
 # On the DevOps workstation (or wherever the GitHub Action's secret was created):
@@ -106,7 +125,7 @@ ssh-keygen -t ed25519 -f ~/.ssh/flock_os_staging_deploy -C "flock-os-staging-dep
    ssh -i ~/.ssh/flock_os_staging_deploy frappe@<staging-vm> 'echo ok; uname -a'
    ```
 
-## 3. Register the staging site on the VM
+## 3. Register the staging site on the VM — BLOCKED-ON-PROVISIONING
 
 On a Frappe Cloud **Server plan**, the VM ships with a bench pre-installed. The
 staging site is created through the dashboard (recommended) or `bench`:
@@ -130,7 +149,7 @@ The containerized-deploy path (the [slice-1](/FLO/issues/FLO-246) pipeline)
 and the site row persists in MariaDB. Do not re-run `bench new-site` after CI is
 wired.
 
-## 4. DNS wiring (Cloudflare orange-cloud)
+## 4. DNS wiring (Cloudflare orange-cloud) — BLOCKED-ON-PROVISIONING
 
 The ADR puts Cloudflare in front for CDN + rate-limit + DDoS on the
 Gunicorn-billed public surface. WebSocket traffic rides the same hostname
@@ -159,7 +178,7 @@ Gunicorn-billed public surface. WebSocket traffic rides the same hostname
 dig +short staging.<your-domain>   # → one or more Cloudflare IPs (104.x / 172.x)
 ```
 
-## 5. TLS (Let's Encrypt at the Frappe Cloud edge)
+## 5. TLS (Let's Encrypt at the Frappe Cloud edge) — BLOCKED-ON-PROVISIONING
 
 TLS is **automatic** on Frappe Cloud Server plans — the edge issues and renews a
 Let's Encrypt certificate for any hostname that resolves to it. There is no
@@ -183,7 +202,7 @@ To trigger issuance:
 If Frappe Cloud's edge cert ever needs replacing (custom cert, wildcard, etc.),
 use the dashboard's **Custom SSL** upload — out of scope for staging.
 
-## 6. Managed MariaDB + dedicated Redis provisioning
+## 6. Managed MariaDB + dedicated Redis provisioning — BLOCKED-ON-PROVISIONING
 
 Per the [ADR](/FLO/issues/FLO-245) §Redis/DB:
 
@@ -211,77 +230,139 @@ Per the [ADR](/FLO/issues/FLO-245) §Redis/DB:
 > adapter instance carries the 15k fan-out because the adapter runs on pub/sub,
 > not data sharding. Cluster is a >15k / HA concern for Phase 6.3+.
 
-## 7. Wire `FLOCK_DEPLOY_CMD` for the GitHub Actions `staging` environment
+## 7. Wire `FLOCK_DEPLOY_CMD` + the SOPS+age staging secret bundle
+
+> The age-keypair bootstrap and the `FLOCK_DEPLOY_CMD` shape (§7a, §7d, §7e)
+> are **draftable now** — they need neither the VM nor board approval. Filling
+> the bundle with real DB/Redis values (§7b) is **BLOCKED-ON-PROVISIONING**
+> (those values come from the Frappe Cloud dashboard once the VM exists).
 
 The deploy workflow
-([`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)) calls
-`$FLOCK_DEPLOY_CMD` with `<TAG>` substituted to the image tag. For a Frappe
-Cloud Server plan VM, the orchestrator hook is **SSH + docker**:
+([`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)) does
+**not** read per-secret GitHub Actions values. Per [FLO-248](/FLO/issues/FLO-248)
+(slice 2, done), the source of truth is the **committed SOPS+age ciphertext
+bundle** `secrets/staging.enc.yaml`, decrypted at deploy time by
+[`scripts/deploy/render-secrets.sh`](../../scripts/deploy/render-secrets.sh)
+using a single GitHub Actions secret: the age **private key** `SOPS_AGE_KEY`.
+Full model + bootstrap: [`secrets-runbook.md`](secrets-runbook.md). The
+workflow then runs [`render-config.sh`](../../scripts/deploy/render-config.sh)
+`--check` to prove the full secret → config contract holds before any rolling
+change.
 
-1. **In the GitHub repo:** Settings → Environments → `staging` → **Environment
-   variables** → add:
-   ```
-   FLOCK_DEPLOY_CMD=ssh -i /tmp/flock_deploy_key -o StrictHostKeyChecking=no frappe@<staging-vm> \
-       "cd /home/frappe && \
-        docker pull ghcr.io/<org>/flock-os-bench:<TAG> && \
-        docker stop flock-os || true && \
-        docker run -d --name flock-os \
-            --env-file /etc/flock-os/staging.env \
-            -p 8080:8080 -p 9000:9000 \
-            ghcr.io/<org>/flock-os-bench:<TAG>"
-   ```
-   (`<org>` is the GitHub owner; `<staging-vm>` is the Frappe Cloud edge host
-   or its public IP.) Set the same shape on the `production` environment when
-   [FLO-251](/FLO/issues/FLO-251) opens, pointing at prod resources.
+### 7a. Provision the staging age keypair (draftable now)
 
-2. **On the VM**, create the env file the container reads. **Do not commit
-   values** — render from the secret manager (SOPS+age or cloud SM). The set
-   matches [`render-config.sh`](../../scripts/deploy/render-config.sh) required
-   vars:
-   ```bash
-   ssh -i ~/.ssh/flock_os_staging_deploy frappe@<staging-vm> 'sudo mkdir -p /etc/flock-os && sudo chmod 700 /etc/flock-os'
-   # Then write /etc/flock-os/staging.env with:
-   #   DB_HOST=...           DB_PORT=3306        DB_NAME=flock-os-staging
-   #   DB_USER=...           DB_PASSWORD=...
-   #   REDIS_CACHE_URI=redis://127.0.0.1:6380/1
-   #   REDIS_QUEUE_URI=redis://127.0.0.1:6380/2
-   #   REDIS_SOCKETIO_URI=redis://127.0.0.1:6380/3
-   #   FLOCK_SIO_ADAPTER_REDIS=redis://127.0.0.1:6389
-   #   SECRET_KEY=<random-50-char-hex>
-   #   SITE_URL=https://staging.<your-domain>
-   #   FLOCK_ENV=staging
-   ssh -i ~/.ssh/flock_os_staging_deploy frappe@<staging-vm> 'sudo chmod 600 /etc/flock-os/staging.env'
-   ```
+```bash
+# Generate the staging age keypair (private key gitignored; prints the PUBLIC recipient):
+scripts/dev/gen-age-key.sh --env staging
+#   -> secrets/.age-key.staging   (PRIVATE — gitignored; copy to password manager + GitHub secret)
+#   -> recipient age1...          (PUBLIC  — paste into .sops.yaml's staging rule)
 
-3. **As GitHub Actions `staging` secrets** (repo Settings → Environments →
-   `staging` → Secrets), add the same values **plus the SSH key** so the
-   workflow can both render-check **and** connect to the VM:
-   ```
-   DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
-   REDIS_CACHE_URI, REDIS_QUEUE_URI, REDIS_SOCKETIO_URI,
-   FLOCK_SIO_ADAPTER_REDIS, SECRET_KEY,
-   STAGING_URL (= SITE_URL above),
-   STAGING_WS_URL (optional; defaults to wss://$STAGING_URL),
-   FLOCK_IMAGE_REGISTRY_TOKEN (use the GitHub token for ghcr.io),
-   FLOCK_DEPLOY_SSH_KEY (the private key from §2).
-   ```
-   The `deploy.yml` workflow:
-   - renders `render-config.sh --check` against these to **fail loudly before
-     the rolling deploy** if any are missing,
-   - substitutes `<TAG>` into `FLOCK_DEPLOY_CMD`,
-   - runs `scripts/deploy/smoke-staging.sh` against `$STAGING_URL`.
+# Paste the recipient into .sops.yaml, then re-wrap the bundle for the new key:
+SOPS_AGE_KEY_FILE=secrets/.age-key.staging sops --rotate --in-place secrets/staging.enc.yaml
 
-4. **Pre-flight the secret gate** from a workstation (off-image):
-   ```bash
-   DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... \
-   REDIS_CACHE_URI=... REDIS_QUEUE_URI=... REDIS_SOCKETIO_URI=... \
-   FLOCK_SIO_ADAPTER_REDIS=... SECRET_KEY=... \
-   SITE_URL=https://staging.<your-domain> FLOCK_ENV=staging \
-   scripts/deploy/render-config.sh --check
-   # → "render-config: --check OK (all required env present ...)"
-   ```
+# Distribute the PRIVATE key (human with repo-admin access):
+#   - password manager (1Password / pass) — the mandatory escrow copy, AND
+#   - GitHub Actions `staging` environment secret `SOPS_AGE_KEY`
+#     (repo Settings → Environments → staging → New secret).
+```
 
-## 8. First deploy + verification
+Staging and prod use **separate** age keys — a staging key compromise must
+never read prod (see `.sops.yaml`).
+
+### 7b. Fill the staging secret bundle — BLOCKED-ON-PROVISIONING
+
+Once §1–§6 are done and the VM/managed DB/Redis exist, fill the real values:
+
+```bash
+SOPS_AGE_KEY_FILE=secrets/.age-key.staging sops secrets/staging.enc.yaml
+# opens decrypted in $EDITOR; set values per the table below; save re-encrypts in place.
+```
+
+### 7c. Secret classification — board/human-provided vs agent-generated
+
+Every secret/variable the deploy pipeline consumes. **board/human-provided**
+= a value that originates from the Frappe Cloud dashboard, a commercial
+relationship, or a board decision (cannot be agent-generated).
+**agent-generated** = producible by DevOps without external input.
+
+| Secret / var | Where it lives | Classification | Source |
+|--------------|----------------|----------------|--------|
+| `SOPS_AGE_KEY` | GitHub Actions `staging` secret | **board/human-distributed** (keypair agent-generated via `gen-age-key.sh`; private key placed in password manager + GitHub secret by a human with repo-admin access) | `scripts/dev/gen-age-key.sh` → human distributes |
+| `DB_HOST` | `secrets/staging.enc.yaml` | **board/human-provided** | Frappe Cloud dashboard (managed MariaDB endpoint) |
+| `DB_NAME` | bundle | agent-generated | Convention: `flock_os_staging` (set at `bench new-site`) |
+| `DB_USER` | bundle | **board/human-provided** | Frappe Cloud managed MariaDB user |
+| `DB_PASSWORD` | bundle | **board/human-provided** | Frappe Cloud dashboard (rotate via dashboard; never agent-set on a managed DB) |
+| `DB_PORT` *(optional)* | bundle | agent-generated | Default `3306` |
+| `REDIS_CACHE_URI` | bundle | **board/human-provided** (host) + agent-generated (DB index) | Frappe Cloud default Redis; pick DB `/1` |
+| `REDIS_QUEUE_URI` | bundle | same | DB `/2` |
+| `REDIS_SOCKETIO_URI` | bundle | same | DB `/3` |
+| `FLOCK_SIO_ADAPTER_REDIS` | bundle | agent-generated | Dedicated adapter Redis stood up in §6 (`redis://127.0.0.1:6389`) |
+| `SECRET_KEY` | bundle | agent-generated | `openssl rand -hex 50` (rotate per ADR §secrets) |
+| `SITE_URL` | bundle | **board/human-provided** | Depends on the chosen domain (`https://staging.<your-domain>`) |
+| `FLOCK_ENV` | bundle | agent-generated | Literal `staging` (also the bundle selector + `_meta.env` self-check) |
+| `FLOCK_DEPLOY_CMD` | GitHub Actions `staging` **variable** (not secret) | agent-generated (shape) + **board/human-provided** (`<staging-vm>` hostname) | See §7d |
+| `FLOCK_DEPLOY_SSH_KEY` | GitHub Actions `staging` secret | agent-generated (keygen in §2) + **board/human-distributed** (private key placed in the secret by a human with repo-admin access) | `ssh-keygen` in §2 |
+| `FLOCK_IMAGE_REGISTRY_TOKEN` | GitHub Actions repo secret | **board/human-provided** | GitHub PAT for ghcr.io (or rely on the `GITHUB_TOKEN` fallback) |
+| `FLOCK_IMAGE_REGISTRY` *(optional)* | GitHub Actions repo variable | agent-generated | Default `ghcr.io` |
+| `STAGING_URL` | GitHub Actions `staging` secret | **board/human-provided** | Mirrors `SITE_URL`; consumed by the smoke step |
+| `STAGING_WS_URL` *(optional)* | GitHub Actions `staging` secret | **board/human-provided** | Defaults to `wss://$STAGING_URL` |
+
+> **Never** put any of these in `.env.example`, a prompt, or a commit message.
+> Plaintext lives only in the password manager + the in-memory render at deploy
+> time. The committed `secrets/staging.enc.yaml` is ciphertext only.
+
+### 7d. Set `FLOCK_DEPLOY_CMD` (the orchestrator hook)
+
+`FLOCK_DEPLOY_CMD` is a GitHub Actions **environment variable** (not a secret —
+its shape is public; only the hostname inside is private). The workflow
+substitutes `<TAG>` with the image tag and `eval`s it. For a Frappe Cloud
+Server plan VM, the hook is **SSH + docker**:
+
+In the GitHub repo: Settings → Environments → `staging` → **Environment
+variables** → add:
+```
+FLOCK_DEPLOY_CMD=ssh -i /tmp/flock_deploy_key -o StrictHostKeyChecking=no frappe@<staging-vm> \
+    "cd /home/frappe && \
+     docker pull ghcr.io/<org>/flock-os-bench:<TAG> && \
+     docker stop flock-os || true && \
+     docker run -d --name flock-os \
+         --env-file /etc/flock-os/staging.env \
+         -p 8080:8080 -p 9000:9000 \
+         ghcr.io/<org>/flock-os-bench:<TAG>"
+```
+(`<org>` is the GitHub owner; `<staging-vm>` is the Frappe Cloud edge host.)
+Replicate the same shape on the `production` environment when
+[FLO-251](/FLO/issues/FLO-251) opens, pointing at prod resources.
+
+> **Open wiring note:** `deploy.yml` references `/tmp/flock_deploy_key` inside
+> `FLOCK_DEPLOY_CMD` but does not yet write it from `FLOCK_DEPLOY_SSH_KEY`
+> before the `eval`. Provisioning must add a step that materializes the key
+> (e.g. `echo "$FLOCK_DEPLOY_SSH_KEY" > /tmp/flock_deploy_key && chmod 600`)
+> or bake it into the hook. Tracked against the slice-1 pipeline
+> ([FLO-246](/FLO/issues/FLO-246)), not this runbook.
+
+### 7e. Pre-flight the secret gate (off-image, no VM needed for §7a)
+
+The age-keypair + `FLOCK_DEPLOY_CMD` shape can be validated before the VM
+exists. The full decrypt → render chain can be exercised end-to-end once the
+bundle holds real values (§7b). This is the **same gate** `deploy.yml` runs
+before any rolling change:
+
+```bash
+# Decrypt gate (works as soon as §7a is done, even with placeholder values):
+SOPS_AGE_KEY_FILE=secrets/.age-key.staging \
+  scripts/deploy/render-secrets.sh --env staging --check
+# -> "render-secrets: --check OK (env=staging, bundle=..., all required keys present)"
+
+# Full chain (decrypt -> render-config) once §7b filled the real values:
+SOPS_AGE_KEY_FILE=secrets/.age-key.staging \
+  scripts/deploy/render-secrets.sh --env staging --out /tmp/flock.env
+set -a; . /tmp/flock.env; set +a
+scripts/deploy/render-config.sh --check
+# -> "render-config: --check OK (all required env present)"
+```
+
+## 8. First deploy + verification — BLOCKED-ON-PROVISIONING
 
 Once §1–§7 are in place, the first staging deploy is just a merge to `master`
 (the deploy workflow is automatic on push to `master`):
@@ -315,8 +396,10 @@ STAGING_URL=https://staging.<your-domain> scripts/deploy/smoke-staging.sh
 - [ ] Let's Encrypt cert issued at the edge; `curl -sI https://staging...` is 2xx/3xx.
 - [ ] Managed MariaDB reachable; **dedicated adapter Redis** on port 6389 (or
       equivalent) healthy.
-- [ ] GitHub `staging` environment wired: `FLOCK_DEPLOY_CMD` + the secret set;
-      `render-config.sh --check` passes off-image.
+- [ ] GitHub `staging` environment wired: `FLOCK_DEPLOY_CMD` var +
+      `SOPS_AGE_KEY` secret; `secrets/staging.enc.yaml` filled with real values;
+      `render-secrets.sh --env staging --check` + `render-config.sh --check`
+      both pass off-image.
 - [ ] First `master` push → Deploy workflow green; `smoke-staging.sh` `[1/3] [2/3] [3/3]` all pass.
 - [ ] Staging URL posted to the [FLO-249](/FLO/issues/FLO-249) thread; this
       runbook updated with the real hostname/SKU once provisioned.
