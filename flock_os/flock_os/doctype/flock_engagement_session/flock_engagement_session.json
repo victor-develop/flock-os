@@ -268,7 +268,6 @@
    "write": 1
   },
   {
-   "create": 1,
    "permlevel": 0,
    "read": 1,
    "role": "Flock Member"
