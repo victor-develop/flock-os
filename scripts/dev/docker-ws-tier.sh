@@ -111,7 +111,31 @@ render_nginx() {
 		}
 		{ print }
 	' "$NGINX_CONF" > "$NGINX_CONF.tmp" && mv "$NGINX_CONF.tmp" "$NGINX_CONF"
-	log "rendered nginx LB conf -> $NGINX_CONF ($n upstream worker(s), LB host port $lb_port)"
+
+	# Append an HTTP server block that proxies the web (gunicorn) service, so a k6
+	# load generator running INSIDE the docker network can use ONE hostname
+	# (ws-lb) for both the WS endpoint (:9000) and the realtime auth callback
+	# (:8100 -> web). This clears the §8 ceiling #1 on the CLIENT side too: k6 in
+	# a container reaches ws-lb over a real docker network transit, never the
+	# host loopback (so no host ephemeral-port pressure, no `sudo sysctl`). The
+	# realtime auth middleware's Host==Origin hostname check passes because both
+	# sides resolve to `ws-lb`. (Host-based k6 on the Mac still works via the
+	# published :9000 + :8100 ports; this block is additive.)
+	cat >> "$NGINX_CONF" <<NGINX
+
+	# HTTP proxy to web (FLO-347 in-container k6 path) — added by docker-ws-tier.sh.
+	server {
+		listen 8100;
+		server_name flock_os.localhost;
+		location / {
+			proxy_pass http://web:8100;
+			proxy_set_header Host \$host;
+			proxy_set_header X-Real-IP \$remote_addr;
+			proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+		}
+	}
+NGINX
+	log "rendered nginx LB conf -> $NGINX_CONF ($n upstream worker(s), LB host port $lb_port, +HTTP :8100 -> web)"
 }
 
 # Generate docker/.runtime/ws-workers.yml: one `socketio-i` service per worker,
