@@ -48,19 +48,34 @@ load_env
 # tabDocType (i.e. not a freshly-created empty site). Reads DB creds from the
 # site_config; returns 1 (no data) on any error so an unreadable empty site is
 # treated as overwritable. frappe-free + version-independent (raw information_schema).
+# Stack-agnostic DB host (FLO-353): resolves host from site_config.json `host`
+# or sibling common_site_config.json `db_host`, default 127.0.0.1 — same restore
+# path against the host bench and the docker-compose topology.
 site_has_data() {
 	local cfg="$1"
 	[[ -f "$cfg" ]] || return 1
 	python3 - "$cfg" <<'PY'
-import json, subprocess, sys
-cfg = json.load(open(sys.argv[1]))
+import json, os, subprocess, sys
+cfg_path = sys.argv[1]
+cfg = json.load(open(cfg_path))
 db = cfg.get("db_name")
 pw = cfg.get("db_password")
 if not db or pw is None:
     sys.exit(1)
+
+host = cfg.get("host")
+if not host:
+    csc = os.path.join(os.path.dirname(cfg_path), "common_site_config.json")
+    if os.path.exists(csc):
+        try:
+            host = json.load(open(csc)).get("db_host")
+        except Exception:
+            host = None
+host = host or "127.0.0.1"
+
 def q(sql):
     return subprocess.run(
-        ["mysql", "-h", "127.0.0.1", "-u", db, f"-p{pw}", db, "-N", "-B", "-e", sql],
+        ["mysql", "-h", host, "-u", db, f"-p{pw}", db, "-N", "-B", "-e", sql],
         capture_output=True, text=True,
     )
 r = q("SELECT COUNT(*) FROM information_schema.tables "

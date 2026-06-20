@@ -53,9 +53,17 @@ services:
     networks:
       - backend
 
+  # Frappe cache + session state. AOF-persisted (FLO-353 / FLO-350 item 1:
+  # Redis persistence half of the backup/restore story) so sessions + cached
+  # state survive a container restart/recreate. appendfsync=everysec is the
+  # standard prod durability/perf tradeoff (≤1s RPO on the cache tier, no
+  # throughput cliff). The AOF file lives on a named volume, NOT ephemeral
+  # container storage, so it survives `docker compose down` + `up` too.
   redis-cache:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-cache-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -64,9 +72,13 @@ services:
     networks:
       - backend
 
+  # Frappe background-worker queue (rq). AOF-persisted for the same reason as
+  # the cache: in-flight job state survives a restart instead of vanishing.
   redis-queue:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-queue-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -78,7 +90,10 @@ services:
   # Dedicated adapter Redis. Consumed by every socketio worker via
   # FLOCK_SIO_ADAPTER_REDIS (see docker-ws-tier.sh's worker overlay). Kept
   # separate from cache/queue so the 8x adapter pub/sub never stalls Frappe
-  # cache under the 15k burst (the runbook's ceiling #2 unblock).
+  # cache under the 15k burst (the runbook's ceiling #2 unblock). Deliberately
+  # NON-persistent: socket.io adapter state is transient pub/sub (live socket
+  # fan-out), never a durability concern — persisting it would only resurrect
+  # stale socket rooms after a restart.
   redis-adapter:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -179,6 +194,10 @@ services:
 
 volumes:
   mariadb-data:
+  # Redis AOF persistence (FLO-353): the appendonly file for cache + queue
+  # lives on named volumes so it survives container restart/recreate/down.
+  redis-cache-data:
+  redis-queue-data:
   # Shared across init/web/socketio so the site (site_config.json + the
   # per-site DB creds) persists across container restarts and the one-shot
   # `init` is idempotent on re-runs (standard frappe-docker pattern).

@@ -100,6 +100,38 @@ What the drill checks:
 Exit code `0` = parity holds (drill site dropped automatically). Non-zero =
 divergence report printed; the drill site is dropped unless `--keep`.
 
+### Rehearsing against the prod-equivalent docker-compose topology
+
+The drill is stack-agnostic: the same `restore-drill.sh` runs against the
+host bench (DB host `127.0.0.1`) and against the [FLO-347](/FLO/issues/FLO-347)
+docker-compose prod-equivalent tier (DB host `mariadb` on the docker network).
+The DB host is resolved at runtime from `site_config.json` (`host`) → the
+bench-level `common_site_config.json` (`db_host`) → `127.0.0.1`, so no flag
+edit is needed to switch topology.
+
+```bash
+# 1. Bring up the prod-equivalent tier (MariaDB + Redis AOF + gunicorn + WS LB):
+scripts/dev/docker-ws-tier.sh up
+
+# 2. Run the drill INSIDE the web container (bench-in-container == prod shape):
+docker compose -f docker/docker-compose.yml exec web \
+  bash apps/flock_os/scripts/dev/restore-drill.sh \
+    --bench-dir /home/frappe/frappe-bench \
+    --source-site flock_os.localhost \
+    --db-root-password "$MARIADB_ROOT_PASSWORD" \
+    --admin-password "$SITE_ADMIN_PASSWORD"
+#    (creds come from docker/.env.docker, already in the container env)
+
+# 3. Tear the tier down (Redis AOF volumes + MariaDB volume persist unless -v):
+scripts/dev/docker-ws-tier.sh down
+```
+
+The docker tier's `redis-cache` + `redis-queue` are **AOF-persisted**
+(`--appendonly yes --appendfsync everysec`) on named volumes, so Frappe
+session/cache + queue state survive a container restart/recreate — the
+Redis-persistence half of this runbook's backup/restore story. The dedicated
+`redis-adapter` is intentionally ephemeral (transient socket.io pub/sub).
+
 ### Non-destructive guarantees
 
 - `restore.sh` **requires `--confirm`** — a bare invocation always refuses.
