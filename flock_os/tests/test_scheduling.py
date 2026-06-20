@@ -36,11 +36,29 @@ from flock_os.scheduling import (
 	STATUS_SCHEDULED,
 	FlockSchedulingError,
 	SchedulingGateway,
+	install_author_scope_guard,
 	preview_audience,
 	resolve_audience_branches,
 	validate_announcement_scope,
 	validate_status_transition,
 )
+
+
+@pytest.fixture(autouse=True)
+def _null_author_scope_guard():
+	"""Decouple pure scheduling tests from the FLO-290 author-scope guard.
+
+	The author-branch-scope assertion is a transport concern (caller identity)
+	backed by ``permissions.assert_branch_scope``; its deny-path is pinned in
+	``test_tenant_isolation`` and its docperm backstop in ``test_permission_audit``.
+	Here we stub it out so the audience-resolution / scope-validation logic is
+	exercised without a permission gateway (and without the cross-test ``frappe``
+	stub left by ``test_attendance_queue_integration`` firing the guard spuriously).
+	"""
+	install_author_scope_guard(lambda branch: None)
+	yield
+	install_author_scope_guard(lambda branch: None)
+
 
 ORG = "ORG"
 

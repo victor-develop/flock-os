@@ -237,13 +237,19 @@
    "role": "Flock Org Admin",
    "write": 1
   },
-  {
-   "permlevel": 1,
-   "read": 1,
-   "role": "Flock Branch Admin",
-   "write": 1
-  }
- ],
+   {
+    "permlevel": 1,
+    "read": 1,
+    "role": "Flock Branch Admin",
+    "write": 1
+   },
+   {
+    "permlevel": 1,
+    "read": 1,
+    "role": "Flock Group Leader",
+    "write": 1
+   }
+  ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

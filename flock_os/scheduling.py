@@ -311,6 +311,61 @@ def _whitelist():
 
 
 # ---------------------------------------------------------------------------- #
+def _frappe_author_branch_scope(branch: str) -> None:
+	"""Production author-scope assertion (FLO-290 §3, ADR §6.2).
+
+	The compose UI guards this client-side (:func:`flock_os.portal.assert_target_in_context`),
+	but the backend is the source of truth — never trust the client. Every
+	announcement ``@frappe.whitelist()`` mutating/preview surface re-asserts the
+	caller's branch scope over the target branch before resolving the audience
+	or fan-out, so a forged request cannot publish cross-subtree. Org Admin /
+	Auditor (global-branch roles) pass; a Branch Admin / Group Leader passes
+	only for branches inside their materialized User-Permission subtree.
+
+	Under plain pytest (no bench) there is no Frappe session, so the assertion
+	is a no-op — the same hexagonal escape as :func:`flock_os.permissions._session_user`.
+	The deny-path itself is pinned in :mod:`flock_os.tests.test_tenant_isolation`
+	against the underlying :func:`flock_os.permissions.assert_branch_scope` guard.
+	"""
+	try:
+		import frappe
+	except Exception:  # noqa: BLE001 - no bench under pytest; assertion is a no-op
+		return
+	user = frappe.session.user if getattr(frappe, "session", None) else ""
+	if not user:
+		return
+	perms.assert_branch_scope(
+		doc_branch=branch,
+		user=user,
+		gateway=perms.get_gateway(),
+	)
+
+
+#: Installable author-scope guard. Production wires
+#: :func:`_frappe_author_branch_scope` (the default); tests install a no-op via
+#: :func:`install_author_scope_guard` so the pure scheduling logic stays
+#: decoupled from permission-gateway wiring (same discipline as ``install_gateway``).
+_author_scope_guard = _frappe_author_branch_scope
+
+
+def install_author_scope_guard(guard) -> object:  # type: ignore[no-untyped-def]
+	"""Install a custom author-scope guard (tests) and return it.
+
+	Pass a no-op (``lambda branch: None``) to exercise the pure scheduling
+	logic without a permission gateway; restore the default
+	(:func:`_frappe_author_branch_scope`) in a ``finally`` block.
+	"""
+	global _author_scope_guard
+	_author_scope_guard = guard
+	return guard
+
+
+def _assert_author_branch_scope(branch: str) -> None:
+	"""Run the installed author-scope guard (default: frappe-backed)."""
+	_author_scope_guard(branch)
+
+
+# ---------------------------------------------------------------------------- #
 # Admin controller — the @frappe.whitelist() surface FLO-60 wires its UI against
 # (FLO-8 §8). compose/preview-audience/send, calling fanout_scoped_notification
 # (FLO-57) on publish. Server-side scope validation runs on every mutating call.
@@ -331,6 +386,7 @@ def preview_audience(organization: str, branch: str, group: str | None = None) -
 	}
 	gateway = get_gateway()
 	validate_announcement_scope(announcement, gateway)
+	_assert_author_branch_scope(branch)
 	branches = resolve_audience_branches(branch, gateway=gateway)
 	return {"branches": list(branches), "branch_count": len(branches)}
 
@@ -354,6 +410,7 @@ def publish_announcement(name: str) -> dict[str, Any]:
 	doc = frappe.get_doc("Flock Announcement", name)
 	gateway = get_gateway()
 	validate_announcement_scope(doc, gateway)
+	_assert_author_branch_scope(doc.branch)
 
 	current = doc.status or STATUS_DRAFT
 	# Draft/Scheduled -> Publishing -> Published (FLO-8 §3 lifecycle).
@@ -423,6 +480,7 @@ def schedule_announcement(name: str) -> dict[str, Any]:
 	# Validate under the target status so the scheduled_at rule fires.
 	doc.status = STATUS_SCHEDULED
 	validate_announcement_scope(doc, gateway)
+	_assert_author_branch_scope(doc.branch)
 	validate_status_transition(STATUS_DRAFT, STATUS_SCHEDULED)
 
 	doc.status = STATUS_SCHEDULED

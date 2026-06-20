@@ -218,14 +218,34 @@
    "submit": 1,
    "write": 1
   },
-  {
-   "permlevel": 0,
-   "read": 1,
-   "report": 1,
-   "role": "Flock Org Admin",
-   "submit": 1,
-   "write": 1
-  },
+   {
+    "permlevel": 1,
+    "read": 1,
+    "report": 1,
+    "role": "System Manager",
+    "write": 1
+   },
+   {
+    "permlevel": 1,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Org Admin",
+    "write": 1
+   },
+   {
+    "permlevel": 1,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Branch Admin",
+    "write": 1
+   },
+   {
+    "permlevel": 1,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Group Leader",
+    "write": 1
+   },
   {
    "create": 1,
    "email": 1,
@@ -259,13 +279,46 @@
    "report": 1,
    "role": "Flock Member"
   },
-  {
-   "permlevel": 0,
-   "read": 1,
-   "report": 1,
-   "role": "Flock Auditor"
-  }
- ],
+   {
+    "permlevel": 0,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Auditor"
+   },
+   {
+    "permlevel": 2,
+    "read": 1,
+    "report": 1,
+    "role": "System Manager",
+    "write": 1
+   },
+   {
+    "permlevel": 2,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Org Admin",
+    "write": 1
+   },
+   {
+    "permlevel": 2,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Branch Admin",
+    "write": 1
+   },
+   {
+    "permlevel": 2,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Group Leader"
+   },
+   {
+    "permlevel": 2,
+    "read": 1,
+    "report": 1,
+    "role": "Flock Auditor"
+   }
+  ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

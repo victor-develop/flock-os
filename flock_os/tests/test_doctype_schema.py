@@ -311,14 +311,22 @@ def test_flock_branch_admin_scope_drives_up_sync(perm_schemas):
 		_field(doc, fld)
 
 
-def test_flock_branch_admin_scope_branch_admin_can_manage(perm_schemas):
-	# A Branch Admin manages their own scope rows (CRUD) — the self-service path
-	# for the native branch-axis UP sync.
+def test_flock_branch_admin_scope_branch_admin_is_read_only(perm_schemas):
+	# FLO-290 §1 (privilege-escalation fix): the Branch Admin Scope table
+	# materializes a user's branch subtree into User Permission rows on
+	# validate. Granting Flock Branch Admin create/write/delete here would let a
+	# scoped admin widen their own (or anyone's) root → see every branch. So the
+	# Branch Admin is read-only here; only Org Admin + System Manager manage
+	# scopes. (Previously this asserted CRUD — that was the escalation surface.)
 	doc = perm_schemas["Flock Branch Admin Scope"]
-	by_role = {p["role"]: p for p in doc["permissions"]}
-	assert by_role["Flock Branch Admin"]["create"] == 1
-	assert by_role["Flock Branch Admin"]["write"] == 1
-	assert by_role["Flock Branch Admin"]["delete"] == 1
+	by_role = {p["role"]: p for p in doc["permissions"] if p.get("permlevel", 0) == 0}
+	assert by_role["Flock Branch Admin"].get("read") == 1
+	assert by_role["Flock Branch Admin"].get("report") == 1
+	for cap in ("create", "write", "delete", "share", "set_user_permissions"):
+		assert by_role["Flock Branch Admin"].get(cap, 0) == 0
+	# Org Admin + System Manager remain the trusted scope managers.
+	assert by_role["Flock Org Admin"]["write"] == 1
+	assert by_role["System Manager"]["write"] == 1
 
 
 # --------------------------------------------------------------------------- #
