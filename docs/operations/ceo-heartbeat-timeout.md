@@ -5,7 +5,7 @@ Owner: DevOps Engineer · Related: [CEO Silent Run Analysis](../architecture/ceo
 This runbook defines the **timeout policy** that caps how long a single CEO
 heartbeat run may stay active, and the **watchdog** that enforces it. It is the
 platform-level bound referenced by the [monitoring](ceo-heartbeat-monitoring.md)
-(FLO-266) and [recovery](ceo-recovery-runbook.md) (FLO-267) runbooks. It is
+(FLO-266) and [recovery](agent-liveness-recovery-runbook.md) (FLO-267 / FLO-395) runbooks. It is
 self-contained and works independently of those layers.
 
 ## Why this exists

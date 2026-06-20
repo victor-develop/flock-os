@@ -1,0 +1,1 @@
+# Agent-liveness recovery operator tooling — generalized recovery-owner resolution + verdict/recovery-plan logic for any senior agent (FLO-395). Reuses the CEO heartbeat detection primitives from `tools/ops/ceo_heartbeat/`. Not shipped with the Frappe app; see `docs/operations/agent-liveness-recovery-runbook.md`.
