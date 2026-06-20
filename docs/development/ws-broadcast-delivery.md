@@ -410,6 +410,31 @@ locally de-risks the 15k question before any cloud spend.
 > wirings baked in). If Docker is not installed, fall back to the host nginx
 > tier + `sudo sysctl` below.
 
+> **Running k6 for a clean full-15k (empirical, FLO-347).** The docker network
+> clears ceiling #1 on the *server* side (LB↔backend hop), but a k6 generator on
+> the **host** still crosses macOS loopback to reach the published port, so its
+> 15k outbound connections hit the *client*-side ephemeral-port ceiling (same
+> `EADDRNOTAVAIL`). `docker-ws-tier.sh` therefore renders an extra nginx server
+> block (listen `:8100` → proxy to `web`) so k6 can run **inside** the docker
+> network on one hostname (`ws-lb`) for both WS (`:9000`) and the auth callback
+> (`:8100`), clearing the client side too — no `sudo sysctl`:
+>
+> ```bash
+> docker run --rm --network flock-ws_backend -v "$PWD/load":/load grafana/k6 run \
+>   -e WS_VUS=15000 -e WS_DURATION_SEC=120 \
+>   -e WS_BASE_URL=ws://ws-lb:9000 -e BASE_URL=http://ws-lb:8100 -e WS_ORIGIN=http://ws-lb:8100 \
+>   -e FLOCK_USER=leader@flock.os -e FLOCK_PASSWORD=<smoke-leader-pw> -e SITE=flock_os.localhost \
+>   /load/ws_event_room.js
+> ```
+>
+> The connection-setup wall is cleared either way (established connects p95 ≈
+> 150–230 ms at 15k). But **sustaining** 15k live sockets needs real compute: a
+> single local Colima VM (even 6 vCPU / 24 GB) OOMs/crashes under 15k concurrent
+> WS + reconnect churn. Treat the local docker tier as the *topology* +
+> small-scale validation; run the clean full-15k on a staging/prod host (real
+> compute) or a heftier machine. Functional validation (200 VUs: connect p95 ≈
+> 27 ms, `receive_errors` 0, 100% sessions, all k6 thresholds pass) is clean.
+
 ### Running the clean full-15k §8 gate
 
 The infra above is what ships to the real event. A **clean full-15k** run needs
