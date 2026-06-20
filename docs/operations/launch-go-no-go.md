@@ -1,16 +1,32 @@
-# Launch go/no-go readiness gate — Flock OS (FLO-332 Phase 6.2)
+# Launch go/no-go readiness gate — Flock OS (FLO-357 / FLO-332 — Phase 6.2)
+
+> **Definition owner:** [FLO-357](/FLO/issues/FLO-357) (no-board signal catalog +
+> sign-off card slice). **Originated by:** [FLO-332](/FLO/issues/FLO-332)
+> (VM-independent gate + migration runbook). This document is the canonical gate
+> definition; both issues converge here.
+
+> **Automated companion:** [`scripts/launch-gate.sh`](../../scripts/launch-gate.sh)
+> ([FLO-354](/FLO/issues/FLO-354)) machine-checks every criterion below that has
+> repo-local evidence (merge gate, artifact presence, coverage floor, migration
+> debt, realtime tier) and prints the human/cloud/board items as reminders. This
+> document is the human sign-off checklist; the script is its automation. **Green
+> script + the four signatures below == GO.** Run `scripts/test_launch_gate_hygiene.sh`
+> to regression-test the script's own invariants.
 
 > The sign-off checklist **DevOps + QA + CEO** walk together before promoting the
-> first **real** event to production. Every Phase 6.1 (deploy pipeline) and 6.2
-> (launch-readiness hardening) prerequisite is a line item with an **owner** and
-> **done-criteria**. If every box is checked, the launch is a **go**. If any
-> **no-go condition** (§"No-go conditions") holds, the launch is a **no-go** —
-> fix the item and re-walk this gate.
+> first **real** event to production. The **Signal catalog** (next section) lists
+> every pre-launch signal with its **target** and **source script/run**; §1 is
+> the issue-oriented prerequisite list; §2 is the merge-gate/coverage bar. If
+> every box is checked, the launch is a **go**. If any **no-go condition**
+> (§"No-go conditions") holds, the launch is a **no-go** — fix the item and
+> re-walk this gate.
 >
-> **This gate is VM-independent as a document** (it can be drafted and reviewed
-> before infra exists) but **the launch itself is gated on real evidence**:
-> green smokes, a green restore drill, and the three signatures. Stubs/TODOs in
-> the runbooks are no-go on their own.
+> **This gate definition is VM-independent and no-board** (drafted and
+> CEO-reviewed with zero cloud spend, no approval required — see
+> [FLO-357](/FLO/issues/FLO-357)), but **the launch itself is gated on real
+> evidence**: green smokes, a green restore drill, the §8 scale SLOs reproduced
+> at 15k, and the three signatures. Stubs/TODOs in the runbooks are no-go on
+> their own.
 
 ## TL;DR — the decision
 
@@ -22,6 +38,56 @@
 | **Architect** | Topology + migration + realtime tier proven; this checklist is complete + accurate | (gate author) |
 
 **A launch needs all four.** A missing signature is a no-go.
+
+## Signal catalog — every pre-launch signal, target, source
+
+> The single source of truth for **what is measured** before launch. Each signal
+> names its **target** and the **source script/run** that produces the evidence.
+> Consumes the [FLO-347](/FLO/issues/FLO-347) §8 scale targets and the
+> [FLO-350](/FLO/issues/FLO-350) migration-drift + restore-drill outputs — it
+> does **not** rebuild them. The [FLO-354](/FLO/issues/FLO-354)
+> `scripts/launch-gate.sh` companion automates the rows that have repo-local
+> evidence; the rest are produced at the go/no-go meeting from the cited run.
+
+### Coverage & correctness (hold on every deploy)
+
+| # | Signal | Target | Source script/run | Owner | Gate § |
+|---|--------|--------|-------------------|-------|--------|
+| S1 | Branch coverage at promoted tag | **≥ 91.29%** (current measured bar — do not regress) | [`scripts/qa-gate.sh`](../../scripts/qa-gate.sh) → `pytest flock_os/tests/` + `[tool.coverage.report]` in [`pyproject.toml`](../../pyproject.toml) (`fail_under = 80` is the ratchet floor, not the launch bar) | QA | §2 |
+| S2 | Permission matrix | green — no SEC-1..SEC-6 regression across the role × DocType × position matrix | [`docs/security/permission-audit.md`](../security/permission-audit.md) matrix test ([FLO-290](/FLO/issues/FLO-290)) | Arch | §1b |
+| S3 | Lint + format gate | green | `ruff check` → `ruff format --check` (via `scripts/qa-gate.sh` / `.github/workflows/ci.yml`) | QA | §2 |
+
+### Scale — the §8 targets reproduced at 15k ([FLO-347](/FLO/issues/FLO-347))
+
+> Run via `k6 run -e WS_VUS=15000 -e WS_DURATION_SEC=120 -e WS_BASE_URL=ws://<lb-host>:9000 load/ws_event_room.js` against the prod-shape nginx WS-upgrade LB tier (`scripts/dev/scale-socketio.sh --lb nginx`). The k6 thresholds in `load/ws_event_room.js` already enforce S4–S6 (`p(95)<1000`, `count==0`); the gate asserts the run **ended clean** (k6 exit 0) and the summary JSON is archived.
+
+| # | Signal | Target | Source script/run | Owner | Gate § |
+|---|--------|--------|-------------------|-------|--------|
+| S4 | WS connect p95 @ 15k concurrent | **< 1 s** | k6 metric `flock_ws_connect_duration` (threshold `p(95)<1000`), `load/ws_event_room.js` @ `WS_VUS=15000` | DevOps | §1a / no-go #9 |
+| S5 | WS broadcast p95 @ 15k concurrent | **< 1 s** | k6 metric `flock_ws_broadcast_latency` (threshold `p(95)<1000`), same run | DevOps | §1a / no-go #9 |
+| S6 | `flock_ws_receive_errors` @ 15k | **== 0** | k6 Counter (threshold `count==0`), same run | DevOps | no-go #9 |
+| S7 | Sessions established @ 15k | **100%** | k6 VU connect success from the same run summary | DevOps | no-go #9 |
+| S8 | Realtime tier process count post-migrate | **N** socketio workers (not collapsed to 1) | `supervisorctl status socketio-tier` — see [`migration-runbook.md` §4b/§6](migration-runbook.md#6-the-realtime-tier-across-migrations) | DevOps | no-go #3 |
+
+### Migration & restore safety ([FLO-350](/FLO/issues/FLO-350) / [FLO-288](/FLO/issues/FLO-288))
+
+| # | Signal | Target | Source script/run | Owner | Gate § |
+|---|--------|--------|-------------------|-------|--------|
+| S9 | Migration-drift gate | **green** (no orphan / dangling / duplicate / `execute()`-less patches) | `.github/workflows/ci.yml` "Migration drift gate" step → [`flock_os/tests/test_migration_drift.py`](../../flock_os/tests/test_migration_drift.py) | Arch | no-go #10 |
+| S10 | Restore drill | **exit 0** against a real backup; row-count parity across every `Flock %` DocType | [`scripts/dev/restore-drill.sh`](../../scripts/dev/restore-drill.sh) ([`backup-restore.md`](backup-restore.md)) | DevOps | no-go #1 |
+| S11 | `--skip-failing` migration debt | none carried into launch (or recorded + follow-up issue filed) | `bench migrate` log; see [`migration-runbook.md` §3](migration-runbook.md#--skip-failing--the-escape-hatch-not-the-default) | Arch | no-go #4 |
+
+### Deploy, smoke & runtime protection
+
+| # | Signal | Target | Source script/run | Owner | Gate § |
+|---|--------|--------|-------------------|-------|--------|
+| S12 | Staging smoke at promoted tag | **`SMOKE: PASS`** (HTTP/TLS + `ping`→`pong` + WS handshake) | [`scripts/deploy/smoke-staging.sh`](../../scripts/deploy/smoke-staging.sh) ([FLO-250](/FLO/issues/FLO-250)) | DevOps | no-go #2 |
+| S13 | Edge rate-limit | active on registration + realtime-connect (Cloudflare) | Cloudflare WAF rule ([FLO-294](/FLO/issues/FLO-294)); complements the app limiter ([FLO-319](/FLO/issues/FLO-319)) | DevOps | no-go #5 |
+| S14 | Dedicated adapter Redis in prod | present (separate from cache Redis) | prod topology ([FLO-245](/FLO/issues/FLO-245) / [FLO-127](/FLO/issues/FLO-127) §2) | DevOps | no-go #6 |
+| S15 | Observability exercised | dashboards reachable; **≥1 alert fired-and-handled** pre-launch | [FLO-266](/FLO/issues/FLO-266) monitoring | DevOps | §1e |
+
+> **Business signals** (launch partner named + onboarded, budget approved, launch
+> date set) are CEO-held and listed in §3 — they are not script-checkable.
 
 ## 1. Prerequisites — every Phase 6.1 / 6.2 item, owner + done-criteria
 
@@ -69,10 +135,12 @@
 | Item | Owner | Done-criteria | Status |
 |------|-------|---------------|--------|
 | [FLO-288](/FLO/issues/FLO-288) Backup & restore drill + runbook | DevOps | [`docs/operations/backup-restore.md`](backup-restore.md) current; `restore-drill.sh` → exit 0 on a **real** (seeded) backup; row-count parity holds across every `Flock %` DocType | **done** |
-| [FLO-332](/FLO/issues/FLO-332) Production migration runbook + this go/no-go gate | Arch | [`migration-runbook.md`](migration-runbook.md) covers pre-migrate backup → `bench migrate` (`--skip-failing` rules) → verify → rollback; this checklist covers every 6.1/6.2 prerequisite | **in_progress** (this issue) |
+| [FLO-332](/FLO/issues/FLO-332) Production migration runbook + this go/no-go gate | Arch | [`migration-runbook.md`](migration-runbook.md) covers pre-migrate backup → `bench migrate` (`--skip-failing` rules) → verify → rollback; this checklist covers every 6.1/6.2 prerequisite | **done** |
+| [FLO-357](/FLO/issues/FLO-357) Launch go/no-go gate definition (signal catalog + sign-off card) | PM | signal catalog (S1–S15) maps every pre-launch signal → target → source; sign-off card names owners + evidence; no-go conditions explicit | **done** |
 
 - [ ] FLO-288 — drill green against a real backup; archive path + off-host copy proven.
 - [ ] FLO-332 — both docs committed; migration runbook references [FLO-245](/FLO/issues/FLO-245) + [FLO-288](/FLO/issues/FLO-288).
+- [ ] FLO-357 — signal catalog + sign-off card + no-go conditions present and CEO-reviewed.
 
 ### 1e. Observability (Phase 6.2)
 
@@ -93,10 +161,11 @@ ratchet (`fail_under = 80` in `pyproject.toml`).
 - [ ] `master` is green — `.github/workflows/ci.yml` lint + test gate passes on
       the promoted tag.
 - [ ] QA gate (`scripts/qa-gate.sh`) is green at the promoted tag — i.e. all four
-      checks above pass, and branch coverage is **≥ 80%** (the ratchet floor; the
-      foundation currently measures ~91% actual). This 80% is the launch coverage
-      bar — do not promote below it.
-- [ ] No `--skip-failing` migration debt carried into launch (see
+      checks above pass, and branch coverage is **≥ 91.29%** (the current
+      measured bar — do not regress; this is signal S1). The `fail_under = 80`
+      ratchet floor in `pyproject.toml` is the CI backstop, **not** the launch
+      bar — do not promote below 91.29% even though CI stays green at 80%.
+- [ ] No `--skip-failing` migration debt carried into launch (signal S11; see
       [`migration-runbook.md` §3](migration-runbook.md#--skip-failing--the-escape-hatch-not-the-default)).
 - [ ] This checklist matches the live issue statuses (no item marked "done" that
       the thread shows as open). QA validates this row before signing.
@@ -130,6 +199,14 @@ ratchet (`fail_under = 80` in `pyproject.toml`).
    the 15k burst.
 7. **The launch partner is not named / onboarded.** A load test is not a launch.
 8. **A required signature (DevOps / QA / CEO) is missing.**
+9. **Any §8 scale target is missed at 15k** ([FLO-347](/FLO/issues/FLO-347)):
+   WS connect p95 ≥ 1s, WS broadcast p95 ≥ 1s, `flock_ws_receive_errors` > 0,
+   or sessions < 100% (signals S4–S7). A regression here means the prod tier
+   cannot carry the first real event — re-provision the LB/adapter tier and
+   re-run `load/ws_event_room.js` clean before promoting.
+10. **The migration-drift gate is red** (signal S9). An orphan, dangling, or
+    `execute()`-less patch ships a silently-broken `bench migrate` to prod
+    ([FLO-350](/FLO/issues/FLO-350)). Fix the registry and re-run the CI gate.
 
 ## Sign-off block
 
@@ -169,6 +246,11 @@ run:
 ## Related
 
 - Parent strategy: [FLO-231](/FLO/issues/FLO-231) (Phase 6 — Production Launch).
+- Gate definition owner: [FLO-357](/FLO/issues/FLO-357) (signal catalog + sign-off card).
+- Gate origin: [FLO-332](/FLO/issues/FLO-332) (VM-independent gate + migration runbook).
+- Automated companion: [`scripts/launch-gate.sh`](../../scripts/launch-gate.sh) ([FLO-354](/FLO/issues/FLO-354)).
+- Scale targets (signals S4–S8): [FLO-347](/FLO/issues/FLO-347) §8 — clean 15k WS gate.
+- Hardening (signals S9–S11): [FLO-350](/FLO/issues/FLO-350) — migration-drift + restore drill.
 - Production target ADR: [FLO-245](/FLO/issues/FLO-245).
 - Migration runbook: [`migration-runbook.md`](migration-runbook.md).
 - Backup & restore drill: [`backup-restore.md`](backup-restore.md) ([FLO-288](/FLO/issues/FLO-288)).
