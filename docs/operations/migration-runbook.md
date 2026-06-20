@@ -145,6 +145,39 @@ bench --site "$SITE_NAME" migrate --skip-failing 2>&1 | tee /tmp/migrate-$(date 
 grep -iE 'FAIL|skip|error' /tmp/migrate-*.log | tail -20
 ```
 
+### CI migration-drift gate
+
+A merge gate — [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+**"Migration drift gate"** step, backed by
+[`flock_os/tests/test_migration_drift.py`](../../flock_os/tests/test_migration_drift.py)
+— fails any PR/merge that lets the committed patch registry drift from the
+patch modules that ship. It is **static + plain-pytest** (no Frappe/bench
+required), consistent with the project-level gate philosophy, so it runs on
+every push. It catches the migration failures that are otherwise *silent* at
+runtime:
+
+| Drift failure | What it is | Why it matters |
+|---------------|------------|----------------|
+| **Orphan patch** | a `flock_os/patches/vX_Y/<name>.py` module exists but is **not** registered in `patches.txt` | `bench migrate` silently skips it; the index / fixture / data fix it carries never lands on prod (the classic "added the file, forgot to register it" bug) |
+| **Dangling entry** | `patches.txt` lists a patch whose module file does not exist (typo, rename, bad merge) | `bench migrate` raises `ImportError` mid-run and aborts on prod |
+| **Duplicate registration** | a patch listed twice across sections | runs twice on every migrate (double-seed / double-index attempt); copy-paste merge smell |
+| **Missing `execute()`** | a registered module has no top-level `execute` callable | violates the Frappe patch contract; `bench migrate` cannot run it |
+
+> **This is the Level-1 (static) gate.** The heavier **Level-2** gate — a full
+> `bench migrate` against a throwaway MariaDB service container that proves the
+> patches actually apply cleanly — is staged behind the deploy pipeline
+> ([FLO-246](/FLO/issues/FLO-246)), which brings the bench + container
+> infrastructure. Level-1 already closes the silent-drift hole (the failure mode
+> that ships a broken migrate without any error); Level-2 adds runtime proof.
+
+When you add or change a patch:
+
+1. Create `flock_os/patches/vX_Y/<name>.py` with a top-level `execute()`.
+2. Register it under `[post_model_sync]` in `flock_os/patches.txt` (or
+   `[pre_model_sync]` only if it must run before DocType tables exist — none of
+   the current Flock patches qualify; see the registry header comment).
+3. Push — the drift gate proves registry ↔ files agree before merge.
+
 ## 4. Post-migrate verification
 
 A migrate is not done until the site is proven healthy. In order:

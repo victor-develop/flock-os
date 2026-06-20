@@ -47,6 +47,18 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+      # Migration-drift gate (FLO-350 Phase 6.2): fails the merge gate whenever
+      # the committed patch registry drifts from the patch modules that ship.
+      # Static + plain-pytest (no Frappe/bench): catches orphan patches (a file
+      # not registered in patches.txt that `bench migrate` would silently skip),
+      # dangling entries (would ImportError mid-migrate), duplicate registrations,
+      # and modules missing the Frappe `execute()` contract. The full Level-2
+      # throwaway-DB `bench migrate` gate is staged behind the deploy pipeline
+      # ([FLO-246]) which brings the bench infrastructure — see
+      # docs/operations/migration-runbook.md §"CI migration-drift gate".
+      - name: Migration drift gate
+        run: pytest flock_os/tests/test_migration_drift.py -v
+
       # Coverage ratchet over the project-testable pure domain logic
       # ([tool.coverage.*] in pyproject.toml; bench-integration surface omitted).
       # Run only git-tracked test files — mirrors scripts/qa-gate.sh so "green
