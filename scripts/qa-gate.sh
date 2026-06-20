@@ -15,6 +15,12 @@
 #                                  logic; bench-integration surface omitted —
 #                                  fail_under configured in pyproject.toml). A
 #                                  drop below the floor blocks the merge.
+#   [5/5] pytest tools/ ops tests (operator tooling outside the flock_os app
+#                                  package — e.g. the CEO heartbeat monitor,
+#                                  FLO-266, relocated to tools/ops/ by FLO-285.
+#                                  Kept separate from [4/4] so the flock_os
+#                                  coverage ratchet measures only the app's
+#                                  pure domain logic, not operator tooling.)
 #
 # Frappe-level integration tests (doctype test_*.py that import frappe) are out
 # of scope here — they run via `bench run-tests` against a real site, matching
@@ -46,6 +52,16 @@ echo "------------------------"
 # aborting the whole suite's collection. (Architect directive, FLO-21.)
 tracked_tests() {
 	git ls-files -z 'flock_os/tests/test_*.py' | while IFS= read -r -d '' f; do
+		[ -f "$f" ] && printf '%s\0' "$f"
+	done
+}
+
+# Operator-tooling tests outside the flock_os app package (e.g. the CEO heartbeat
+# monitor at tools/ops/ceo_heartbeat/, FLO-266 / FLO-285). Same tracked-files
+# discipline as tracked_tests(): untracked WIP is excluded (CI parity), and a
+# tracked file deleted mid-refactor is skipped rather than aborting collection.
+tracked_ops_tests() {
+	git ls-files -z 'tools/**/tests/test_*.py' | while IFS= read -r -d '' f; do
 		[ -f "$f" ] && printf '%s\0' "$f"
 	done
 }
@@ -136,6 +152,19 @@ else
 	echo "[4/4] FAIL"; fail=1
 fi
 rm -f "$COVRC"
+
+echo "==> [5/5] pytest — operator tooling tests (tools/ops, TRACKED files only)"
+# Operator tooling lives outside the flock_os Frappe app package by design
+# (architect FLO-283 Option b — the CEO heartbeat monitor is operator tooling,
+# not app domain code, FLO-266/FLO-285). Its tests still must be enforced in the
+# merge gate + CI, so a detection-math regression can never land silently. Run
+# separately from [4/4] so the flock_os coverage ratchet measures only the app's
+# pure domain logic. Same -p no:cacheprovider + tracked-files parity as [3/4].
+if tracked_ops_tests | xargs -0 pytest -p no:cacheprovider -q; then
+	echo "[5/5] OK"
+else
+	echo "[5/5] FAIL"; fail=1
+fi
 
 echo "------------------------"
 if [[ $fail -eq 0 ]]; then

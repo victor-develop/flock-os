@@ -7,7 +7,17 @@
     "model": "zai-coding-plan/glm-5.2",
     "repo": "git@github.com:victor-develop/flock-os.git",
     "workspace": "/Users/mac/opencode-workspace-default/flock-os",
-    "heartbeat": "CEO @ */15 * * * * (coalesce_if_active, skip_missed)"
+    "heartbeat": "CEO @ */15 * * * * (coalesce_if_active, skip_missed)",
+    "heartbeatConfig": {
+      "agent": "ceo",
+      "cron": "*/15 * * * *",
+      "concurrencyPolicy": "coalesce_if_active",
+      "catchUpPolicy": "skip_missed",
+      "timeoutSeconds": 720,
+      "timeoutAction": "terminate",
+      "graceSeconds": 60,
+      "watchdog": "scripts/dev/ceo-heartbeat-watchdog.py"
+    }
   },
   "org": [
     { "role": "ceo",                  "title": "Chief Executive Officer",        "reportsTo": null,            "budgetCents": 4000, "instructions": ".paperclip/agents/ceo.md" },
