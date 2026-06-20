@@ -41,10 +41,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 		libmariadb-dev \
 		pkg-config \
 		redis-tools \
+		redis-server \
 		nodejs \
 		npm \
 		ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
+
+# Frappe v15 builds its assets with yarn (not npm); install it globally. Node's
+# npm ships with the nodejs package above.
+RUN npm install -g yarn
 
 # frappe-bench (the CLI) drives init/get-app/new-site the same way bootstrap.sh
 # does on the host. Pinned via pip so the bench layout matches the host setup.
@@ -79,10 +84,27 @@ COPY --chown=frappe:frappe . /tmp/flock_os
 RUN "$HOME/frappe-bench/env/bin/python" -m pip install -q -e /tmp/flock_os \
 	&& if [ ! -e apps/flock_os ]; then ln -s /tmp/flock_os apps/flock_os; fi
 
-# Declare flock_os in apps.txt so `bench` loads it (get-app normally writes
-# this; the symlink path bypasses get-app so we do it explicitly).
-RUN mkdir -p sites && printf 'flock_os\n' >> sites/apps.txt 2>/dev/null || \
-	printf 'flock_os\n' > sites/apps.txt
+# Declare flock_os as a registered bench app. Newer frappe-bench reads
+# sites/apps.json (not apps.txt) as the app registry, and bench init populates
+# it with ONLY frappe. Without flock_os in apps.json, `new-site --install-app
+# flock_os` silently skips flock_os and migrate never applies its doctypes
+# (the §8 gate's branch-scope join + the gathering-smoke fixture both depend on
+# them). Merge flock_os in deterministically (the symlink + pip -e install
+# above make the module importable; this makes bench/frappe recognize it).
+RUN cd /home/frappe/frappe-bench && env/bin/python - <<'PY'
+import json
+p = "sites/apps.json"
+d = json.load(open(p))
+if "flock_os" not in d:
+	d["flock_os"] = {
+		"resolution": {"commit_hash": None, "branch": None},
+		"required": [],
+		"idx": max((v.get("idx", 0) for v in d.values()), default=0) + 1,
+		"version": "0.0.1",
+	}
+json.dump(d, open(p, "w"), indent=4)
+PY
+RUN mkdir -p sites && grep -qx flock_os sites/apps.txt 2>/dev/null || printf 'flock_os\n' >> sites/apps.txt
 
 # Node deps for the scaled realtime tier: @socket.io/redis-adapter lives in the
 # flock_os app root (repo root) so the realtime modules resolve it via Node's

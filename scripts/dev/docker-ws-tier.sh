@@ -131,7 +131,7 @@ render_workers() {
 			cat <<YAML
   socketio-$i:
     image: \${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
-    env_file: [docker/.env.docker]
+    env_file: [.env.docker]
     environment:
       DB_HOST: mariadb
       DB_PORT: "3306"
@@ -143,6 +143,13 @@ render_workers() {
       FLOCK_SIO_ADAPTER_REDIS: redis://redis-adapter:6379
       FRAPPE_SOCKETIO_PORT: "9000"
     command: ["bash", "-lc", "node apps/frappe/socketio.js"]
+    # Each worker holds ~VUs/N concurrent sockets; raise nofile so the 15k gate
+    # never hits a per-process fd ceiling (the macOS loopback ceiling this tier
+    # clears is about ephemeral ports, but fd limits are a separate cap).
+    ulimits:
+      nofile: {soft: 1048576, hard: 1048576}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
     depends_on:
       init: {condition: service_completed_successfully}
     networks: [backend]
@@ -153,8 +160,16 @@ YAML
 	log "rendered $n socketio worker service(s) -> $WORKERS_FILE"
 }
 
-compose_args() {
-	printf -- '-f\0%s\0-f\0%s\0' "$COMPOSE_FILE" "$WORKERS_FILE"
+# docker compose invocation with both files + the env file. Direct -f flags
+# (not xargs/NUL: bash strips NULs in command substitution, which silently
+# concatenates the paths into one bogus -f argument). The worker overlay is
+# always present after render_workers(); --env-file supplies the interpolation
+# vars (${MARIADB_ROOT_PASSWORD:?} etc.) that compose can't read from the
+# services' own `env_file:` (that is container-runtime env, not interpolation).
+dc() {
+	local -a f=("-f" "$COMPOSE_FILE")
+	[[ -f "$WORKERS_FILE" ]] && f+=("-f" "$WORKERS_FILE")
+	docker compose "${f[@]}" --env-file "$ENV_FILE" "$@"
 }
 
 cmd_up() {
@@ -165,8 +180,7 @@ cmd_up() {
 	render_nginx "$n"
 	render_workers "$n"
 	log "bringing the tier up ($n socketio worker(s)) — first run builds the image ..."
-	# shellcheck disable=SC2086
-	xargs -0 docker compose $(compose_args) up -d
+	dc up -d --build
 	echo
 	log "tier starting. WS endpoint: ws://flock_os.localhost:${WS_LB_HOST_PORT:-9000}"
 	log "check readiness: $PROG status    | run the gate: $PROG gate"
@@ -176,22 +190,13 @@ cmd_down() {
 	require_docker
 	local remove_volumes=0
 	[[ "${1:-}" == "-v" ]] && remove_volumes=1
-	# The overlay may be absent on a fresh checkout; fall back to base compose.
-	local -a args=("-f" "$COMPOSE_FILE")
-	[[ -f "$WORKERS_FILE" ]] && args+=("-f" "$WORKERS_FILE")
-	if (( remove_volumes )); then
-		docker compose "${args[@]}" down -v
-	else
-		docker compose "${args[@]}" down
-	fi
+	if (( remove_volumes )); then dc down -v; else dc down; fi
 	log "tier down."
 }
 
 cmd_status() {
 	require_docker
-	local -a args=("-f" "$COMPOSE_FILE")
-	[[ -f "$WORKERS_FILE" ]] && args+=("-f" "$WORKERS_FILE")
-	docker compose "${args[@]}" ps
+	dc ps
 	echo
 	local lb_port="${WS_LB_HOST_PORT:-9000}"
 	if nc -z 127.0.0.1 "$lb_port" 2>/dev/null; then
@@ -205,9 +210,7 @@ cmd_logs() {
 	require_docker
 	local svc="${1:-ws-lb}"
 	shift || true
-	local -a args=("-f" "$COMPOSE_FILE")
-	[[ -f "$WORKERS_FILE" ]] && args+=("-f" "$WORKERS_FILE")
-	docker compose "${args[@]}" logs -f "$svc" "$@"
+	dc logs -f "$svc" "$@"
 }
 
 # Run the k6 §8 gate against the live tier and capture the full evidence bundle
@@ -220,26 +223,39 @@ cmd_gate() {
 	local vus="${1:-${FLOCK_GATE_VUS:-15000}}"
 	local dur="${FLOCK_GATE_DURATION_SEC:-120}"
 	local lb_port="${WS_LB_HOST_PORT:-9000}"
+	local web_port="${WEBSERVER_HOST_PORT:-8000}"
 	local site="${SITE_NAME:-flock_os.localhost}"
 	local ts outdir
 	ts="$(date -u +%Y%m%dT%H%M%SZ)"
 	outdir="$REPO_ROOT/load/telemetry/${ts}-docker"
 	mkdir -p "$outdir"
 
-	log "running §8 gate: $vus VUs x ${dur}s -> ws://$site:$lb_port"
+	log "running §8 gate: $vus VUs x ${dur}s -> ws://$site:$lb_port (web auth on :$web_port)"
 	if ! nc -z 127.0.0.1 "$lb_port" 2>/dev/null; then
 		err "ws-lb not reachable on :$lb_port — start the tier first: $PROG up"
 		exit 1
 	fi
 
-	# The k6 smoke defaults (load/config.js) already target ws://<site>:9000 with
-	# the right namespace + auth, so only VUs/duration need overriding. The
-	# summary JSON + a full stdout capture are the gate evidence.
-	k6 run -e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+	# Point k6 at this tier's published ports: WS -> ws-lb, HTTP login + the
+	# realtime auth Origin -> web. The Origin port MUST match the web container's
+	# internal listen port (WEBSERVER_PORT == WEBSERVER_HOST_PORT in the default
+	# env) so the socketio worker's get_user_info callback resolves back to the
+	# web container via the flock_os.localhost network alias.
+	local base_url="http://$site:$web_port"
+	local ws_origin="$base_url"
+	local ws_url="ws://$site:$lb_port"
+
+	# The k6 smoke defaults (load/config.js) already target ws://<site>:9000;
+	# override the ports for a non-default web/LB mapping. The summary JSON +
+	# a full stdout capture are the gate evidence.
+	k6 run \
+		-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+		-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
 		"$REPO_ROOT/load/ws_event_room.js" 2>&1 | tee "$outdir/k6-run.log" || true
 
-	# k6 emits a JSON summary when --out is passed; capture it explicitly too.
-	k6 run -e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+	k6 run \
+		-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+		-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
 		--out "json=$outdir/k6-summary.json" \
 		"$REPO_ROOT/load/ws_event_room.js" >"$outdir/k6-summary-run.log" 2>&1 || true
 

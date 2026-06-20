@@ -20,6 +20,15 @@ mkdir -p "$SITES_DIR"
 
 SITE_NAME="${SITE_NAME:-flock_os.localhost}"
 
+# The sites/ dir is a shared named volume across init/web/workers, so it starts
+# EMPTY (hiding the image-baked apps.txt). Frappe's get_all_apps() reads
+# sites/apps.txt (one app per line) to build its module map; BOTH frappe and
+# flock_os must be listed or gunicorn's site resolution breaks ("site does not
+# exist"). Deterministic two-line file (bench init writes apps.txt without a
+# trailing newline, which would otherwise join `frappe`+`flock_os` into the
+# bogus module `frappeflock_os`).
+printf 'frappe\nflock_os\n' > "$SITES_DIR/apps.txt"
+
 # Compose service hostnames (overridable for a non-default compose project name).
 DB_HOST="${DB_HOST:-mariadb}"
 DB_PORT="${DB_PORT:-3306}"

@@ -100,7 +100,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
-    env_file: [docker/.env.docker]
+    env_file: [.env.docker]
     environment:
       DB_HOST: mariadb
       DB_PORT: "3306"
@@ -109,6 +109,8 @@ services:
       REDIS_SOCKETIO: redis://redis-cache:6379
     command: ["bash", "/home/frappe/init-site.sh"]
     restart: "no"
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
     depends_on:
       mariadb: {condition: service_healthy}
       redis-cache: {condition: service_healthy}
@@ -119,25 +121,32 @@ services:
 
   web:
     image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
-    env_file: [docker/.env.docker]
+    env_file: [.env.docker]
     environment:
       DB_HOST: mariadb
       DB_PORT: "3306"
       REDIS_CACHE: redis://redis-cache:6379
       REDIS_QUEUE: redis://redis-queue:6379
       REDIS_SOCKETIO: redis://redis-cache:6379
-      WEBSERVER_PORT: "8000"
+      WEBSERVER_PORT: ${WEBSERVER_PORT:-8000}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
     # gunicorn serving the Frappe WSGI app. `bench serve` wraps this for dev;
-    # the direct gunicorn invocation is the prod-equivalent shape.
+    # the direct gunicorn invocation is the prod-equivalent shape. cwd MUST be
+    # sites/ — frappe.init() defaults sites_path to cwd, so gunicorn run from
+    # the bench root can't find the site (this is the frappe-docker working_dir
+    # convention). Binds the SAME port internally that k6 advertises in its
+    # Origin header so the socketio worker's get_user_info callback resolves
+    # back to THIS web container via the flock_os.localhost network alias.
     command:
       - bash
       - -lc
       - >
-        gunicorn -b 0.0.0.0:8000 -w ${GUNICORN_WORKERS:-4} -t 120
+        cd sites && ../env/bin/gunicorn -b 0.0.0.0:${WEBSERVER_PORT:-8000} -w ${GUNICORN_WORKERS:-4} -t 120
         --access-logfile - --error-logfile - frappe.app:application
     ports:
-      - "${WEBSERVER_HOST_PORT:-8000}:8000"
+      - "${WEBSERVER_HOST_PORT:-8000}:${WEBSERVER_PORT:-8000}"
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
     depends_on:
       init: {condition: service_completed_successfully}
     networks:
@@ -159,6 +168,10 @@ services:
       - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
       - "${WS_LB_HOST_PORT:-9000}:9000"
+    # Each proxied WS connection is 2 fds on the LB (client + backend); 15k
+    # gate = 30k+ fds. Raise nofile well above that so nginx never starves.
+    ulimits:
+      nofile: {soft: 1048576, hard: 1048576}
     depends_on:
       init: {condition: service_completed_successfully}
     networks:
@@ -166,6 +179,10 @@ services:
 
 volumes:
   mariadb-data:
+  # Shared across init/web/socketio so the site (site_config.json + the
+  # per-site DB creds) persists across container restarts and the one-shot
+  # `init` is idempotent on re-runs (standard frappe-docker pattern).
+  sites:
 
 networks:
   backend:
