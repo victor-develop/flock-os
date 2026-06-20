@@ -215,3 +215,46 @@ test("defaults are the documented conservative values", () => {
 	assert.equal(DEFAULT_TTL_MS, 60_000);
 	assert.equal(DEFAULT_MAX, 50_000);
 });
+
+// --- FLO-428 edge-case #1 regression: cache stores IDENTITY only, never scope -- #
+// Audit (FLO-428 §1): an expired/revoked ticket on join is safe because the
+// per-join scope check (`flock_room_handlers.js` → `/can_join_event_room`) is
+// independent of this connect-time cache. The structural guarantee that keeps
+// them independent is that the cache value contains NO scope/branch/permission
+// fields a buggy future join handler could consult to bypass the live scope
+// endpoint. This freezes that contract so a future "let's also cache allowed
+// branches here" change shows up as a red test, not a silent auth regression.
+test("FLO-428 #1 cached identity contains NO scope/branch/permission field", async () => {
+	const calls = [];
+	const identity = {
+		user: "leader@flock.os",
+		user_type: "System User",
+		sid: "SID-1",
+		authorization_header: undefined,
+	};
+	const middleware = wrap(fakeFrappeAuth(identity, calls), { ttlMs: 60_000 });
+	await new Promise((r) => middleware(fakeSocket({ cookie: "sid=SID-1" }), r));
+
+	const entry = middleware.cache.get("SID-1");
+	assert.ok(entry, "fixture: cache populated");
+	// The cached fields are identity-only — explicit reject list of anything
+	// that could become a bypass if a future change wired it into the join path.
+	for (const forbidden of [
+		"branch",
+		"branches",
+		"allowed_branches",
+		"scope",
+		"scopes",
+		"permissions",
+		"roles",
+		"can_join",
+		"rooms",
+	]) {
+		assert.ok(!(forbidden in entry), `cache must never carry ${forbidden}`);
+	}
+	// And exactly the documented identity fields are present.
+	assert.deepEqual(
+		Object.keys(entry).sort(),
+		["authorization_header", "exp", "sid", "user", "user_type"].sort(),
+	);
+});
