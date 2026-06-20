@@ -30,6 +30,10 @@ secrets/keys/
 # rendered plaintext env (render-secrets.sh --out) — transient, never tracked
 secrets/*.env
 *.rendered.env
+!docker/.env.docker.example
+# docker prod-equivalent WS tier: generated runtime + local config (FLO-347)
+docker/.runtime/
+docker/.env.docker
 # python tooling venv (FLO-88: worktree .venv is a symlink -> shows as
 # untracked without this; main-repo .venv hides via its internal .gitignore)
 .venv
