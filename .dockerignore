@@ -1,0 +1,28 @@
+# Build context = repo root (docker/docker-compose.yml `build.context: ..`).
+# Keep the Frappe image lean + reproducible by excluding everything that is not
+# app source / scripts / realtime wiring the image needs.
+.git
+.github
+.paperclip
+.venv
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+**/node_modules/
+flock-os-worktrees/
+**/.DS_Store
+# generated docker runtime + local env (never belong in the image)
+docker/.runtime/
+docker/.env.docker
+docker/.env
+.env
+# the bench runtime lives outside the repo on the host; never copy it in
+**/sites/*/private.pem
+**/sites/*/public.pem
+**/sites/assets/
+**/logs/

@@ -1,0 +1,175 @@
+# Flock OS — prod-equivalent WS tier for the clean §8 15k gate (FLO-347 / FLO-10 §8).
+#
+# Bundles the full Frappe realtime stack as one `docker compose up`:
+#   - mariadb           the site DB
+#   - redis-cache       Frappe cache + queue-adjacent traffic
+#   - redis-queue       Frappe background workers
+#   - redis-adapter     DEDICATED Redis for @socket.io/redis-adapter
+#                       (FLOCK_SIO_ADAPTER_REDIS) — clears testbed ceiling #2
+#   - init              one-shot: new-site + migrate + smoke fixtures
+#   - web               gunicorn (Frappe web) — the realtime auth callback target
+#   - socketio-N        N node realtime workers (generated overlay; see below)
+#   - ws-lb             nginx WS-upgrade LB fronting the socketio workers
+#                       — clears testbed ceiling #1 (non-loopback LB<->backend hop,
+#                       each container its own ephemeral-port space)
+#
+# Why this clears both dev-Mac ceilings natively (no host sudo sysctl, no
+# loopback EADDRNOTAVAIL): every container has its OWN ephemeral-port range on a
+# real docker network, so the LB<->backend hop does NOT double port demand on a
+# single kernel the way a userspace loopback LB does. The adapter gets its own
+# Redis instance so it never contends with cache/queue under the 15k burst.
+# See docs/development/ws-broadcast-delivery.md -> Local testbed limits.
+#
+# The N socketio workers are NOT listed here: scripts/dev/docker-ws-tier.sh
+# renders docker/.runtime/ws-workers.yml (one `socketio-N` service per worker,
+# all pointing at the dedicated adapter Redis) from FLOCK_SIO_WORKERS, then runs
+# `docker compose -f docker-compose.yml -f .runtime/ws-workers.yml up`. Keeping
+# the worker count out of the base file means scaling is `FLOCK_SIO_WORKERS=8
+# docker-ws-tier.sh up` with no hand-edits.
+#
+# Bring up / gate / tear down:
+#   scripts/dev/docker-ws-tier.sh up          # build (once) + start the tier
+#   scripts/dev/docker-ws-tier.sh gate        # k6 full 15k §8 gate -> load/telemetry
+#   scripts/dev/docker-ws-tier.sh down        # tear the whole tier down
+#
+# Config: copy docker/.env.docker.example -> docker/.env.docker and edit.
+# Runbook: docs/development/ws-broadcast-delivery.md -> Prod-equivalent docker tier.
+
+name: flock-ws
+
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in docker/.env.docker}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      # Frappe connects over TCP as root; gate the tier start on TCP readiness.
+      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - backend
+
+  redis-cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+
+  redis-queue:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+
+  # Dedicated adapter Redis. Consumed by every socketio worker via
+  # FLOCK_SIO_ADAPTER_REDIS (see docker-ws-tier.sh's worker overlay). Kept
+  # separate from cache/queue so the 8x adapter pub/sub never stalls Frappe
+  # cache under the 15k burst (the runbook's ceiling #2 unblock).
+  redis-adapter:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - backend
+
+  # One-shot site provisioning. new-site + migrate (re-applies the realtime
+  # wirings via the after_migrate hook) + the gathering-smoke runtime fixture
+  # the §8 gate needs (docs/development/ws-broadcast-delivery.md -> Runtime
+  # fixture). Idempotent; exits 0 once the site is ready, then web + workers
+  # start (compose depends_on service_completed_successfully).
+  init:
+    build: &flock-build
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
+    env_file: [docker/.env.docker]
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      REDIS_CACHE: redis://redis-cache:6379
+      REDIS_QUEUE: redis://redis-queue:6379
+      REDIS_SOCKETIO: redis://redis-cache:6379
+    command: ["bash", "/home/frappe/init-site.sh"]
+    restart: "no"
+    depends_on:
+      mariadb: {condition: service_healthy}
+      redis-cache: {condition: service_healthy}
+      redis-queue: {condition: service_healthy}
+      redis-adapter: {condition: service_healthy}
+    networks:
+      - backend
+
+  web:
+    image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
+    env_file: [docker/.env.docker]
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      REDIS_CACHE: redis://redis-cache:6379
+      REDIS_QUEUE: redis://redis-queue:6379
+      REDIS_SOCKETIO: redis://redis-cache:6379
+      WEBSERVER_PORT: "8000"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+    # gunicorn serving the Frappe WSGI app. `bench serve` wraps this for dev;
+    # the direct gunicorn invocation is the prod-equivalent shape.
+    command:
+      - bash
+      - -lc
+      - >
+        gunicorn -b 0.0.0.0:8000 -w ${GUNICORN_WORKERS:-4} -t 120
+        --access-logfile - --error-logfile - frappe.app:application
+    ports:
+      - "${WEBSERVER_HOST_PORT:-8000}:8000"
+    depends_on:
+      init: {condition: service_completed_successfully}
+    networks:
+      backend:
+        # The realtime auth middleware's get_user_info callback resolves
+        # Origin (`http://flock_os.localhost:8000`) -> this service, so the
+        # callback stays on the docker network. The k6 client on the host
+        # reaches the same name via the published port + /etc/hosts.
+        aliases:
+          - flock_os.localhost
+
+  # nginx WS-upgrade LB. The conf is rendered from
+  # scripts/dev/nginx-socketio.conf.template by docker-ws-tier.sh `up`, with one
+  # `server socketio-N:9000;` per worker at the BACKENDS_INJECTED_HERE marker —
+  # the SAME rendering scale-socketio.sh --lb nginx uses on the host.
+  ws-lb:
+    image: nginx:alpine
+    volumes:
+      - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "${WS_LB_HOST_PORT:-9000}:9000"
+    depends_on:
+      init: {condition: service_completed_successfully}
+    networks:
+      - backend
+
+volumes:
+  mariadb-data:
+
+networks:
+  backend:
+    # A real (non-loopback) docker bridge network: each container gets its own
+    # ephemeral-port space and the LB<->backend hop is a real network transit,
+    # which is what clears the macOS loopback EADDRNOTAVAIL ceiling (#1).
+    driver: bridge

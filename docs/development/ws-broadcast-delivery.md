@@ -376,11 +376,48 @@ mixed/polling production tier the template documents the sticky-routing switch
 (`ip_hash` / sticky cookie) so a WS upgrade revisits the polling-session backend;
 the default round-robin is correct for the ws-only k6 smoke.
 
+### 3. Local docker-compose tier — clean full-15k with no `sudo` (FLO-347)
+
+`docker/docker-compose.yml` bundles the whole prod-equivalent tier as one
+`docker compose up`: MariaDB, **three** Redis instances (cache + queue + a
+dedicated `redis-adapter`), gunicorn web, **N** socketio worker containers, and
+the nginx WS-upgrade LB fronting them. A docker network gives every container
+its **own ephemeral-port space** and a real (non-loopback) LB↔backend hop, which
+clears **both** dev-Mac ceilings natively — no host `sudo sysctl` and no
+loopback `EADDRNOTAVAIL`. The adapter Redis is wired to every worker via
+`FLOCK_SIO_ADAPTER_REDIS` (ceiling #2), and the nginx LB conf is rendered from
+the **same** `scripts/dev/nginx-socketio.conf.template` as the host tier.
+
+`scripts/dev/docker-ws-tier.sh` is the one-command orchestrator:
+
+```bash
+cp docker/.env.docker.example docker/.env.docker   # once; fill in passwords
+scripts/dev/docker-ws-tier.sh up                   # build (once) + start the tier
+scripts/dev/docker-ws-tier.sh status               # containers + ws-lb reachability
+scripts/dev/docker-ws-tier.sh gate                 # k6 full-15k §8 gate -> load/telemetry/
+scripts/dev/docker-ws-tier.sh down                 # tear the tier down (down -v drops the DB vol)
+```
+
+Scaling the worker count is `FLOCK_SIO_WORKERS=8 docker-ws-tier.sh up` — the
+worker services + the nginx upstream are generated from that one env (no
+hand-edits). This is the same stack that ships to staging/prod once the Frappe
+Cloud account is approved ([FLO-249](/FLO/issues/FLO-249)); containerizing it
+locally de-risks the 15k question before any cloud spend.
+
+> **Requires Docker.** Needs `docker` + `docker compose` (Colima
+> / Docker Desktop / OrbStack). The image builds once on first `up` (it mirrors
+> `scripts/bootstrap.sh`: `bench init` + `get-app flock_os` + the three realtime
+> wirings baked in). If Docker is not installed, fall back to the host nginx
+> tier + `sudo sysctl` below.
+
 ### Running the clean full-15k §8 gate
 
 The infra above is what ships to the real event. A **clean full-15k** run needs
 one of:
 
+- **local docker-compose tier** (recommended — no `sudo`, clears both ceilings):
+  `scripts/dev/docker-ws-tier.sh up` then `... gate` (see
+  [§3 above](#3-local-docker-compose-tier--clean-full-15k-with-no-sudo-flo-347)).
 - **prod / staging host** running the nginx tier (no loopback self-pressure); or
 - the **dev Mac with the ephemeral range widened** first (it needs `sudo`):
   `sudo sysctl -w net.inet.ip.portrange.first=1024` (1024–65535 ≈ 64k > the ~30k
