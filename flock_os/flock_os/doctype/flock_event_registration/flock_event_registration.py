@@ -403,6 +403,19 @@ def register_for_event(
 			f"registered_via must be one of {registrations.REGISTRATION_VIA}.", frappe.ValidationError
 		)
 
+	# Caller authorization (FLO-290 §3): self-registration resolves the member
+	# from the session user. An explicitly-passed member (a leader registering
+	# on someone's behalf) requires the caller to hold branch scope over the
+	# event's branch — a random member may not register arbitrary other people
+	# (seat-claim / spam abuse). Cross-branch callers are denied here; the
+	# eligibility gate below additionally confines the registrant's own scope.
+	if member and member != _resolve_registrant_member():
+		permissions.assert_branch_scope(
+			doc_branch=frappe.db.get_value("Flock Gathering", gathering, "branch"),
+			user=frappe.session.user,
+			gateway=permissions.get_gateway(),
+		)
+
 	gateway = FrappeRegistrationScopeGateway()
 	window = _registration_window(gathering)
 	now = frappe.utils.now()

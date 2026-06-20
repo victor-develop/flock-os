@@ -283,10 +283,16 @@ class FrappeComposeGateway:
 			return tuple(
 				frappe.get_all("Flock Branch", filters={"organization": org}, pluck="name", order_by="name")
 			)
-		# Scoped roles: the materialized User-Permission subtree (ADR §6.2).
+		# Scoped roles: the materialized User-Permission subtree (ADR §6.2). The
+		# ``allow`` / ``for_value`` columns are Frappe User Permission's link +
+		# value fields (matching :meth:`FrappePermissionGateway.list_branch_user_permissions`
+		# — DRY, one column vocabulary). A scoped Branch Admin / Group Leader
+		# gets exactly their materialized branch subtree back; siblings never.
 		return tuple(
 			frappe.get_all(
-				"User Permission", filters={"user": user, "doctype": "Flock Branch"}, pluck="doc.name"
+				"User Permission",
+				filters={"user": user, "allow": "Flock Branch"},
+				pluck="for_value",
 			)
 		)
 
