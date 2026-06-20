@@ -27,7 +27,7 @@ DESIGN
 ------
 * Pure, side-effect-free decision logic (manifest parse + ISO-8601 age math +
   active/timed-out predicates) is factored out so it is unit-tested by
-  ``flock_os/tests/test_ceo_heartbeat_watchdog.py`` and exercised by
+  ``tools/ops/ceo_heartbeat/tests/test_watchdog.py`` and exercised by
   ``--self-test``. The CLI only adds HTTP + process side effects.
 * Stdlib only (``urllib`` + ``subprocess``) — no third-party deps, so it runs
   in the bare CI venv and on the operator Mac without ``pip install``.

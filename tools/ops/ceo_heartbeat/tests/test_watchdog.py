@@ -23,9 +23,10 @@ from pathlib import Path
 import pytest
 
 # --- Load the watchdog module by path (scripts/dev/, not a package) -------- #
-# parents[2] is the repo root both in a per-slice worktree
-# (.../flo/FLO-263/flock_os/tests) and in a flat CI checkout (<repo>/flock_os/tests).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+# parents[4] is the repo root both in a per-slice worktree
+# (.../flo/FLO-263/tools/ops/ceo_heartbeat/tests) and in a flat CI checkout
+# (<repo>/tools/ops/ceo_heartbeat/tests).
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _SCRIPT = _REPO_ROOT / "scripts" / "dev" / "ceo-heartbeat-watchdog.py"
 assert _SCRIPT.is_file(), f"watchdog script not found at {_SCRIPT}"
 _spec = importlib.util.spec_from_file_location("ceo_heartbeat_watchdog", _SCRIPT)

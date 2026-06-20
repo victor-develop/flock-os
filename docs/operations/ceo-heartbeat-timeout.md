@@ -153,8 +153,8 @@ For a launchd equivalent, mirror `scripts/dev/start-adapter-redis.sh`'s
 
 ## Verification
 
-1. **Pure logic (CI gate):** `scripts/qa-gate.sh` runs
-   `pytest flock_os/tests/test_ceo_heartbeat_watchdog.py` — pins manifest policy
+1. **Pure logic (ops suite):** run
+   `pytest tools/ops/ceo_heartbeat/tests/test_watchdog.py` — pins manifest policy
    parsing, ISO-8601 age math, the active/timed-out predicates, terminal-status
    handling (`issue_created`), and open-lease aggregation.
 2. **Script self-test:** `python3 scripts/dev/ceo-heartbeat-watchdog.py --self-test`

@@ -3,7 +3,7 @@
 CEO heartbeat monitor CLI (FLO-266).
 
 One-shot scrape of CEO heartbeat health against the live Paperclip control
-plane. Wires :class:`flock_os.ceo_heartbeat_monitor.PaperclipCEOHeartbeatSource`
+plane. Wires :class:`tools.ops.ceo_heartbeat.monitor.PaperclipCEOHeartbeatSource`
 into the pure :class:`CEOHeartbeatMonitor`, prints the snapshot, and exits with
 a severity-mapped code so it drops straight into cron / launchd / an alert
 wrapper:
@@ -59,8 +59,8 @@ import argparse
 import os
 import sys
 
-# Make ``import flock_os.ceo_heartbeat_monitor`` resolve when this script is run
-# from anywhere. ``flock_os`` is not pip-installed (per AGENTS.md the import
+# Make ``import tools.ops.ceo_heartbeat.monitor`` resolve when this script is
+# run from anywhere. The package is not pip-installed (per AGENTS.md the import
 # resolves via cwd), so add the repo root (two levels up from scripts/dev/) to
 # sys.path explicitly.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +68,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 if _REPO_ROOT not in sys.path:
 	sys.path.insert(0, _REPO_ROOT)
 
-from flock_os.ceo_heartbeat_monitor import (  # noqa: E402 - path patched above
+from tools.ops.ceo_heartbeat.monitor import (  # noqa: E402 - path patched above
 	EXIT_CONFIG_ERROR,
 	CEOHeartbeatMonitor,
 	PaperclipAlertIssuer,

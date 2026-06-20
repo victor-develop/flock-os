@@ -24,8 +24,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import flock_os.ceo_heartbeat_monitor as chm
-from flock_os.ceo_heartbeat_monitor import (
+import tools.ops.ceo_heartbeat.monitor as chm
+from tools.ops.ceo_heartbeat.monitor import (
 	ACTIVE_RUN_STATUSES,
 	DEFAULT_CRITICAL_SILENCE_MINUTES,
 	DEFAULT_WARNING_SILENCE_MINUTES,

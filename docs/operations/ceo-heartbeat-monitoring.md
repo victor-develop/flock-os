@@ -147,7 +147,7 @@ CEOHeartbeatMonitor                        <- orchestrates one scrape
 ```
 
 The pure detection math is fully unit-tested without a network
-(`flock_os/tests/test_ceo_heartbeat_monitor.py`); the Paperclip adapters take
+(`tools/ops/ceo_heartbeat/tests/test_monitor.py`); the Paperclip adapters take
 injectable HTTP fetchers so the suite drives them against canned responses. The
 HTTP layer defaults to `urllib` (no third-party dependency) and maps every error
 to `RuntimeError` so a scrape never silently degrades.
@@ -165,7 +165,7 @@ to `RuntimeError` so a scrape never silently degrades.
 
 ## Related
 
-- Source: `flock_os/ceo_heartbeat_monitor.py` · CLI: `scripts/dev/ceo-heartbeat-monitor.py`
-- Tests: `flock_os/tests/test_ceo_heartbeat_monitor.py` (49 tests, 91% module coverage)
+- Source: `tools/ops/ceo_heartbeat/monitor.py` · CLI: `scripts/dev/ceo-heartbeat-monitor.py`
+- Tests: `tools/ops/ceo_heartbeat/tests/test_monitor.py` (49 tests, 91% module coverage)
 - Incident analysis: `docs/architecture/ceo-silent-run-analysis.md`
 - Siblings: [FLO-265](/FLO/issues/FLO-265) timeout · [FLO-267](/FLO/issues/FLO-267) recovery
