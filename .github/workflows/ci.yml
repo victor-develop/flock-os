@@ -51,3 +51,10 @@ jobs:
       # out of the foundation gate (Architect directive, FLO-21).
       - name: Unit tests + coverage gate
         run: git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest --cov=flock_os --cov-branch --cov-report=term-missing
+
+      # Operator tooling outside the flock_os app package (CEO heartbeat monitor
+      # relocated to tools/ops/ by FLO-285, per architect FLO-283 Option b).
+      # Enforced separately from the flock_os coverage ratchet above so the app's
+      # pure-domain-logic floor measures only the app. Mirrors qa-gate.sh [5/5].
+      - name: Operator tooling unit tests (tools/ops)
+        run: git ls-files -z 'tools/**/tests/test_*.py' | xargs -0 pytest -q
