@@ -10,11 +10,12 @@ name: Deploy
 # The CI gate (.github/workflows/ci.yml) must be green on master before this
 # workflow runs — `needs: lint-and-test` enforces it for the staging stage.
 #
-# Secrets come from GitHub Actions secrets (set by the board/DevOps via the
-# repo settings) — never committed. The staging + prod envs each have their
-# own secret set scoped per-environment (`staging` / `production` environments).
-#
-# Runbook: docs/development/deploy-runbook.md.
+# Secrets come from the SOPS+age secret manager (FLO-248): the committed
+# ciphertext bundles secrets/{staging,prod}.enc.yaml are decrypted at deploy
+# time with the age PRIVATE key stored as the SOPS_AGE_KEY environment secret
+# (one key per environment — staging and prod NEVER share a key). The bundle,
+# not per-secret GitHub Actions variables, is the source of truth. Runbook:
+# docs/development/secrets-runbook.md.
 
 on:
   push:
@@ -109,23 +110,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Render site config + render-secrets check
-        # Validate every required secret is present in the staging environment
-        # BEFORE the rolling deploy. Fails loud, not silent.
+      - name: Install sops + age
+        # FLO-248: the SOPS+age secret manager. Decrypts secrets/staging.enc.yaml
+        # so render-config.sh gets its env from the committed (encrypted) bundle
+        # instead of from per-secret GitHub Actions secrets. The age PRIVATE key
+        # is the single SOPS_AGE_KEY environment secret — see
+        # docs/development/secrets-runbook.md.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y age
+          SOPS_VERSION=3.13.1
+          sudo curl -fsSL -o /usr/local/bin/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          sudo chmod +x /usr/local/bin/sops
+          sops --version && age --version
+
+      - name: Decrypt secrets + render-config check (SOPS+age)
+        # The zero-secrets-in-repo gate. Decrypts the staging bundle with the
+        # SOPS_AGE_KEY secret, then validates every required env is present
+        # BEFORE the rolling deploy. Fails loud, not silent. The only deploy
+        # secret this environment needs is SOPS_AGE_KEY — the bundle holds the
+        # rest as committed ciphertext.
         env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_PORT: ${{ secrets.DB_PORT || '3306' }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          REDIS_CACHE_URI: ${{ secrets.REDIS_CACHE_URI }}
-          REDIS_QUEUE_URI: ${{ secrets.REDIS_QUEUE_URI }}
-          REDIS_SOCKETIO_URI: ${{ secrets.REDIS_SOCKETIO_URI }}
-          FLOCK_SIO_ADAPTER_REDIS: ${{ secrets.FLOCK_SIO_ADAPTER_REDIS }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          SITE_URL: ${{ secrets.STAGING_URL }}
-          FLOCK_ENV: staging
-        run: scripts/deploy/render-config.sh --check
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          ENV_FILE="$RUNNER_TEMP/flock.env"
+          scripts/deploy/render-secrets.sh --env staging --check
+          scripts/deploy/render-secrets.sh --env staging --out "$ENV_FILE"
+          # Expose the rendered env file to later steps (the deploy command may
+          # ship it to the host: `--env-file` / scp). Auto-cleaned by the runner.
+          echo "FLOCK_ENV_FILE=$ENV_FILE" >> "$GITHUB_ENV"
+          set -a; . "$ENV_FILE"; set +a
+          scripts/deploy/render-config.sh --check
 
       - name: Deploy tag ${{ needs.build-image.outputs.tag }} to staging
         # FLOCK_DEPLOY_CMD is the orchestrator hook (set as a staging env var).
@@ -203,20 +219,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Render-secrets check (prod)
+      - name: Install sops + age
+        # FLO-248: decrypt secrets/prod.enc.yaml with the production SOPS_AGE_KEY.
+        # Prod uses a SEPARATE key from staging (see .sops.yaml) so a staging key
+        # compromise can never read prod. Runbook: docs/development/secrets-runbook.md.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y age
+          SOPS_VERSION=3.13.1
+          sudo curl -fsSL -o /usr/local/bin/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          sudo chmod +x /usr/local/bin/sops
+          sops --version && age --version
+
+      - name: Decrypt secrets + render-config check (prod, SOPS+age)
+        # Prod decrypt gate. Same shape as staging, against the PROD bundle + key.
         env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          REDIS_CACHE_URI: ${{ secrets.REDIS_CACHE_URI }}
-          REDIS_QUEUE_URI: ${{ secrets.REDIS_QUEUE_URI }}
-          REDIS_SOCKETIO_URI: ${{ secrets.REDIS_SOCKETIO_URI }}
-          FLOCK_SIO_ADAPTER_REDIS: ${{ secrets.FLOCK_SIO_ADAPTER_REDIS }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          SITE_URL: ${{ secrets.PROD_URL }}
-          FLOCK_ENV: prod
-        run: scripts/deploy/render-config.sh --check
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          ENV_FILE="$RUNNER_TEMP/flock.env"
+          scripts/deploy/render-secrets.sh --env prod --check
+          scripts/deploy/render-secrets.sh --env prod --out "$ENV_FILE"
+          echo "FLOCK_ENV_FILE=$ENV_FILE" >> "$GITHUB_ENV"
+          set -a; . "$ENV_FILE"; set +a
+          scripts/deploy/render-config.sh --check
 
       - name: Promote ${{ steps.meta.outputs.tag }} to prod
         env:

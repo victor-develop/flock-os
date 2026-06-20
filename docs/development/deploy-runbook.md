@@ -40,25 +40,35 @@ runs `scripts/deploy/render-config.sh` which renders `site_config.json` and
 
 ## Environments + secrets
 
+> Secrets are managed with **SOPS + age** (FLO-248). The full key/edit/rotate flow
+> lives in **[docs/development/secrets-runbook.md](secrets-runbook.md)** — this
+> section is the deploy-time summary.
+
 Two GitHub Actions environments back the two-stage pipeline:
 
-| Environment | Purpose | Required secrets |
-|-------------|---------|------------------|
-| `staging` | master-green auto-deploy target | `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `REDIS_CACHE_URI`, `REDIS_QUEUE_URI`, `REDIS_SOCKETIO_URI`, `FLOCK_SIO_ADAPTER_REDIS`, `SECRET_KEY`, `STAGING_URL`, `STAGING_WS_URL` (optional), `FLOCK_IMAGE_REGISTRY_TOKEN` |
-| `production` | manual-promotion target | the same set, pointing at prod resources; `PROD_URL`, `PROD_WS_URL` instead of `STAGING_*` |
+| Environment | Purpose | Required GitHub secret |
+|-------------|---------|------------------------|
+| `staging` | master-green auto-deploy target | `SOPS_AGE_KEY` (staging age private key — decrypts `secrets/staging.enc.yaml`); plus `STAGING_URL`, `STAGING_WS_URL` for the smoke |
+| `production` | manual-promotion target | `SOPS_AGE_KEY` (**separate** prod age key — decrypts `secrets/prod.enc.yaml`); plus `PROD_URL`, `PROD_WS_URL` for the smoke |
+
+The actual deploy secrets (DB, Redis, SECRET_KEY, …) live as **SOPS ciphertext**
+in `secrets/<env>.enc.yaml` — not as individual GitHub Actions secrets. The
+Deploy workflow installs `sops`+`age`, decrypts the bundle with `SOPS_AGE_KEY`,
+and feeds it to `render-config.sh`. The decrypt + render-config `--check` step
+in the deploy workflow fails the deploy loudly if any required secret is
+missing or the key doesn't match.
 
 Plus **environment variables** (non-secret) on each environment:
 
 | Variable | Purpose |
 |----------|---------|
 | `FLOCK_DEPLOY_CMD` | the orchestrator-specific "deploy tag `<TAG>`" command (see below) |
-| `FLOCK_IMAGE_REGISTRY_TOKEN` (secret) | registry auth (use the GitHub token for ghcr.io) |
 | `FLOCK_IMAGE_REGISTRY` (repo var) | registry host (default `ghcr.io`) |
 
 **Zero secrets in the repo.** `.env.example` is example-only; the deploy
-templates (`deploy/templates/*.tmpl`) carry placeholders, never values. The
-`scripts/deploy/render-config.sh --check` step in the deploy workflow fails the
-deploy loudly if any required secret is missing.
+templates (`deploy/templates/*.tmpl`) carry placeholders, never values; and the
+`secrets/` dir holds only `*.enc.yaml` ciphertext (plaintext + age private keys
+are gitignored).
 
 ## Wire `FLOCK_DEPLOY_CMD`
 
@@ -161,6 +171,12 @@ sudo supervisorctl restart socketio-tier
 To render the config off-image (debugging, a fresh VM bring-up):
 
 ```bash
+# Populate env from the SOPS bundle, then render (the zero-secrets-in-repo path):
+SOPS_AGE_KEY_FILE=secrets/.age-key.staging \
+  scripts/deploy/render-secrets.sh --env staging --out /tmp/flock.env
+set -a; . /tmp/flock.env; set +a
+scripts/deploy/render-secrets.sh --env staging --check   # or --print-env (redacted)
+
 DB_HOST=... DB_NAME=... DB_USER=... DB_PASSWORD=... \
 REDIS_CACHE_URI=... REDIS_QUEUE_URI=... REDIS_SOCKETIO_URI=... \
 FLOCK_SIO_ADAPTER_REDIS=... SECRET_KEY=... SITE_URL=https://... FLOCK_ENV=staging \
@@ -169,6 +185,8 @@ scripts/deploy/render-config.sh --sites-dir ./sites --site flock_os
 # Or just check the secret set without writing:
 scripts/deploy/render-config.sh --check
 ```
+
+See [secrets-runbook.md](secrets-runbook.md) for editing/rotating the bundles.
 
 ## nginx sticky-L7 (Cloudflare caveat)
 

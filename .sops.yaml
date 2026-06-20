@@ -1,0 +1,26 @@
+# Flock OS SOPS config (FLO-248 Phase 6.1 slice 2 — secrets management).
+#
+# SOPS+age is the zero-secrets-in-repo secret manager. Plaintext secret values
+# are encrypted at rest into secrets/<env>.enc.yaml (committed ciphertext only);
+# scripts/deploy/render-secrets.sh decrypts them at deploy time using the age
+# PRIVATE key, which lives OUT of the repo:
+#   - CI:    the SOPS_AGE_KEY GitHub Actions secret (per-environment).
+#   - human: 1Password / pass / the board's secret channel. NEVER committed.
+#
+# The age RECIPIENT (public key) below is safe to commit — it can only encrypt.
+# Rotate it to your own production key on first onboarding: see
+# docs/development/secrets-runbook.md -> "Bootstrap + rotate the age key".
+#
+# Rule shape: staging + prod each get their OWN recipient so a staging key
+# compromise cannot read prod (and vice versa). On first onboarding, generate
+# two keys (scripts/dev/gen-age-key.sh) and replace both recipients below.
+
+creation_rules:
+  # Staging secret bundle. Encrypted for the staging age recipient.
+  - path_regex: secrets/staging\.enc\.ya?ml$
+    age: age1w58g9v5u4w0lwnvyeffdjdmtzcdru4tfcjm8cyr0uva4hyn325zshjn76j
+
+  # Production secret bundle. Encrypted for the PRODUCTION age recipient.
+  # Generate a SEPARATE key for prod (never reuse staging's key).
+  - path_regex: secrets/prod\.enc\.ya?ml$
+    age: age1w58g9v5u4w0lwnvyeffdjdmtzcdru4tfcjm8cyr0uva4hyn325zshjn76j

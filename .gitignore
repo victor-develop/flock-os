@@ -15,6 +15,21 @@ node_modules/
 .env
 .env.*
 !.env.example
+# secrets (FLO-248: SOPS+age). Track ONLY the encrypted ciphertext bundles
+# (secrets/*.enc.yaml); ignore every plaintext form + every age PRIVATE key.
+# The private key is the one true secret — it must NEVER be committed.
+secrets/*.yaml
+secrets/*.yml
+!secrets/*.enc.yaml
+!secrets/*.enc.yml
+secrets/.age-key
+secrets/.age-key.*
+secrets/*.key
+secrets/keys/
+*.age.key
+# rendered plaintext env (render-secrets.sh --out) — transient, never tracked
+secrets/*.env
+*.rendered.env
 # python tooling venv (FLO-88: worktree .venv is a symlink -> shows as
 # untracked without this; main-repo .venv hides via its internal .gitignore)
 .venv
