@@ -46,6 +46,7 @@ from tools.ops.ceo_heartbeat.monitor import (
 	StaticCEOHeartbeatSource,
 	compute_completion_stats,
 	detect_silent_runs,
+	is_superseded_by_newer_base_run,
 	severity_to_exit_code,
 	snapshot_as_json,
 	snapshot_as_prometheus,
@@ -150,12 +151,113 @@ def test_completed_status_with_null_completed_at_does_not_alert_on_unknown_statu
 	assert detect_silent_runs((r,), NOW) == ()
 
 
-def test_silent_alerts_ordered_oldest_first():
+# --------------------------------------------------------------------------- #
+# Zombie run-records (FLO-419) — an old in-flight run left behind after the
+# agent admitted a newer base run. Under coalesce_if_active the platform only
+# admits a fresh base run once the prior one is inactive, so a strictly newer
+# non-coalesced base run is proof the agent moved on. These replay the
+# 2026-06-20 FLO-408 / FLO-403 shape that fired a false CRITICAL alert.
+# --------------------------------------------------------------------------- #
+def test_zombie_superseded_by_newer_completed_base_run_is_not_silent():
+	# The FLO-408/FLO-403 shape: an old issue_created run (blocked linked issue)
+	# + a newer completed base run (the CEO moved on to FLO-411/413/416).
+	zombie = _run(id="97468147", status="issue_created", triggered_offset_min=-50)
+	moved_on = _run(id="new-base", status="completed", triggered_offset_min=-10, completed_offset_min=-5)
+	assert detect_silent_runs((zombie, moved_on), NOW) == ()
+
+
+def test_zombie_superseded_by_newer_in_flight_base_run_is_not_silent():
+	# The newer base run need not be completed — merely being admitted (a
+	# strictly newer non-coalesced base run) proves the older is stale.
+	zombie = _run(id="old-zombie", status="issue_created", triggered_offset_min=-50)
+	new_active = _run(id="new-active", status="issue_created", triggered_offset_min=-4)
+	alerts = detect_silent_runs((zombie, new_active), NOW)
+	# Only the newer run is a candidate, and it is under the warning threshold.
+	assert alerts == ()
+
+
+def test_newer_coalesced_run_does_not_supersede():
+	# A coalesced overlap is not a base run — it folds into a sibling and says
+	# nothing about whether the agent moved past `run`. So an old in-flight run
+	# with only a newer *coalesced* run for company is still a silent candidate.
+	stuck = _run(id="stuck", status="issue_created", triggered_offset_min=-40)
+	coalesced = _run(
+		id="overlap", status="issue_created", triggered_offset_min=-5, coalesced_into_run_id="stuck"
+	)
+	alerts = detect_silent_runs((stuck, coalesced), NOW)
+	assert len(alerts) == 1
+	assert alerts[0].run.id == "stuck"
+	assert alerts[0].severity == SEVERITY_CRITICAL
+
+
+def test_multiple_zombies_all_superseded_by_single_newest_base_run():
+	# FLO-408 + FLO-403 + a newer completed run -> no alerts at all.
+	zombie_a = _run(id="97468147", status="issue_created", triggered_offset_min=-60)
+	zombie_b = _run(id="ba4dd1fd", status="issue_created", triggered_offset_min=-45)
+	newest = _run(id="recovery-base", status="completed", triggered_offset_min=-8, completed_offset_min=-3)
+	assert detect_silent_runs((zombie_a, zombie_b, newest), NOW) == ()
+
+
+def test_is_superseded_helper_directly():
+	zombie = _run(id="z", status="issue_created", triggered_offset_min=-50)
+	newer = _run(id="n", status="completed", triggered_offset_min=-10, completed_offset_min=-5)
+	newer_coalesced = _run(
+		id="nc", status="issue_created", triggered_offset_min=-1, coalesced_into_run_id="n"
+	)
+	# Newer non-coalesced base run present -> superseded.
+	assert is_superseded_by_newer_base_run(zombie, (zombie, newer)) is True
+	# Only a coalesced newer run -> NOT superseded (not a base run).
+	assert is_superseded_by_newer_base_run(zombie, (zombie, newer_coalesced)) is False
+	# No newer run at all -> not superseded.
+	assert is_superseded_by_newer_base_run(newer, (zombie, newer)) is False
+	# Same triggered_at tie -> not strictly newer -> not superseded.
+	tie_z = HeartbeatRun(
+		id="tz",
+		status="issue_created",
+		triggered_at_epoch=zombie.triggered_at_epoch,
+		completed_at_epoch=None,
+	)
+	assert is_superseded_by_newer_base_run(zombie, (zombie, tie_z)) is False
+
+
+def test_monitor_verdict_healthy_for_flo408_flo403_zombie_shape():
+	# Acceptance: given the CEO run history from FLO-417, detect_silent_runs
+	# returns no alerts and the watchdog verdict is HEALTHY.
+	mon = _monitor(
+		(
+			_run(id="97468147", status="issue_created", triggered_offset_min=-60),
+			_run(id="ba4dd1fd", status="issue_created", triggered_offset_min=-45),
+			_run(id="flo416", status="completed", triggered_offset_min=-8, completed_offset_min=-3),
+		)
+	)
+	snap = mon.evaluate_health()
+	assert snap.silent_run_alerts == ()
+	assert snap.severity == SEVERITY_OK
+
+
+def test_two_in_flight_runs_only_the_newer_can_alert():
+	# FLO-419: two non-coalesced in-flight runs of different ages is the zombie
+	# shape. Under coalesce_if_active the newer base run could only be admitted
+	# once the older was inactive, so the older is a stale record — only the
+	# newer run is a silent-run candidate. (Before FLO-419 both alerted, which
+	# is the false-positive this test pins as corrected.)
 	oldest = _run(id="old", status="issue_created", triggered_offset_min=-50)
 	newest = _run(id="new", status="issue_created", triggered_offset_min=-32)
 	alerts = detect_silent_runs((newest, oldest), NOW)
-	# Both critical; oldest (largest age) leads.
-	assert [a.run.id for a in alerts] == ["old", "new"]
+	assert [a.run.id for a in alerts] == ["new"]
+
+
+def test_silent_alerts_ordered_oldest_first_on_same_triggered_time():
+	# Ordering (oldest/largest-age leads) is only reachable when two candidates
+	# share a triggered-at timestamp (a pathological same-tick tie); any age
+	# difference now means the older is a superseded zombie (FLO-419).
+	tie = NOW - 50 * 60
+	a = HeartbeatRun(id="a", status="issue_created", triggered_at_epoch=tie, completed_at_epoch=None)
+	b = HeartbeatRun(id="b", status="issue_created", triggered_at_epoch=tie, completed_at_epoch=None)
+	alerts = detect_silent_runs((b, a), NOW)
+	assert len(alerts) == 2
+	# Same age -> stable by sort; both critical, order preserved as both equal.
+	assert {x.run.id for x in alerts} == {"a", "b"}
 
 
 def test_custom_thresholds_override_defaults():

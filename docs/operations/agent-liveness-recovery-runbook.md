@@ -110,6 +110,8 @@ GET /api/issues/{linkedIssueId}
 - If `age ≥ T_STUCK` and the linked issue is still active → **STUCK**. Proceed to Step 2.
 - If `age ≥ T_ABORT` → **abort** (skip Step 3, go to Step 4).
 
+> **Zombie run-records (FLO-419).** A strictly newer non-coalesced base run in the window supersedes an older in-flight run — under `coalesce_if_active` the platform only admits a fresh base run once the prior one is inactive, so the older record is stale, not stuck. Treat such a run as **healthy** (`is_superseded_by_newer_base_run()` in the library) and do not alert or recover it.
+
 > **Composability:** when FLO-266 lands, prefer its monitoring signal (or the webhook trigger) as the detection source and use the run-history / stale-run-issue check above as the fallback only.
 
 ### Step 2 — Resolve the recovery owner
@@ -231,7 +233,7 @@ One routine per watched agent. The Software Architect owns the watchdogs for its
 
 ## Verification
 
-The watchdog run is itself the verification loop: every fire either confirms healthy (no-op comment) or performs measurable recovery. The pure logic is pinned by `tools/ops/agent_liveness/tests/test_recovery.py` — including the canonical **negative test** (`test_simulated_silent_architect_run_self_heals`) that replays the FLO-365 incident shape and asserts the recovery owner resolves to the CEO (never the Architect) and that the release+restart loop escalates to the board once attempts are exhausted.
+The watchdog run is itself the verification loop: every fire either confirms healthy (no-op comment) or performs measurable recovery. The pure logic is pinned by `tools/ops/agent_liveness/tests/test_recovery.py` — including the canonical **negative test** (`test_simulated_silent_architect_run_self_heals`) that replays the FLO-365 incident shape and asserts the recovery owner resolves to the CEO (never the Architect) and that the release+restart loop escalates to the board once attempts are exhausted — and the **zombie-run** test (`test_zombie_run_does_not_trigger_recovery`, FLO-419) that asserts a superseded run is detected + classified healthy so a moved-on agent raises no false alert.
 
 To exercise the live path safely:
 
@@ -246,3 +248,4 @@ To exercise the live path safely:
 | 2026-06-20 | Initial CEO-only runbook; CEO watchdog created (paused) | [FLO-267](/FLO/issues/FLO-267) |
 | 2026-06-21 | Generalized beyond CEO; manager-as-recovery-owner; recovery library + negative test | [FLO-395](/FLO/issues/FLO-395) |
 | 2026-06-21 | Architect Liveness Watchdog provisioned + activated (CEO-owned); Coverage table records routine ids | [FLO-398](/FLO/issues/FLO-398) |
+| 2026-06-21 | Zombie run-record suppression — a newer non-coalesced base run supersedes an older in-flight run; detection + verdict agree a zombie is healthy | [FLO-419](/FLO/issues/FLO-419) |

@@ -31,7 +31,9 @@ generic in shape — and layers three things on top:
 1. :func:`resolve_recovery_owner` — the chain-of-command resolution (the core
    fix; never returns the stuck agent itself).
 2. :func:`classify_run` — the HEALTHY / SUSPICIOUS / STUCK / ABORT verdict
-   from the runbook's age thresholds + the linked-issue terminal state.
+   from the runbook's age thresholds + the linked-issue terminal state + the
+   zombie-run supersession test (FLO-419: a run superseded by a strictly newer
+   non-coalesced base run is HEALTHY — the agent moved on).
 3. :func:`plan_recovery` — the next action (NOOP / RELEASE_RESTART /
    ESCALATE_BOARD) given the verdict + prior attempt count, with exponential
    backoff and a max-attempts ceiling.
@@ -214,6 +216,7 @@ def classify_run(
 	chain: ChainOfCommand,
 	thresholds: LivenessThresholds,
 	linked_issue_is_terminal: bool = False,
+	superseded_by_newer_base_run: bool = False,
 	ceo_fallback_owner_id: str | None = None,
 ) -> RunVerdict:
 	"""Classify one in-flight run into HEALTHY / SUSPICIOUS / STUCK / ABORT.
@@ -222,6 +225,10 @@ def classify_run(
 
 	* linked issue terminal (``done``/``cancelled``) → **HEALTHY** (the run
 		finished; the silent appearance is a stale signal).
+	* superseded by a strictly newer non-coalesced base run → **HEALTHY**
+		(FLO-419: ``coalesce_if_active`` only admits a fresh base run once the
+		prior one is inactive, so a newer base run means the agent moved on and
+		this in-flight record is a zombie, not a stuck run).
 	* ``age < T_SUSPICIOUS`` → **HEALTHY** (within normal bounds).
 	* ``T_SUSPICIOUS ≤ age < T_STUCK`` → **SUSPICIOUS** (log + watch).
 	* ``age ≥ T_STUCK`` and the linked issue is still active → **STUCK**
@@ -231,6 +238,11 @@ def classify_run(
 	``recovery_owner_id`` is resolved even for non-STUCK verdicts so the
 	suspicious/abort comments route to the right owner; it is ``None`` only
 	for an unmanaged top-of-chain agent with no configured fallback.
+
+	``superseded_by_newer_base_run`` is computed by the caller via
+	:func:`tools.ops.ceo_heartbeat.monitor.is_superseded_by_newer_base_run`
+	(one owner for the rule — DRY) so this verdict and detection can never
+	disagree on a zombie.
 	"""
 	owner_id = resolve_recovery_owner(stuck_agent_id, chain, ceo_fallback_owner_id=ceo_fallback_owner_id)
 	age = _age_minutes(run.triggered_at_epoch, now_epoch)
@@ -252,6 +264,16 @@ def classify_run(
 			recovery_owner_id=owner_id,
 			linked_issue_id=run.linked_issue_id,
 			reason="linked issue is terminal — run is not stuck",
+		)
+
+	if superseded_by_newer_base_run:
+		return RunVerdict(
+			verdict=VERDICT_HEALTHY,
+			age_minutes=age,
+			stuck_agent_id=stuck_agent_id,
+			recovery_owner_id=owner_id,
+			linked_issue_id=run.linked_issue_id,
+			reason="superseded by a newer non-coalesced base run — agent moved on (FLO-419)",
 		)
 
 	if age >= thresholds.abort_minutes:

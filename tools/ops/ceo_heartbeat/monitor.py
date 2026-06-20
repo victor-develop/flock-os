@@ -23,7 +23,11 @@ Signals (all derived from the Paperclip control plane, no bench needed):
   (``issue_created``) and whose ``completedAt`` is still null is in flight; once
   its age passes the warning / critical thresholds it becomes a silent-run alert.
   This is exactly the shape of the FLO-264 incident (a run that sat in
-  ``issue_created`` for >1h without completing).
+  ``issue_created`` for >1h without completing). **Zombie run-records** — an old
+  in-flight run left behind after the agent admitted a newer base run (its linked
+  issue transitioned to ``blocked``/``in_review``/``done``) — are suppressed via
+  :func:`is_superseded_by_newer_base_run` (FLO-419) so a healthy, moved-on agent
+  does not raise a false silent-run alert.
 * **Completion-time trends** — p50 / p95 / max of completed-run durations, so a
   creeping slowdown is visible before it becomes a silent run.
 
@@ -583,6 +587,36 @@ def default_http_get(url: str, headers: dict[str, str]) -> str | bytes:
 # ---------------------------------------------------------------------------- #
 # Pure detection logic.
 # ---------------------------------------------------------------------------- #
+def is_superseded_by_newer_base_run(
+	run: HeartbeatRun,
+	runs: Sequence[HeartbeatRun] | tuple[HeartbeatRun, ...],
+) -> bool:
+	"""True if a strictly newer non-coalesced base run exists in the window (FLO-419).
+
+	Under ``coalesce_if_active`` concurrency the platform only admits a fresh
+	base run when it considers the prior base run inactive. So the existence of
+	a strictly newer base run (a run whose ``coalesced_into_run_id`` is null and
+	whose ``triggered_at_epoch`` is greater) is proof the agent has moved on:
+	the older in-flight run-record is a **zombie** (stale), not a stuck run.
+
+	Used by :func:`detect_silent_runs` to suppress false silent-run alerts, and
+	exposed publicly so :func:`tools.ops.agent_liveness.recovery.classify_run`
+	can reach the same verdict without re-deriving the rule (DRY — one owner for
+	the supersession test, no coupling to issue-status semantics).
+	"""
+	runs_t = runs if isinstance(runs, tuple) else tuple(runs)
+	for other in runs_t:
+		if other.id == run.id:
+			continue
+		# A coalesced overlap is not a base run — it folds into a sibling and
+		# says nothing about whether the agent moved past `run`.
+		if other.coalesced_into_run_id:
+			continue
+		if other.triggered_at_epoch > run.triggered_at_epoch:
+			return True
+	return False
+
+
 def detect_silent_runs(
 	runs: Sequence[HeartbeatRun] | tuple[HeartbeatRun, ...],
 	now_epoch: float,
@@ -597,10 +631,14 @@ def detect_silent_runs(
 	* its ``status`` is in :data:`ACTIVE_RUN_STATUSES` (non-terminal), AND
 	* it has no ``completed_at_epoch`` (still open), AND
 	* it is not itself a coalesced overlap (``coalesced_into_run_id`` is null —
-		the real active run it folded into is the one we want).
+		the real active run it folded into is the one we want), AND
+	* it is not a **zombie** superseded by a strictly newer non-coalesced base
+		run (FLO-419: ``coalesce_if_active`` only admits a fresh base run once
+		the prior one is inactive, so a newer base run means the agent moved on
+		and the older in-flight record is stale, not stuck).
 
 	Severity is :data:`SEVERITY_CRITICAL` once ``age >= critical_minutes``,
-	otherwise :data:`SEVERITY_WARNING` once ``age >= warning_minutes`. Alerts are
+	otherwise :data:`SEVERITY_WARNING` once ``age >= warning_minutes``. Alerts are
 	returned oldest-first (the longest-stuck run leads the dashboard).
 	"""
 	# Import-free alias to avoid a circular import at module scope.
@@ -613,6 +651,8 @@ def detect_silent_runs(
 			continue
 		if run.coalesced_into_run_id:
 			continue
+		if is_superseded_by_newer_base_run(run, runs_t):
+			continue  # FLO-419: zombie run-record — agent admitted a newer base run.
 		age = _age_minutes(run.triggered_at_epoch, now_epoch)
 		if age is None:
 			continue

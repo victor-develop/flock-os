@@ -40,7 +40,7 @@ from tools.ops.agent_liveness.recovery import (
 	recovery_owner_table,
 	resolve_recovery_owner,
 )
-from tools.ops.ceo_heartbeat.monitor import HeartbeatRun
+from tools.ops.ceo_heartbeat.monitor import HeartbeatRun, is_superseded_by_newer_base_run
 
 # ---------------------------------------------------------------------------- #
 # Fixtures — the Flock OS chain of command + a simulated silent run.
@@ -208,6 +208,44 @@ def test_classify_healthy_when_linked_issue_terminal():
 	assert verdict.verdict == "healthy"
 
 
+def test_classify_healthy_when_superseded_by_newer_base_run():
+	"""FLO-419: a zombie run (agent admitted a newer base run) is HEALTHY, not STUCK.
+
+	Replays the 2026-06-20 FLO-408/FLO-403 shape at the verdict layer: even at
+	25m (past T_STUCK) with the linked issue still nominally active, a run
+	superseded by a strictly newer non-coalesced base run is stale, not stuck.
+	The caller computes ``superseded_by_newer_base_run`` via the shared
+	``is_superseded_by_newer_base_run`` helper so detection and this verdict
+	can never disagree.
+	"""
+	verdict = classify_run(
+		SILENT_ARCHITECT_RUN,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		superseded_by_newer_base_run=True,
+	)
+	assert verdict.verdict == "healthy"
+	assert verdict.recovery_owner_id == CEO_ID  # still resolved for the comment
+	assert "superseded" in verdict.reason
+	assert "FLO-419" in verdict.reason
+
+
+def test_classify_superseded_takes_precedence_over_abort_age():
+	"""A zombie is healthy even at T_ABORT age — the agent already moved on."""
+	old_zombie = _run(age_minutes=DEFAULT_T_ABORT_MINUTES + 5)  # 50m, would ABORT
+	verdict = classify_run(
+		old_zombie,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		superseded_by_newer_base_run=True,
+	)
+	assert verdict.verdict == "healthy"
+
+
 def test_classify_abort_past_t_abort():
 	run = _run(age_minutes=DEFAULT_T_ABORT_MINUTES + 5)  # 50m
 	verdict = classify_run(
@@ -360,6 +398,67 @@ def test_simulated_silent_architect_run_self_heals():
 	# the logic has done its job — no human needed for detection, owner
 	# resolution, or the retry loop. The board is only paged when automation
 	# is genuinely exhausted, which is the FLO-267 contract preserved.
+
+
+# ---------------------------------------------------------------------------- #
+# Zombie run-records (FLO-419) — detection + verdict agree a zombie is healthy.
+# ---------------------------------------------------------------------------- #
+def test_zombie_run_does_not_trigger_recovery():
+	"""FLO-419 canonical path: a superseded run is detected + classified healthy.
+
+	The watchdog computes supersession once via the shared monitor helper
+	(``is_superseded_by_newer_base_run`` — one owner for the rule, DRY), passes
+	the result to ``classify_run``, and the verdict is HEALTHY -> NOOP. No
+	release+restart is attempted on a zombie. This replays the 2026-06-20
+	FLO-408/FLO-403 shape: an old issue_created Architect run that would have
+	been STUCK is instead HEALTHY because a newer base run was admitted.
+	"""
+	# The zombie Architect run + a newer completed base run in the same window.
+	zombie = HeartbeatRun(
+		id="architect-zombie-run",
+		status="issue_created",
+		triggered_at_epoch=NOW_EPOCH - (40 * 60),  # 40m old — would be STUCK/ABORT
+		completed_at_epoch=None,
+		linked_issue_id="linked-issue-id",
+		linked_issue_identifier="FLO-408",
+		linked_issue_title="blocked work",
+		linked_issue_status="blocked",
+		coalesced_into_run_id=None,
+		failure_reason=None,
+	)
+	newer_base = HeartbeatRun(
+		id="architect-moved-on",
+		status="completed",
+		triggered_at_epoch=NOW_EPOCH - (5 * 60),
+		completed_at_epoch=NOW_EPOCH - (1 * 60),
+		linked_issue_id="other",
+		linked_issue_identifier="FLO-416",
+		linked_issue_title="done",
+		linked_issue_status="done",
+		coalesced_into_run_id=None,
+		failure_reason=None,
+	)
+	window = (zombie, newer_base)
+
+	# 1. Detection (the monitor's rule) — the zombie is superseded.
+	assert is_superseded_by_newer_base_run(zombie, window) is True
+
+	# 2. Verdict — the watchdog passes the detection result to classify_run.
+	verdict = classify_run(
+		zombie,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		superseded_by_newer_base_run=is_superseded_by_newer_base_run(zombie, window),
+	)
+	assert verdict.verdict == "healthy"
+	assert verdict.recovery_owner_id == CEO_ID
+
+	# 3. Plan — a healthy zombie is a NOOP; no release+restart, no escalation.
+	plan = plan_recovery(verdict, prior_attempts=0)
+	assert plan.action == ACTION_NOOP
+	assert plan.next_backoff_seconds is None
 
 
 # ---------------------------------------------------------------------------- #
