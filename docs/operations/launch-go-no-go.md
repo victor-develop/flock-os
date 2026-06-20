@@ -84,10 +84,18 @@
 
 ## 2. Merge-gate / coverage bar (QA holds)
 
-Independent of the issue list — these hold on every deploy and are the QA floor:
+Independent of the issue list — these hold on every deploy and are the QA floor.
+The authoritative source is [`scripts/qa-gate.sh`](../../scripts/qa-gate.sh)
+(mirrored by `.github/workflows/ci.yml`), which enforces four checks:
+`ruff check` → `ruff format --check` → `pytest flock_os/tests/` → branch-coverage
+ratchet (`fail_under = 80` in `pyproject.toml`).
 
-- [ ] `master` is green (`.github/workflows/ci.yml` lint + test gate).
-- [ ] QA gate (`scripts/qa-gate.sh`) is green at the promoted tag.
+- [ ] `master` is green — `.github/workflows/ci.yml` lint + test gate passes on
+      the promoted tag.
+- [ ] QA gate (`scripts/qa-gate.sh`) is green at the promoted tag — i.e. all four
+      checks above pass, and branch coverage is **≥ 80%** (the ratchet floor; the
+      foundation currently measures ~91% actual). This 80% is the launch coverage
+      bar — do not promote below it.
 - [ ] No `--skip-failing` migration debt carried into launch (see
       [`migration-runbook.md` §3](migration-runbook.md#--skip-failing--the-escape-hatch-not-the-default)).
 - [ ] This checklist matches the live issue statuses (no item marked "done" that
