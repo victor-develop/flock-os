@@ -1,0 +1,28 @@
+# Flock OS production Procfile (FLO-246 Phase 6.1).
+#
+# Replaces the bench-default Procfile (single socketio process) with the FLO-121
+# scaled-socketio topology: N node socketio workers behind the nginx sticky-L7
+# LB (deploy/nginx/prod.conf). This is the unit `bench start` / foreman / honcho
+# brings up; the supervisor config in deploy/supervisord.conf is the canonical
+# multi-process manager (survives Frappe Cloud dashboard restarts — ADR #2) and
+# is what the container actually runs in prod.
+#
+# Why N workers and not 1: the §8 15k WS connection-setup wall (FLO-121) is a
+# single-event-loop serialization. N workers spread the handshakes; the
+# @socket.io/redis-adapter (self-healing wiring in the Flock-OS app) makes the
+# cluster behave as one logical io instance across workers.
+#
+# The backend count N is controlled by FLOCK_SIO_PROCESSES (default 4 — the ADR
+# launch band). Each entry below is a single line (foreman/honcho portable).
+#
+# Format: <name>: <command>
+
+web: gunicorn --bind 127.0.0.1:8000 --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-120} --preload --max-requests ${GUNICORN_MAX_REQUESTS:-5000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-500} flock_os.app:application
+
+worker: bench worker --queue short,long,default
+
+schedule: bench schedule
+
+socketio: bash -lc 'flock-os-scale-socketio start "${FLOCK_SIO_PROCESSES:-4}" --lb nginx'
+
+asset: bash -lc 'if [ -z "${SUPERVISOR_SKIP_ASSET_WATCH:-}" ]; then bench watch; fi'

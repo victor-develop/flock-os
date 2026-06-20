@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # Allow deploy.yml to reuse this workflow as the master-green gate (FLO-246).
+  # Purely additive — does not change the push/PR trigger behaviour.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
