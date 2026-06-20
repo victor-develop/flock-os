@@ -113,11 +113,15 @@ edit is needed to switch topology.
 # 1. Bring up the prod-equivalent tier (MariaDB + Redis AOF + gunicorn + WS LB):
 scripts/dev/docker-ws-tier.sh up
 
-# 2. Run the drill INSIDE the web container (bench-in-container == prod shape):
+# 2. Run the drill INSIDE the web container (bench-in-container == prod shape).
+#    The docker MariaDB root user is `root` (vs `frappe_root` on the host bench),
+#    so pass --db-root-username root. The DB host is auto-resolved from the
+#    common_site_config (db_host=mariadb), so no --db-host flag is needed:
 docker compose -f docker/docker-compose.yml exec web \
   bash apps/flock_os/scripts/dev/restore-drill.sh \
     --bench-dir /home/frappe/frappe-bench \
     --source-site flock_os.localhost \
+    --db-root-username root \
     --db-root-password "$MARIADB_ROOT_PASSWORD" \
     --admin-password "$SITE_ADMIN_PASSWORD"
 #    (creds come from docker/.env.docker, already in the container env)

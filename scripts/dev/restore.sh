@@ -65,7 +65,10 @@ if not db or pw is None:
 
 host = cfg.get("host")
 if not host:
-    csc = os.path.join(os.path.dirname(cfg_path), "common_site_config.json")
+    # common_site_config.json lives in the SITES dir (parent of the site dir):
+    # sites/common_site_config.json — NOT sites/<site>/.
+    sites_dir = os.path.dirname(os.path.dirname(cfg_path))
+    csc = os.path.join(sites_dir, "common_site_config.json")
     if os.path.exists(csc):
         try:
             host = json.load(open(csc)).get("db_host")

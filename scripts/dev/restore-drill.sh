@@ -22,12 +22,14 @@
 #     --drill-site <name>    restore target host (default: flock_os_restore_drill)
 #     --bench-dir <path>     bench root (default: $BENCH_DIR)
 #     --db-root-password <p> MariaDB root password (default: $MARIADB_ROOT_PASSWORD)
+#     --db-root-username <u> MariaDB root user (default: $MARIADB_ROOT_USER / frappe_root;
+#                            the docker-compose tier uses `root`)
 #     --admin-password <p>   drill-site Administrator password (default: $SITE_ADMIN_PASSWORD)
 #     --keep                 do NOT drop the drill site at the end (debug)
 #     -h, --help
 #
 # Env (lower priority than flags; $REPO_ROOT/.env auto-loaded if present):
-#   BENCH_DIR, SITE_NAME, MARIADB_ROOT_PASSWORD, SITE_ADMIN_PASSWORD
+#   BENCH_DIR, SITE_NAME, MARIADB_ROOT_PASSWORD, MARIADB_ROOT_USER, SITE_ADMIN_PASSWORD
 set -uo pipefail
 
 PROG="$(basename "${BASH_SOURCE[0]}")"
@@ -70,9 +72,12 @@ def resolve_db_host(site_cfg_path):
 	# site_config.json `host` wins (per-site override); else the bench-level
 	# common_site_config.json `db_host` (where the docker entrypoint writes it);
 	# else the local-bench default. None -> 127.0.0.1 (host bench / mysql local).
+	# common_site_config.json lives in the SITES dir (parent of the site dir),
+	# i.e. sites/common_site_config.json — NOT sites/<site>/.
 	host = cfg.get("host")
 	if not host:
-		csc = os.path.join(os.path.dirname(site_cfg_path), "common_site_config.json")
+		sites_dir = os.path.dirname(os.path.dirname(site_cfg_path))
+		csc = os.path.join(sites_dir, "common_site_config.json")
 		if os.path.exists(csc):
 			try:
 				host = json.load(open(csc)).get("db_host")
@@ -116,7 +121,7 @@ drop_site() {
 	[[ -d "$BENCH_DIR/sites/$site" ]] || return 0
 	(cd "$BENCH_DIR" && yes \
 		| command bench drop-site "$site" --force --no-backup \
-			--db-root-username frappe_root --db-root-password "$DB_ROOT_PW" >/dev/null 2>&1) \
+			--db-root-username "$DB_ROOT_USER" --db-root-password "$DB_ROOT_PW" >/dev/null 2>&1) \
 		|| (cd "$BENCH_DIR" && yes \
 			| command bench drop-site "$site" --force --no-backup >/dev/null 2>&1) \
 		|| true
@@ -129,6 +134,7 @@ SOURCE_SITE="${SITE_NAME:-}"
 DRILL_SITE="flock_os_restore_drill"
 BENCH_DIR="${BENCH_DIR:-}"
 DB_ROOT_PW="${MARIADB_ROOT_PASSWORD:-}"
+DB_ROOT_USER="${MARIADB_ROOT_USER:-frappe_root}"
 ADMIN_PW="${SITE_ADMIN_PASSWORD:-}"
 KEEP=0
 
@@ -142,6 +148,8 @@ while [[ $# -gt 0 ]]; do
 		--bench-dir=*) BENCH_DIR="${1#--bench-dir=}"; shift ;;
 		--db-root-password) DB_ROOT_PW="$2"; shift 2 ;;
 		--db-root-password=*) DB_ROOT_PW="${1#--db-root-password=}"; shift ;;
+		--db-root-username) DB_ROOT_USER="$2"; shift 2 ;;
+		--db-root-username=*) DB_ROOT_USER="${1#--db-root-username=}"; shift ;;
 		--admin-password) ADMIN_PW="$2"; shift 2 ;;
 		--admin-password=*) ADMIN_PW="${1#--admin-password=}"; shift ;;
 		--keep) KEEP=1; shift ;;
@@ -196,7 +204,7 @@ echo "    archive: $(basename "$ARCHIVE")"
 
 # --- 3. restore into the drill site (created fresh or overwritten w/ --force) --
 echo "==> [3/4] restoring into $DRILL_HOST"
-RESTORE_ARGS=(--site "$DRILL_HOST" --confirm --force --bench-dir "$BENCH_DIR" --db-root-password "$DB_ROOT_PW")
+RESTORE_ARGS=(--site "$DRILL_HOST" --confirm --force --bench-dir "$BENCH_DIR" --db-root-username "$DB_ROOT_USER" --db-root-password "$DB_ROOT_PW")
 [[ -n "$ADMIN_PW" ]] && RESTORE_ARGS+=(--admin-password "$ADMIN_PW")
 if ! "$SCRIPT_DIR/restore.sh" "$ARCHIVE" "${RESTORE_ARGS[@]}" >/tmp/flo288_restore.log 2>&1; then
 	echo "$PROG: restore.sh failed:" >&2; tail -n 30 /tmp/flo288_restore.log >&2; exit 1
