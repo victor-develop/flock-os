@@ -313,7 +313,7 @@ The two hot write paths on event day, both already load-proven
 - **Registration check-in** — `check_in_registration` bumps
   `checked_in_count` via the **atomic single-statement UPDATE**
   `_bump_gathering_count(doc.gathering, "checked_in_count", +1)`
-  ([`flock_event_registration.py:649`](../../flock_os/flock/doctype/flock_event_registration/flock_event_registration.py)).
+  ([`flock_event_registration.py:649`](../../flock_os/flock_os/doctype/flock_event_registration/flock_event_registration.py)).
   PERF-CHK-NONATOMIC from the scale drill is **closed by
   [FLO-515](/FLO/issues/FLO-515)** (`aa87d4d`, on this slice): it replaced the
   racy read-then-write with the atomic counter helper shared with
