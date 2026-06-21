@@ -183,6 +183,23 @@ def validate_registration_transition(*, from_status: str, to_status: str) -> Non
 # :class:`RecordingRegistrationScopeGateway`. Returns plain data so the
 # eligibility predicate stays Frappe-agnostic + transport-agnostic.
 # ---------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class GatheringScope:
+	"""A gathering's scope anchors (branch/group/organization) read in one query.
+
+	The PERF-REG-N1 collapse ([FLO-518]): the three gathering reads the
+	registration paths need (branch + group + organization) are fetched in a
+	single ``db.get_value(..., [branch, group, organization], as_dict=True)``
+	rather than three serial single-column reads. Carried as a value object so
+	:class:`RegistrationScopeGateway.gathering_scope` stays transport-agnostic
+	and the eligibility predicate / row-build read it once, not three times.
+	"""
+
+	branch: str | None
+	group: str | None
+	organization: str | None
+
+
 @runtime_checkable
 class RegistrationScopeGateway(Protocol):
 	"""Port: the membership / branch / subtree reads eligibility needs (§5).
@@ -224,6 +241,17 @@ class RegistrationScopeGateway(Protocol):
 		"""The gathering's originating group (the ``Own Group`` anchor)."""
 		...
 
+	def gathering_scope(self, gathering: str) -> GatheringScope:
+		"""The gathering's branch + group + organization in one read (PERF-REG-N1, [FLO-518]).
+
+		Collapses the three serial single-column reads
+		(:meth:`gathering_branch` / :meth:`gathering_group` /
+		:meth:`gathering_organization`) into a single query. Call sites that
+		need all three anchors (the eligibility predicate, the registration
+		row-build) use this; the individual accessors stay for single-field reads.
+		"""
+		...
+
 	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
 		"""True iff ``member`` holds a non-expired, non-declined invitation (§5).
 
@@ -262,6 +290,9 @@ class NullRegistrationScopeGateway:
 
 	def gathering_group(self, gathering: str) -> str | None:  # noqa: ARG002
 		return None
+
+	def gathering_scope(self, gathering: str) -> GatheringScope:  # noqa: ARG002
+		return GatheringScope(branch=None, group=None, organization=None)
 
 	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:  # noqa: ARG002
 		return False
@@ -308,9 +339,11 @@ def is_member_in_scope(*, member: str, gathering: str, scope: str, gateway: Regi
 	if scope in CLOSED_SCOPES:
 		return False
 
-	gathering_group = gateway.gathering_group(gathering)
-	gathering_branch = gateway.gathering_branch(gathering)
-	gathering_org = gateway.gathering_organization(gathering)
+	# PERF-REG-N1 ([FLO-518]): one gathering read, not three.
+	gathering_anchors = gateway.gathering_scope(gathering)
+	gathering_group = gathering_anchors.group
+	gathering_branch = gathering_anchors.branch
+	gathering_org = gathering_anchors.organization
 
 	if scope == SCOPE_OWN_GROUP:
 		if not gathering_group:
@@ -568,6 +601,7 @@ __all__ = (
 	"CapacityDecision",
 	"DEFAULT_BULK_BATCH_SIZE",
 	"FlockRegistrationError",
+	"GatheringScope",
 	"NullRegistrationScopeGateway",
 	"RegistrationScopeGateway",
 	"RegistrationWindow",

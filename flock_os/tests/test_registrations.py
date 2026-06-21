@@ -118,6 +118,16 @@ class RecordingRegistrationScopeGateway(RegistrationScopeGateway):
 	def gathering_group(self, gathering: str) -> str | None:
 		return self.group_by_gathering.get(gathering)
 
+	def gathering_scope(self, gathering: str) -> registrations.GatheringScope:
+		# PERF-REG-N1 ([FLO-518]): single-call compose over the three maps the
+		# individual accessors read — the collapse the production adapter does in
+		# one query, the in-memory fake does in one dict lookup triple.
+		return registrations.GatheringScope(
+			branch=self.branch_by_gathering.get(gathering),
+			group=self.group_by_gathering.get(gathering),
+			organization=self.org_by_gathering.get(gathering),
+		)
+
 	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
 		return (gathering, member) in self.valid_invitations
 
@@ -291,6 +301,71 @@ def test_null_gateway_yields_no_scope_before_wiring():
 			registrations.is_member_in_scope(member="M_in", gathering="G_N", scope=scope, gateway=null)
 			is False
 		)
+
+
+def test_null_gateway_gathering_scope_returns_empty_anchors():
+	# PERF-REG-N1 ([FLO-518]): the null gateway's collapsed read yields all-None
+	# anchors (mirrors the individual accessors' None verdicts before wiring).
+	null = registrations.NullRegistrationScopeGateway()
+	anchors = null.gathering_scope("G_N")
+	assert anchors == registrations.GatheringScope(branch=None, group=None, organization=None)
+
+
+def test_is_member_in_scope_reads_gathering_once_not_three():
+	# PERF-REG-N1 ([FLO-518]): the eligibility predicate must resolve the
+	# gathering's branch/group/organization via a single ``gathering_scope``
+	# call — not three serial ``gathering_branch``/``group``/``organization``
+	# reads (the N+1 the 15k stress flagged at 1.37ms median).
+	class _CountingGateway(RecordingRegistrationScopeGateway):
+		def __init__(self, base: RecordingRegistrationScopeGateway) -> None:
+			super().__init__(
+				branch_by_member=base.branch_by_member,
+				org_by_branch=base.org_by_branch,
+				groups_by_member=base.groups_by_member,
+				group_subtree_by_group=base.group_subtree_by_group,
+				branch_subtree_by_branch=base.branch_subtree_by_branch,
+				branch_by_gathering=base.branch_by_gathering,
+				org_by_gathering=base.org_by_gathering,
+				group_by_gathering=base.group_by_gathering,
+				valid_invitations=base.valid_invitations,
+			)
+			self.scope_calls = 0
+			self.branch_calls = 0
+			self.group_calls = 0
+			self.org_calls = 0
+
+		def gathering_scope(self, gathering: str) -> registrations.GatheringScope:
+			self.scope_calls += 1
+			return super().gathering_scope(gathering)
+
+		def gathering_branch(self, gathering: str) -> str | None:
+			self.branch_calls += 1
+			return super().gathering_branch(gathering)
+
+		def gathering_group(self, gathering: str) -> str | None:
+			self.group_calls += 1
+			return super().gathering_group(gathering)
+
+		def gathering_organization(self, gathering: str) -> str | None:
+			self.org_calls += 1
+			return super().gathering_organization(gathering)
+
+	# Every non-Invited scope reads the anchors; Invited Only does not (it
+	# rides ``has_valid_invitation`` instead), and None short-circuits closed.
+	anchor_scopes = (
+		SCOPE_OWN_GROUP,
+		SCOPE_GROUP_SUBTREE,
+		SCOPE_BRANCH,
+		SCOPE_BRANCH_SUBTREE,
+		SCOPE_ORG_WIDE,
+	)
+	for scope in anchor_scopes:
+		gw = _CountingGateway(_world())
+		registrations.is_member_in_scope(member="M_in", gathering="G_N", scope=scope, gateway=gw)
+		assert gw.scope_calls == 1, f"{scope}: gathering_scope read once"
+		assert gw.branch_calls == 0, f"{scope}: no serial gathering_branch read"
+		assert gw.group_calls == 0, f"{scope}: no serial gathering_group read"
+		assert gw.org_calls == 0, f"{scope}: no serial gathering_organization read"
 
 
 # --------------------------------------------------------------------------- #
