@@ -16,8 +16,12 @@
 # launch band). Each entry below is a single line (foreman/honcho portable).
 #
 # Format: <name>: <command>
+#
+# gunicorn WSGI entry is `frappe.app:application` — Frappe's own WSGI app, not a
+# per-app `app.py` (Frappe apps don't ship one). Matches the proven docker dev
+# tier (docker/docker-compose.yml). Architect review FLO-678.
 
-web: gunicorn --bind 127.0.0.1:8000 --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-120} --preload --max-requests ${GUNICORN_MAX_REQUESTS:-5000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-500} flock_os.app:application
+web: gunicorn --bind 127.0.0.1:8000 --workers ${GUNICORN_WORKERS:-4} --threads ${GUNICORN_THREADS:-4} --timeout ${GUNICORN_TIMEOUT:-120} --preload --max-requests ${GUNICORN_MAX_REQUESTS:-5000} --max-requests-jitter ${GUNICORN_MAX_REQUESTS_JITTER:-500} frappe.app:application
 
 worker: bench worker --queue short,long,default
 

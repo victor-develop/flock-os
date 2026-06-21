@@ -241,6 +241,13 @@ The tier is **self-healing across `bench update` and across restarts**:
    N node backends + the nginx sticky-L7 LB. Supervisor auto-restarts the
    tier if it dies — this is the ADR blocker #2 (the scaled tier survives a
    Frappe Cloud dashboard restart, not just gunicorn).
+4. **`redis-adapter-ping` probe** (`deploy/supervisord.conf`): a supervisor
+   liveness program that `redis-cli PING`s the dedicated adapter Redis
+   (`FLOCK_SIO_ADAPTER_REDIS`) every `FLOCK_SIO_ADAPTER_PING_INTERVAL` (15s).
+   It warns when the adapter Redis is unset (single-node is a valid launch
+   shape) and goes `FATAL` (`supervisorctl status`) when a configured adapter
+   Redis stops answering — so the FLO-127 §2 silent cross-node blackout is
+   loud, not silent. Disable with `FLOCK_SIO_ADAPTER_PING_DISABLE=1`.
 
 If a dashboard restart collapses the tier to a single socketio, SSH in and:
 
