@@ -796,6 +796,67 @@ def test_invitation_index_patch_registered_in_patches_txt():
 
 
 # --------------------------------------------------------------------------- #
+# Group Member roster index contract (FLO-459 / FLO-454 15k stress drill).
+#
+# The scope predicate `is_member_in_scope` resolves the roster on every
+# `register_for_event` call. The [FLO-454] drill proved the single-column
+# `branch` index is non-selective at 15k rows (optimizer full-scans). The
+# v0_3 patch adds the two composites the scope queries filter on.
+# --------------------------------------------------------------------------- #
+EXPECTED_GROUP_MEMBER_INDEX_COLUMNS = {
+	("group", "status"),
+	("branch", "status"),
+}
+
+
+def test_group_member_index_contract_targets_real_columns():
+	"""The v0_3 group-member patch indexes real Flock Group Member columns and
+	declares exactly the two hot-path composites the scope resolver needs (no
+	composite UNIQUE — the (group, member) uniqueness is enforced in
+	:FlockGroupMember.validate)."""
+	from flock_os.patches.v0_3.add_group_member_indexes import INDEXES
+
+	schema = _load_doctype("Flock Group Member")
+	field_names = {f["fieldname"] for f in schema["fields"]}
+
+	declared_columns = set()
+	for doctype, _index_name, columns_sql, unique in INDEXES:
+		assert doctype == "Flock Group Member", f"patch index targets {doctype!r}"
+		columns = tuple(c.strip().strip("`") for c in columns_sql.strip("()").split(","))
+		for col in columns:
+			assert col in field_names, f"group member index column {col!r} is not a field"
+		# No composite UNIQUE in this patch — (group, member) uniqueness is
+		# application-enforced in FlockGroupMember._validate_group_member_uniqueness.
+		assert unique is False
+		declared_columns.add(columns)
+
+	assert declared_columns == EXPECTED_GROUP_MEMBER_INDEX_COLUMNS
+
+
+def test_group_member_index_patch_declares_scope_hot_paths():
+	# FLO-454 §5: (group, status) Own Group / Group Subtree roster path +
+	# (branch, status) Branch roster path — the two composites the EXPLAIN
+	# evidence showed the optimizer skipping.
+	from flock_os.patches.v0_3.add_group_member_indexes import INDEXES
+
+	by_columns = {
+		tuple(c.strip().strip("`") for c in cols.strip("()").split(",")): name
+		for _dt, name, cols, _unique in INDEXES
+	}
+	assert "idx_group_status" in by_columns.values()
+	assert "idx_branch_status" in by_columns.values()
+	assert by_columns.get(("group", "status")) == "idx_group_status"
+	assert by_columns.get(("branch", "status")) == "idx_branch_status"
+
+
+def test_group_member_index_patch_registered_in_patches_txt():
+	# The patch must run post_model_sync (after the Flock Group Member table
+	# exists).
+	patches_txt = (Path(__file__).resolve().parent.parent / "patches.txt").read_text()
+	assert "flock_os.patches.v0_3.add_group_member_indexes" in patches_txt
+
+
+# --------------------------------------------------------------------------- #
 # Capacity-race + insert-ordering contract (FLO-7 §5 #3 / §5 #4).
 #
 # The controller (Flock Event Registration) is coverage-omitted (runs under
