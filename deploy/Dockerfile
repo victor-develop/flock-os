@@ -30,7 +30,12 @@
 ARG PYTHON_VERSION=3.12
 ARG NODE_VERSION=20
 
-FROM python:${PYTHON_VERSION}-slim AS base
+# Base pinned to Debian `bookworm` (not the rolling `-slim` alias, which as of
+# 2025-06 bumped to `trixie` and DROPPED `wkhtmltopdf` from main — Trixie
+# removed it because upstream QtWebKit is unmaintained). Bookworm still ships
+# wkhtmltopdf 0.12.6; explicitly pinning the distro codename keeps this build
+# reproducible across the life of FLO-246 Phase 6.1 (FLO-718 build-validation).
+FROM python:${PYTHON_VERSION}-slim-bookworm AS base
 
 # ---------------------------------------------------------------------------- #
 # System layer: Frappe runtime deps + nginx (WS-aware LB) + supervisor (the
@@ -81,10 +86,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     && rm -rf /var/lib/apt/lists/*
 
 # Node 20 (LTS) — Frappe v15 build pipeline + the socketio workers require it.
+# `npx` ships with the NodeSource nodejs package (Node 20 bundle), so only yarn
+# is installed here. Earlier `npm install -g yarn npx` failed with EEXIST on
+# /usr/bin/npx once NodeSource's bundle started shipping it (FLO-718).
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g yarn npx
+    && npm install -g yarn
 
 FROM base AS app
 
@@ -116,12 +124,15 @@ ENV PATH="/home/frappe/.local/bin:${PATH}"
 # Initialise the bench WITHOUT a default site and WITHOUT the default Procfile
 # (we ship our own). `--frappe-branch` pins the framework to v15; `--skip-redis-
 # config-generation` because Redis is a separate managed/compose service, not
-# installed in this image.
+# installed in this image. `--no-backups` skips the cron-probe step that needs
+# `crontab` on the PATH (cron is not installed in this image — supervisor owns
+# scheduling; matches docker/Dockerfile, FLO-718).
 RUN bench init frappe-bench \
         --frappe-branch "${FRAPPE_BRANCH}" \
         --no-procfile \
         --skip-redis-config-generation \
         --skip-assets \
+        --no-backups \
         --verbose
 
 WORKDIR /home/frappe/frappe-bench
@@ -130,8 +141,8 @@ WORKDIR /home/frappe/frappe-bench
 # Install the flock_os app from the repo (this repo IS the app — see setup.py).
 # `bench get-app` symlinks the source into apps/flock_os so edits during local
 # dev hot-reload; in the image we want a real copy, so we COPY then link.
-# ---------------------------------------------------------------------------- #
-COPY --chown=frappe:frappe setup.py setup.cfg MANIFEST.in pyproject.toml requirements.txt package.json /opt/flock_os/
+# (setup.cfg is not shipped — pyproject.toml covers packaging metadata.)
+COPY --chown=frappe:frappe setup.py MANIFEST.in pyproject.toml requirements.txt package.json /opt/flock_os/
 COPY --chown=frappe:frappe flock_os /opt/flock_os/flock_os
 COPY --chown=frappe:frappe realtime /opt/flock_os/realtime
 COPY --chown=frappe:frappe load /opt/flock_os/load
@@ -158,10 +169,14 @@ RUN cd /home/frappe/frappe-bench/apps/flock_os \
 RUN cd /home/frappe/frappe-bench/apps/flock_os \
     && npm install --no-audit --no-fund @socket.io/redis-adapter @redis/client
 
-# Build assets (JS/CSS bundles). `bench build` compiles the app's webpack/esbuild
-# outputs so nginx can serve them as static (unmetered on Frappe Cloud).
+# Build assets (JS/CSS bundles). flock_os is a backend app (no JS/CSS bundles
+# — no app_include_js / app_include_css in hooks.py), so building frappe's own
+# assets is sufficient and the desk UI served via nginx resolves correctly.
+# `bench build --app flock_os` previously failed because Frappe's esbuild
+# enumerates build targets per-app and rejects apps with no JS hooks
+# (TypeError paths[0] undefined — FLO-718 build-validation).
 RUN cd /home/frappe/frappe-bench \
-    && bench build --app flock_os
+    && bench build --app frappe
 
 # ---------------------------------------------------------------------------- #
 # Deploy the FLO-121 scaled-tier wiring into the vendored Frappe realtime

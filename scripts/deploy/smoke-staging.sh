@@ -31,7 +31,6 @@
 set -uo pipefail
 
 PROG="$(basename "${BASH_SOURCE[0]}")"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SITE_URL="${STAGING_URL:-}"
 WS_URL="${STAGING_WS_URL:-}"
@@ -140,7 +139,7 @@ except Exception as e:
     print("WS_ERROR:", e, file=sys.stderr); sys.exit(1)
 ' "$WS_URL" || ws_ok=0
 else
-    echo "[3/4] SKIP (no node `ws` module and no python websocket-client — install one to run the WS smoke)" >&2
+    echo "[3/4] SKIP (no node 'ws' module and no python websocket-client — install one to run the WS smoke)" >&2
     fail=1
 fi
 if [[ $ws_ok -eq 1 ]]; then
