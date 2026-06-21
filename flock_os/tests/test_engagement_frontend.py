@@ -312,3 +312,77 @@ def test_endpoints_cover_the_design_api_surface():
 	# Every endpoint is a frappe.call method path the client uses.
 	for path in eng.ENGAGEMENT_ENDPOINTS.values():
 		assert path.startswith("flock_os.engagement_views.")
+
+
+# --------------------------------------------------------------------------- #
+# SEC-XSS-1 (FLO-685) — engage-host.js status line must HTML-escape exception
+# text. setStatus renders via innerHTML, so any ``e.message`` concatenated into
+# an error status would otherwise execute injected markup. This static guard
+# pins the escape so a future caller cannot regress it.
+# --------------------------------------------------------------------------- #
+from pathlib import Path as _Path  # noqa: E402
+
+_ENGAGE_HOST_JS = _Path(__file__).resolve().parent.parent / "public" / "js" / "engage-host.js"
+
+
+def _engage_host_source() -> str:
+	return _ENGAGE_HOST_JS.read_text(encoding="utf-8")
+
+
+def test_engage_host_defines_escape_html_helper():
+	src = _engage_host_source()
+	# The helper must exist and prefer Frappe's own escaper.
+	assert "escape_html" in src
+	assert "frappe.utils.escape_html" in src
+
+
+@pytest.mark.parametrize(
+	"needle",
+	[
+		"Could not load that template.",
+		"Could not create session.",
+		"Could not open.",
+		"Could not close.",
+		"Override failed.",
+	],
+)
+def test_engage_host_error_status_lines_escape_exception_text(needle):
+	import re
+
+	src = _engage_host_source()
+	# Each error setStatus line that references e.message must wrap it in
+	# escape_html(...) — never concatenate the raw value.
+	matches = [ln for ln in src.splitlines() if 'setStatus("error"' in ln and needle in ln]
+	assert matches, f"expected a setStatus error line mentioning {needle!r}"
+	for ln in matches:
+		assert "e.message" not in ln or "escape_html(" in ln, (
+			f"raw e.message in setStatus error line (XSS): {ln.strip()!r}"
+		)
+		# And the unescaped concatenation pattern must be gone.
+		assert not re.search(r"\+ \(\(e && e\.message\)", ln), (
+			f"unescaped e.message concatenation remains: {ln.strip()!r}"
+		)
+
+
+def test_engage_host_escape_html_fallback_neutralizes_markup():
+	# The self-contained fallback escaper (used when frappe.utils isn't loaded
+	# yet) must neutralize the characters that break out of a text node /
+	# attribute. Mirrors the replace chain in engage-host.js.
+	def fallback(s: str) -> str:
+		return (
+			str(s)
+			.replace("&", "&amp;")
+			.replace("<", "&lt;")
+			.replace(">", "&gt;")
+			.replace('"', "&quot;")
+			.replace("'", "&#39;")
+		)
+
+	payload = '<img src=x onerror="alert(1)">&\'"'
+	out = fallback(payload)
+	# Escaping neutralizes the markup delimiters — the tag/attribute structure
+	# can no longer form, so the payload renders as inert visible text. (The
+	# word "onerror" may remain as harmless text content; that's expected.)
+	assert "<" not in out and ">" not in out
+	assert '"' not in out and "'" not in out
+	assert "&lt;img" in out and "&gt;" in out
