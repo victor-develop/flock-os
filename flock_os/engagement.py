@@ -108,6 +108,17 @@ SUSPECT_REACTION_MS = 100
 SUSPECT_SAME_IP_ATTENDEES = 8
 """One IP spawning ≥ this many attendees flags a suspect pattern (§6.7)."""
 
+REVIEW_QUEUE_MAX = 200
+"""Cap on suspect-review rows surfaced to the facilitator console (P2-5).
+
+The review queue is a read-only, anti-abuse surface: under adversarial flag
+rates at 15k concurrent attendees the flagged set can grow large, and the host
+console must not render (or transit) an unbounded payload. This caps the
+rendered rows; the total flagged count is still returned so the console can show
+"showing N of M" and the facilitator can page/filter. ``flock_os.engagement_views.
+suspect_review_queue`` enforces this server-side (source of truth).
+"""
+
 DEFAULT_ATTENDEE_ROLE = "member"
 DEFAULT_ENGAGEMENT_SOURCE = "engagement"
 DEFAULT_ATTENDANCE_STATUS = "Present"
@@ -622,6 +633,55 @@ def status_flags_for(
 		"offline_replay": bool(offline_replay),
 		"facilitator_override": bool(facilitator_override),
 	}
+
+
+def suspect_review_reason(flags: dict[str, Any]) -> str:
+	"""Human-readable reason for a flagged participation (§6.7 review queue).
+
+	Pure mirror of the helper that used to live inline in
+	:mod:`flock_os.engagement_views`; lifted here so the cap + projection is
+	unit-testable without a bench (P2-5).
+	"""
+	if flags.get("suspect_pattern"):
+		return "Flagged by an anti-abuse heuristic (still counted until revoked)."
+	if flags.get("out_of_scope"):
+		return "Submitted outside the session window (recorded, excluded from headcount)."
+	return "Flagged for facilitator review."
+
+
+def review_queue_items(
+	participations: Iterable[Any],
+	*,
+	limit: int = REVIEW_QUEUE_MAX,
+) -> dict[str, Any]:
+	"""Project flagged participations → a bounded review-queue payload (P2-5).
+
+	Keeps the suspect/out-of-scope projection **pure + unit-testable**: the
+	``@frappe.whitelist()`` view feeds in the gateway's participations and
+	returns this dict verbatim. ``items`` is capped at ``limit`` (default
+	:data:`REVIEW_QUEUE_MAX`) so a 15k adversarial flag rate never produces an
+	unbounded render/transit; ``total`` carries the full flagged count so the
+	console can show "showing N of M" and the facilitator can page.
+	"""
+	if limit < 0:
+		limit = 0
+	items: list[dict[str, Any]] = []
+	total = 0
+	for p in participations:
+		flags = getattr(p, "status_flags", None) or {}
+		if not (flags.get("suspect_pattern") or flags.get("out_of_scope")):
+			continue
+		total += 1
+		if len(items) < limit:
+			items.append(
+				{
+					"attendee_key": getattr(p, "attendee_key", None),
+					"attendee_display_name": getattr(p, "attendee_display_name", None) or "Anonymous",
+					"flag": "suspect_pattern" if flags.get("suspect_pattern") else "out_of_scope",
+					"reason": suspect_review_reason(flags),
+				}
+			)
+	return {"items": items, "total": total, "limit": limit, "capped": total > limit}
 
 
 # ---------------------------------------------------------------------------- #
@@ -1653,9 +1713,7 @@ __all__ = [
 	"A11Y_MIN_TARGET_PX",
 	"A11Y_PREF_KEY",
 	"ALL_KINDS",
-	"BulkServiceFactory",
 	"CALM_CHECKIN_KINDS",
-	"CloseOutcome",
 	"COMPONENT_BY_KIND",
 	"DEFAULT_A11Y_PROFILE",
 	"DEFAULT_ATTENDANCE_STATUS",
@@ -1666,21 +1724,14 @@ __all__ = [
 	"DEFAULT_TICKET_TTL_SECONDS",
 	"ENGAGEMENT_CATALOG",
 	"ENGAGEMENT_ENDPOINTS",
-	"ENGAGEMENT_VIEWS_CONTRACT",
 	"ENGAGEMENT_TYPE_GAME",
 	"ENGAGEMENT_TYPE_QUESTIONNAIRE",
-	"EngagementGateway",
-	"EngagementKind",
-	"EngagementService",
-	"EngagementSession",
+	"ENGAGEMENT_VIEWS_CONTRACT",
 	"FACILITATOR_ROLES",
 	"FAMILY_GAME",
 	"FAMILY_QUESTIONNAIRE",
-	"FacilitatorGateway",
-	"FlockEngagementError",
 	"GAME_KINDS",
 	"GLOBAL_BRANCH_ROLES",
-	"InMemoryEngagementGateway",
 	"KIND_BINGO",
 	"KIND_POLL",
 	"KIND_PULSE",
@@ -1690,11 +1741,8 @@ __all__ = [
 	"KIND_TAP_BURST",
 	"KIND_TEAM_CHALLENGE",
 	"KIND_WORD_CLOUD",
-	"NullFacilitatorGateway",
-	"ParticipateRequest",
-	"Participation",
-	"ParticipationReceipt",
 	"QUESTIONNAIRE_KINDS",
+	"REVIEW_QUEUE_MAX",
 	"ROLE_BRANCH_ADMIN",
 	"ROLE_GROUP_LEADER",
 	"ROLE_ORG_ADMIN",
@@ -1710,6 +1758,19 @@ __all__ = [
 	"TEMPLATE_AUTHOR_ROLES",
 	"TEMPLATE_DOCTYPES",
 	"TEMPLATE_KINDS",
+	"BulkServiceFactory",
+	"CloseOutcome",
+	"EngagementGateway",
+	"EngagementKind",
+	"EngagementService",
+	"EngagementSession",
+	"FacilitatorGateway",
+	"FlockEngagementError",
+	"InMemoryEngagementGateway",
+	"NullFacilitatorGateway",
+	"ParticipateRequest",
+	"Participation",
+	"ParticipationReceipt",
 	"SessionTicket",
 	"assert_host_target_in_context",
 	"attendee_key",
@@ -1726,8 +1787,10 @@ __all__ = [
 	"pack_session_config",
 	"resolve_a11y_profile",
 	"resolve_session_ref",
+	"review_queue_items",
 	"sign_ticket",
 	"status_flags_for",
+	"suspect_review_reason",
 	"template_doctype_for_kind",
 	"template_summary",
 	"template_to_launch_config",

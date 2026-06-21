@@ -190,6 +190,11 @@
 		let pollDelay = POLL_MIN_MS;
 		let socketLive = false;
 		let destroyed = false;
+		// Realtime subscription state (P2-4): we keep the exact handler ref +
+		// event names we registered so `destroy()` can `off()` *only* our
+		// listener instead of every subscriber on a shared realtime channel.
+		let rtHandler = null;
+		let rtEventNames = [];
 
 		function emit(type, detail) {
 			const fns = listeners.get(type);
@@ -246,16 +251,18 @@
 				startPolling();
 				return;
 			}
-			try {
-				const handler = (message) => {
-					socketLive = true;
-					stopPolling();
-					setConnection("live");
-					routeRealtime(message);
-				};
-				[ev.game_state, ev.attendance_count, ev.attendance_presence].forEach((name) => {
-					frappeRT.on(name, handler);
-				});
+		try {
+			const handler = (message) => {
+				socketLive = true;
+				stopPolling();
+				setConnection("live");
+				routeRealtime(message);
+			};
+			rtHandler = handler;
+			rtEventNames = [ev.game_state, ev.attendance_count, ev.attendance_presence];
+			rtEventNames.forEach((name) => {
+				frappeRT.on(name, handler);
+			});
 				// Connection-quality hooks (Frappe realtime exposes these on socket).
 				const sock = frappeRT.socket || (frappeRT.$socket && frappeRT.$socket());
 				if (sock) {
@@ -401,12 +408,17 @@
 			destroyed = true;
 			stopPolling();
 			const frappeRT = WIN.frappe && WIN.frappe.realtime;
-			const ev = parity ? parity.realtime_events : null;
-			if (ev && frappeRT && frappeRT.off) {
-				[ev.game_state, ev.attendance_count, ev.attendance_presence].forEach((name) => {
-					try { frappeRT.off(name); } catch (_e) { /* noop */ }
+			// P2-4: pass the exact handler ref so we only detach *our* listener.
+			// `off(name)` with no handler would clobber every other subscriber on
+			// the shared realtime channel (e.g. a co-host's console on the same
+			// room). `off(name, handler)` removes just the one we registered.
+			if (rtHandler && frappeRT && frappeRT.off) {
+				rtEventNames.forEach((name) => {
+					try { frappeRT.off(name, rtHandler); } catch (_e) { /* noop */ }
 				});
 			}
+			rtHandler = null;
+			rtEventNames = [];
 			listeners.clear();
 		}
 

@@ -44,6 +44,7 @@ from flock_os.engagement import (
 	FlockEngagementError,
 	InMemoryEngagementGateway,
 	ParticipateRequest,
+	Participation,
 	SessionTicket,
 	attendee_key,
 	detect_suspect_pattern,
@@ -1084,3 +1085,117 @@ class TestEngagementEventNames:
 	def test_engagement_events_use_three_segment_form(self):
 		assert ENGAGEMENT_SESSION_OPENED == "flock.engagement.opened"
 		assert ENGAGEMENT_SESSION_CLOSED == "flock.engagement.closed"
+
+
+# ---------------------------------------------------------------------------- #
+# Suspect review queue cap (P2-5 / FLO-619) — the host console must never render
+# or transit an unbounded flagged set under adversarial flag rates at 15k. The
+# projection is pure + server-side; these pin the bound without a bench.
+# ---------------------------------------------------------------------------- #
+def _flagged_participation(key: str, *, suspect: bool = True) -> Participation:
+	"""Build a minimal flagged participation for review-queue fixtures."""
+	flags = (
+		status_flags_for(in_window=True, suspect=True)
+		if suspect
+		else status_flags_for(in_window=False, out_of_scope_reason="after_grace")
+	)
+	return Participation(
+		session_id=SESSION_ID,
+		attendee_key=key,
+		member_id=None,
+		attendee_display_name=f"Attendee {key}",
+		device_fingerprint="fp-" + key,
+		role="member",
+		engagement_type=eng.ENGAGEMENT_TYPE_GAME,
+		engagement_kind="tap_burst",
+		score=None,
+		submitted_at=1_000.0,
+		client_submitted_at=None,
+		branch=BRANCH,
+		organization=ORG,
+		group=GROUP,
+		geo_region=None,
+		nonce="n-" + key,
+		ip_address=None,
+		status_flags=flags,
+		feedback={},
+	)
+
+
+class TestReviewQueueCap:
+	def test_unflagged_participations_are_excluded(self):
+		# A clean participation (no flags) never reaches the review queue.
+		clean = Participation(
+			session_id=SESSION_ID,
+			attendee_key="clean",
+			member_id=None,
+			attendee_display_name="Clean",
+			device_fingerprint="fp-clean",
+			role="member",
+			engagement_type=eng.ENGAGEMENT_TYPE_GAME,
+			engagement_kind="tap_burst",
+			score=None,
+			submitted_at=1_000.0,
+			client_submitted_at=None,
+			branch=BRANCH,
+			organization=ORG,
+			group=GROUP,
+			geo_region=None,
+			nonce="clean-1",
+			ip_address=None,
+			status_flags=status_flags_for(in_window=True),
+			feedback={},
+		)
+		out = eng.review_queue_items([clean])
+		assert out["items"] == []
+		assert out["total"] == 0
+		assert out["capped"] is False
+
+	def test_cap_binds_payload_under_adversarial_flag_rate(self):
+		# 15k adversarial flag rate: the rendered payload stays bounded.
+		n = eng.REVIEW_QUEUE_MAX + 500
+		flagged = [_flagged_participation(f"a{i:05d}") for i in range(n)]
+		out = eng.review_queue_items(flagged)
+		assert len(out["items"]) == eng.REVIEW_QUEUE_MAX
+		assert out["total"] == n
+		assert out["capped"] is True
+		assert out["limit"] == eng.REVIEW_QUEUE_MAX
+
+	def test_below_cap_is_not_marked_capped(self):
+		flagged = [_flagged_participation(f"b{i}") for i in range(3)]
+		out = eng.review_queue_items(flagged)
+		assert len(out["items"]) == 3
+		assert out["total"] == 3
+		assert out["capped"] is False
+
+	def test_explicit_smaller_limit_truncates_and_reports_total(self):
+		# The view can page with a smaller limit; total still reflects reality.
+		flagged = [_flagged_participation(f"c{i}") for i in range(10)]
+		out = eng.review_queue_items(flagged, limit=4)
+		assert len(out["items"]) == 4
+		assert out["total"] == 10
+		assert out["capped"] is True
+		assert out["limit"] == 4
+
+	def test_item_shape_carries_attendee_and_reason(self):
+		out = eng.review_queue_items([_flagged_participation("d1", suspect=True)])
+		assert len(out["items"]) == 1
+		item = out["items"][0]
+		assert item["attendee_key"] == "d1"
+		assert item["attendee_display_name"] == "Attendee d1"
+		assert item["flag"] == "suspect_pattern"
+		assert "anti-abuse" in item["reason"]
+
+	def test_out_of_scope_flag_is_surfaced(self):
+		out = eng.review_queue_items([_flagged_participation("e1", suspect=False)])
+		assert out["items"][0]["flag"] == "out_of_scope"
+		assert "window" in out["items"][0]["reason"]
+
+	def test_empty_input_returns_empty_payload(self):
+		out = eng.review_queue_items([])
+		assert out == {"items": [], "total": 0, "limit": eng.REVIEW_QUEUE_MAX, "capped": False}
+
+	def test_review_queue_max_is_documented_constant(self):
+		# P2-5 acceptance: a named, documented bound (not a magic number).
+		assert isinstance(eng.REVIEW_QUEUE_MAX, int)
+		assert eng.REVIEW_QUEUE_MAX > 0

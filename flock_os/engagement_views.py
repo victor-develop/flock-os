@@ -215,6 +215,12 @@ def suspect_review_queue(**kwargs: Any) -> dict[str, Any]:
 	revocation lands. The actual keep/revoke mutation is owned by the bulk
 	attendance path (out of scope for FLO-190); this view only surfaces the
 	review queue so the console can render it.
+
+	The payload is **capped** server-side at :data:`flock_os.engagement.
+	REVIEW_QUEUE_MAX` (P2-5): under adversarial flag rates at 15k concurrent
+	attendees the flagged set can grow large, and the host console must never
+	render or transit an unbounded array. ``total`` carries the full flagged
+	count so the console can show "showing N of M".
 	"""
 	ref = eng.resolve_session_ref(kwargs)
 	session_id = ref["session_id"]
@@ -222,20 +228,8 @@ def suspect_review_queue(**kwargs: Any) -> dict[str, Any]:
 		participations = engagement_api.get_service().gateway.participations(session_id)
 	except Exception:  # noqa: BLE001 — runtime/Redis is best-effort from the view
 		participations = ()
-	items = []
-	for p in participations:
-		flags = getattr(p, "status_flags", None) or {}
-		if not (flags.get("suspect_pattern") or flags.get("out_of_scope")):
-			continue
-		items.append(
-			{
-				"attendee_key": getattr(p, "attendee_key", None),
-				"attendee_display_name": getattr(p, "attendee_display_name", None) or "Anonymous",
-				"flag": "suspect_pattern" if flags.get("suspect_pattern") else "out_of_scope",
-				"reason": _suspect_reason(flags),
-			}
-		)
-	return {"session_id": session_id, "items": items}
+	payload = eng.review_queue_items(participations)
+	return {"session_id": session_id, **payload}
 
 
 @frappe.whitelist()
@@ -356,15 +350,6 @@ def _append_session_override(session_id: str, override: dict[str, Any]) -> None:
 		)
 	except Exception:  # noqa: BLE001 — audit trail is best-effort
 		frappe.log_error(f"flock_os.engagement_views manual_override append failed: {session_id}")
-
-
-def _suspect_reason(flags: dict[str, Any]) -> str:
-	"""Human-readable reason for a flagged participation (§6.7 review queue)."""
-	if flags.get("suspect_pattern"):
-		return "Flagged by an anti-abuse heuristic (still counted until revoked)."
-	if flags.get("out_of_scope"):
-		return "Submitted outside the session window (recorded, excluded from headcount)."
-	return "Flagged for facilitator review."
 
 
 def _enrich_lifecycle(session_id: str, res: dict[str, Any]) -> dict[str, Any]:

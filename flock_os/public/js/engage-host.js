@@ -311,10 +311,23 @@
 		try {
 			const res = await call(ENDPOINTS.review_queue, { name: currentSession.name });
 			const items = (res && res.items) || [];
+			const total = (res && typeof res.total === "number") ? res.total : items.length;
+			const capped = Boolean(res && res.capped);
 			REVIEW.hidden = !items.length;
 			if (!QUEUE) return;
 			QUEUE.innerHTML = "";
 			items.forEach((it) => QUEUE.appendChild(reviewRow(it)));
+			// P2-5: server caps the payload; surface the bound so the facilitator
+			// knows the queue is truncated (not empty) under adversarial flag rates.
+			if (capped && total > items.length) {
+				const note = el("div", "flock-host__queue-cap text-muted");
+				note.style.fontSize = ".85rem";
+				note.style.padding = ".4rem 0";
+				note.textContent = _("Showing {0} of {1} flagged — refine the session or review the full log.")
+					.replace("{0}", String(items.length))
+					.replace("{1}", String(total));
+				QUEUE.appendChild(note);
+			}
 		} catch (_e) {
 			REVIEW.hidden = true;
 		}
