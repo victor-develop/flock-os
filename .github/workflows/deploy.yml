@@ -1,0 +1,262 @@
+name: Deploy
+
+# Phase 6.1 deploy pipeline (FLO-246).
+#
+# Two-stage: master-green auto-deploys to STAGING; a manual workflow_dispatch
+# gate (CEO/QA sign-off) promotes STAGING → PROD. Mirrors the ADR's
+# "manual promotion gate" requirement and the issue acceptance criterion
+# "master green → staging deploy; rollback proven".
+#
+# The CI gate (.github/workflows/ci.yml) must be green on master before this
+# workflow runs — `needs: lint-and-test` enforces it for the staging stage.
+#
+# Secrets come from the SOPS+age secret manager (FLO-248): the committed
+# ciphertext bundles secrets/{staging,prod}.enc.yaml are decrypted at deploy
+# time with the age PRIVATE key stored as the SOPS_AGE_KEY environment secret
+# (one key per environment — staging and prod NEVER share a key). The bundle,
+# not per-secret GitHub Actions variables, is the source of truth. Runbook:
+# docs/development/secrets-runbook.md.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      promote_to_prod:
+        description: "Promote the current staging deploy to prod (manual gate)"
+        required: false
+        type: boolean
+        default: false
+      target_tag:
+        description: "Explicit image tag to deploy (default: the pushing SHA)"
+        required: false
+        type: string
+
+# One deploy in flight per environment at a time — a rolling second deploy
+# racing the first is the classic cause of a half-migrated bench.
+concurrency:
+  group: deploy-${{ inputs.promote_to_prod == true && 'prod' || 'staging' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The lint+test gate owns the "green" signal; reuse it. If CI is red, the
+  # deploy never starts.
+  lint-and-test:
+    name: Lint + Unit Tests (deploy gate)
+    uses: ./.github/workflows/ci.yml
+    # CI is the source of truth for "is master green". If a refactor moves the
+    # gate logic, this is the single place to update.
+
+  build-image:
+    name: Build + push bench image
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: meta
+        run: |
+          if [[ -n "${{ inputs.target_tag }}" ]]; then
+            echo "tag=${{ inputs.target_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Short SHA + run id — monotonically traceable + unique per run.
+            echo "tag=sha-$(echo "$GITHUB_SHA" | cut -c1-12)-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        # The registry + credentials come from repo secrets. Frappe Cloud
+        # Server plan pulls the image over SSH; a self-hosted deploy uses
+        # ghcr.io / ECR / the Frappe Cloud registry.
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.FLOCK_IMAGE_REGISTRY || 'ghcr.io' }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.FLOCK_IMAGE_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: |
+            ${{ vars.FLOCK_IMAGE || 'ghcr.io/' || '' }}${{ github.repository }}/flock-os-bench:${{ steps.meta.outputs.tag }}
+            ${{ vars.FLOCK_IMAGE || 'ghcr.io/' || '' }}${{ github.repository }}/flock-os-bench:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs: build-image
+    environment:
+      name: staging
+      # The `staging` environment holds STAGING_URL + the staging secret set in
+      # repo settings. Required reviewers can be enabled here for an extra
+      # human gate before the first auto-deploy after onboarding.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sops + age
+        # FLO-248: the SOPS+age secret manager. Decrypts secrets/staging.enc.yaml
+        # so render-config.sh gets its env from the committed (encrypted) bundle
+        # instead of from per-secret GitHub Actions secrets. The age PRIVATE key
+        # is the single SOPS_AGE_KEY environment secret — see
+        # docs/development/secrets-runbook.md.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y age
+          SOPS_VERSION=3.13.1
+          sudo curl -fsSL -o /usr/local/bin/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          sudo chmod +x /usr/local/bin/sops
+          sops --version && age --version
+
+      - name: Decrypt secrets + render-config check (SOPS+age)
+        # The zero-secrets-in-repo gate. Decrypts the staging bundle with the
+        # SOPS_AGE_KEY secret, then validates every required env is present
+        # BEFORE the rolling deploy. Fails loud, not silent. The only deploy
+        # secret this environment needs is SOPS_AGE_KEY — the bundle holds the
+        # rest as committed ciphertext.
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          ENV_FILE="$RUNNER_TEMP/flock.env"
+          scripts/deploy/render-secrets.sh --env staging --check
+          scripts/deploy/render-secrets.sh --env staging --out "$ENV_FILE"
+          # Expose the rendered env file to later steps (the deploy command may
+          # ship it to the host: `--env-file` / scp). Auto-cleaned by the runner.
+          echo "FLOCK_ENV_FILE=$ENV_FILE" >> "$GITHUB_ENV"
+          set -a; . "$ENV_FILE"; set +a
+          scripts/deploy/render-config.sh --check
+
+      - name: Deploy tag ${{ needs.build-image.outputs.tag }} to staging
+        # FLOCK_DEPLOY_CMD is the orchestrator hook (set as a staging env var).
+        # The literal <TAG> is substituted by scripts/deploy/rollback.sh's
+        # pattern — re-used here for symmetry.
+        env:
+          FLOCK_DEPLOY_CMD: ${{ vars.FLOCK_DEPLOY_CMD }}
+          FLOCK_IMAGE_TAG: ${{ needs.build-image.outputs.tag }}
+        run: |
+          echo "Deploying tag $FLOCK_IMAGE_TAG to staging via:"
+          echo "  $FLOCK_DEPLOY_CMD"
+          # Substitute <TAG> and run. If FLOCK_DEPLOY_CMD is empty, fail loud —
+          # an empty deploy command would silently "succeed" and mask a
+          # misconfigured environment.
+          [[ -z "$FLOCK_DEPLOY_CMD" ]] && {
+            echo "FLOCK_DEPLOY_CMD is empty — set it as a staging environment variable (repo settings).";
+            echo "See docs/development/deploy-runbook.md -> Wire FLOCK_DEPLOY_CMD.";
+            exit 1;
+          }
+          eval "${FLOCK_DEPLOY_CMD//\<TAG\>/$FLOCK_IMAGE_TAG}"
+
+      - name: Post-deploy smoke
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+          STAGING_WS_URL: ${{ secrets.STAGING_WS_URL }}
+        run: scripts/deploy/smoke-staging.sh
+
+      - name: Record the prior tag for rollback
+        # The smoke-green tag becomes FLOCK_PREVIOUS_TAG on the NEXT deploy —
+        # so scripts/deploy/rollback.sh always has a known-good target.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ needs.build-image.outputs.tag }}';
+            await github.rest.actions.createEnvironmentVariable({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              environment_name: 'staging',
+              name: 'FLOCK_PREVIOUS_TAG',
+              value: tag,
+            }).catch(e => {
+              // createEnvironmentVariable 409s if it exists; upsert instead.
+              return github.rest.actions.updateEnvironmentVariable({
+                owner: context.repo.owner, repo: context.repo.repo,
+                environment_name: 'staging', name: 'FLOCK_PREVIOUS_TAG', value: tag,
+              });
+            });
+            core.info(`Recorded FLOCK_PREVIOUS_TAG=${tag} on the staging environment.`);
+
+  promote-to-prod:
+    name: Promote staging → prod (manual gate)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_to_prod == true
+    environment:
+      name: production
+      # The `production` environment MUST have required reviewers enabled in
+      # repo settings — this is the CEO/QA sign-off gate (ADR §manual promotion).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve prod target tag
+        id: meta
+        # Prod promotes the CURRENT staging tag (no rebuild — the exact artifact
+        # that passed the staging smoke). Override with inputs.target_tag for a
+        # hotfix pin.
+        run: |
+          if [[ -n "${{ inputs.target_tag }}" ]]; then
+            echo "tag=${{ inputs.target_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Read the staging FLOCK_PREVIOUS_TAG (the last smoke-green deploy).
+            echo "tag=$(gh api \
+              /repos/${{ github.repository }}/environments/staging/variables/FLOCK_PREVIOUS_TAG \
+              --jq '.value')" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install sops + age
+        # FLO-248: decrypt secrets/prod.enc.yaml with the production SOPS_AGE_KEY.
+        # Prod uses a SEPARATE key from staging (see .sops.yaml) so a staging key
+        # compromise can never read prod. Runbook: docs/development/secrets-runbook.md.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y age
+          SOPS_VERSION=3.13.1
+          sudo curl -fsSL -o /usr/local/bin/sops \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          sudo chmod +x /usr/local/bin/sops
+          sops --version && age --version
+
+      - name: Decrypt secrets + render-config check (prod, SOPS+age)
+        # Prod decrypt gate. Same shape as staging, against the PROD bundle + key.
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          ENV_FILE="$RUNNER_TEMP/flock.env"
+          scripts/deploy/render-secrets.sh --env prod --check
+          scripts/deploy/render-secrets.sh --env prod --out "$ENV_FILE"
+          echo "FLOCK_ENV_FILE=$ENV_FILE" >> "$GITHUB_ENV"
+          set -a; . "$ENV_FILE"; set +a
+          scripts/deploy/render-config.sh --check
+
+      - name: Promote ${{ steps.meta.outputs.tag }} to prod
+        env:
+          FLOCK_DEPLOY_CMD: ${{ vars.FLOCK_DEPLOY_CMD }}
+          FLOCK_IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          [[ -z "$FLOCK_DEPLOY_CMD" ]] && {
+            echo "FLOCK_DEPLOY_CMD is empty on the production environment — set it in repo settings.";
+            exit 1;
+          }
+          eval "${FLOCK_DEPLOY_CMD//\<TAG\>/$FLOCK_IMAGE_TAG}"
+
+      - name: Post-promotion smoke (prod)
+        env:
+          STAGING_URL: ${{ secrets.PROD_URL }}
+          STAGING_WS_URL: ${{ secrets.PROD_WS_URL }}
+        run: scripts/deploy/smoke-staging.sh

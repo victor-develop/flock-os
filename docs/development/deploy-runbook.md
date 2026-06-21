@@ -38,6 +38,87 @@ The image contains **zero secrets**. At container start, `deploy/entrypoint.sh`
 runs `scripts/deploy/render-config.sh` which renders `site_config.json` and
 `common_site_config.json` from environment (set by the secret manager).
 
+## Asset build + web-worker restart (FLO-617)
+
+> Spawned from the [FLO-610](/FLO/issues/FLO-610) audit (finding
+> [P1-1](/FLO/issues/FLO-610#document-audit-report)): flock_os engagement
+> assets (`/assets/flock_os/js/{engage,engage-host,engagement-core,announce}.js`,
+> `/assets/flock_os/css/engage.css`) **404 on a fresh deploy** until
+> `bench build --app flock_os` runs, and even after the build writes the files,
+> **a gunicorn that booted before the build still 404s** the newly-added asset
+> dirs. `/assets/frappe/*` works only because it existed at gunicorn startup. A
+> deploy that skips the build + restart ships a broken engagement UI.
+
+**Mandate: every deploy must (1) build flock_os assets and (2) (re)start the
+web worker AFTER the build, before it serves traffic.** The post-deploy smoke
+`[4/4]` (see below) enforces this — a build-skipping deploy fails loud.
+
+### Container image deploys (the default path)
+
+`bench build --app flock_os` is **baked into the image**
+([deploy/Dockerfile](../../deploy/Dockerfile) runs it at build time), and the
+prod nginx front edge serves `/assets/` directly from disk
+([deploy/nginx/prod.conf](../../deploy/nginx/prod.conf) `location /assets/` →
+`alias …/sites/assets/`). So a standard image rebuild + container recreate
+satisfies both steps with no extra action: the assets are in the image, and the
+container's gunicorn boots after the build (within the image build, the assets
+already exist on disk before gunicorn ever starts).
+
+The post-deploy smoke `[4/4]` confirms this end-to-end against the live URL.
+
+### Bare-VM / `bench update` deploys (and the dev bench)
+
+On a deploy path that does **not** rebuild the image — a `bench update` on the
+VM, a `git pull && bench restart`, or the local dev bench — the build + restart
+is **not** automatic. Run it explicitly, in this order:
+
+```bash
+cd /home/frappe/frappe-bench          # the bench dir (BENCH_DIR)
+bench build --app flock_os            # [1] collect flock_os/public → sites/assets/flock_os
+bench restart                         # [2a] dev bench / single-process: restart everything
+# — OR, under supervisor (the prod container shape) —
+supervisorctl restart gunicorn        # [2b] restart ONLY the web worker (workers/scheduler untouched)
+```
+
+**Why the restart is required.** `bench build --app flock_os` collects
+`flock_os/public/*` into `sites/assets/flock_os/`. The web-serving process must
+then serve that freshly-collected tree:
+
+- **Prod container:** nginx serves `/assets/` directly from disk
+  (`deploy/nginx/prod.conf` `location /assets/`) on every request, so a
+  correctly-built image needs no extra restart — the build runs inside the
+  Dockerfile before gunicorn ever boots. The `[4/4]` smoke confirms.
+- **Dev bench / `bench serve`:** the Procfile's `web: bench serve` wraps the
+  WSGI app in Werkzeug's `SharedDataMiddleware`
+  (`frappe/app.py:application_with_statics`), which resolves `/assets/...`
+  against `sites/assets/` **and caches lookups per worker**. A request that
+  404'd before an asset existed can stick as a cached negative result until the
+  worker is recycled, so after a `bench build` that adds a new asset dir, run
+  `bench restart` (or `bench serve` if the web process is down) so a fresh
+  worker sees the populated tree. Note: a gunicorn started as bare
+  `gunicorn frappe.app:application` (without the `serve()` statics wrapper)
+  serves **no** `/assets/*.js|css` at all — always drive the dev web tier
+  through `bench serve` / `bench start` (the Procfile path), not a hand-started
+  gunicorn.
+
+The `[4/4]` smoke (below) catches a deploy that skips the build or serves from
+a process that never saw the collected assets.
+
+### Post-deploy asset smoke (`[4/4]`)
+
+`scripts/deploy/smoke-staging.sh` now runs a fourth check that curls each
+engagement asset and asserts HTTP 200. It is wired into the Deploy workflow for
+**both** the staging auto-deploy and the prod promotion gate
+([.github/workflows/deploy.yml](../../.github/workflows/deploy.yml)), so a
+build-skipping or restart-skipping deploy fails the release. Override the asset
+list with `FLOCK_ASSET_SMOKE_PATHS` (space-separated site-relative paths):
+
+```bash
+STAGING_URL=https://staging.flock-os.example \
+FLOCK_ASSET_SMOKE_PATHS='/assets/flock_os/js/engage.js /assets/flock_os/css/engage.css' \
+scripts/deploy/smoke-staging.sh
+```
+
 ## Environments + secrets
 
 > Secrets are managed with **SOPS + age** (FLO-248). The full key/edit/rotate flow
@@ -106,7 +187,10 @@ GitHub environments (repo Settings → Environments).
    `--check` secret gate, then invokes `FLOCK_DEPLOY_CMD` for the `staging`
    environment.
 4. Post-deploy smoke (`scripts/deploy/smoke-staging.sh`) runs against
-   `$STAGING_URL`. If it fails, the workflow fails — staging is NOT healthy
+   `$STAGING_URL`. It now includes the `[4/4]` engagement-asset check
+   (FLO-617) — if `bench build --app flock_os` was skipped or the web worker
+   was not restarted after the build, the smoke fails and prod promotion is
+   blocked. If it fails, the workflow fails — staging is NOT healthy
    and prod promotion is blocked.
 5. On success, the tag is recorded as `FLOCK_PREVIOUS_TAG` on the `staging`
    environment (the rollback target for the next deploy).
@@ -157,6 +241,13 @@ The tier is **self-healing across `bench update` and across restarts**:
    N node backends + the nginx sticky-L7 LB. Supervisor auto-restarts the
    tier if it dies — this is the ADR blocker #2 (the scaled tier survives a
    Frappe Cloud dashboard restart, not just gunicorn).
+4. **`redis-adapter-ping` probe** (`deploy/supervisord.conf`): a supervisor
+   liveness program that `redis-cli PING`s the dedicated adapter Redis
+   (`FLOCK_SIO_ADAPTER_REDIS`) every `FLOCK_SIO_ADAPTER_PING_INTERVAL` (15s).
+   It warns when the adapter Redis is unset (single-node is a valid launch
+   shape) and goes `FATAL` (`supervisorctl status`) when a configured adapter
+   Redis stops answering — so the FLO-127 §2 silent cross-node blackout is
+   loud, not silent. Disable with `FLOCK_SIO_ADAPTER_PING_DISABLE=1`.
 
 If a dashboard restart collapses the tier to a single socketio, SSH in and:
 
@@ -188,6 +279,24 @@ scripts/deploy/render-config.sh --check
 
 See [secrets-runbook.md](secrets-runbook.md) for editing/rotating the bundles.
 
+### Verify the render path (`test_deploy_render.sh`)
+
+The config/secret rendering contract has a hermetic behavioral test
+(FLO-672) that drives the REAL `render-config.sh` + `render-secrets.sh`:
+
+```bash
+scripts/test_deploy_render.sh
+```
+
+It runs three sections: (1) `render-config.sh` from synthetic env — the
+zero-secrets fail-fast gate, valid-JSON render, 0600 perms, `_comment` stripped,
+and **portability** (the pure-bash fallback is byte-equivalent to `envsubst`, so
+the render works on a bare macOS / minimal CI runner without `gettext`);
+(2) `render-secrets.sh` SOPS decrypt (SKIPs in CI — no age key — runs on the
+local Mac + the deploy runner); (3) the `flock-os-bench` image + template
+artifacts. This test is wired into CI (`.github/workflows/ci.yml`) so render /
+template drift is caught pre-merge, before the deploy workflow's own `--check`.
+
 ## nginx sticky-L7 (Cloudflare caveat)
 
 The prod nginx upstream uses `ip_hash` for sticky L7 — correct for a direct
@@ -214,10 +323,11 @@ goes live. The default `ip_hash` is the safe direct-deploy baseline.
 
 | Symptom | Fix |
 | --- | --- |
+| Smoke `[4/4] FAIL` (engagement assets 404) | `bench build --app flock_os` was skipped OR the web worker was not restarted after the build (FLO-617 / FLO-610 P1-1). On the deploy host: `bench build --app flock_os` then `bench restart` (dev) or `supervisorctl restart gunicorn` (prod container). Newly-added asset dirs are 404 under a running gunicorn until restart. See [Asset build + web-worker restart](#asset-build--web-worker-restart-flo-617). |
 | `render-config: missing required env vars` | The secret manager didn't inject a required var. `scripts/deploy/render-config.sh --print-env` shows which (redacted). |
-| Smoke `[1/3] FAIL` (HTTP non-2xx/3xx) | nginx or gunicorn misconfigured. `docker exec flock-os supervisorctl status` + `tail /var/log/flock-os/nginx.err.log`. |
-| Smoke `[2/3] FAIL` (ping != pong) | gunicorn is up but the site config is broken. Check `site_config.json` rendered correctly + `bench --site flock_os migrate` succeeded. |
-| Smoke `[3/3] FAIL` (WS handshake) | The scaled-socketio tier is down. `supervisorctl status socketio-tier`; `tail /var/log/flock-os/socketio-tier.err.log`. Common cause: `FLOCK_SIO_ADAPTER_REDIS` unreachable (FLO-127 §2). |
+| Smoke `[1/4] FAIL` (HTTP non-2xx/3xx) | nginx or gunicorn misconfigured. `docker exec flock-os supervisorctl status` + `tail /var/log/flock-os/nginx.err.log`. |
+| Smoke `[2/4] FAIL` (ping != pong) | gunicorn is up but the site config is broken. Check `site_config.json` rendered correctly + `bench --site flock_os migrate` succeeded. |
+| Smoke `[3/4] FAIL` (WS handshake) | The scaled-socketio tier is down. `supervisorctl status socketio-tier`; `tail /var/log/flock-os/socketio-tier.err.log`. Common cause: `FLOCK_SIO_ADAPTER_REDIS` unreachable (FLO-127 §2). |
 | `FLOCK_DEPLOY_CMD is empty` | Set it on the GitHub environment (Settings → Environments → staging/production → environment variables). |
 | Rollback failed mid-deploy | The prior tag is still live; investigate `$FLOCK_DEPLOY_CMD` output. Do NOT re-run with the broken current tag. |
 

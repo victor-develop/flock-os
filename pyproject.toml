@@ -55,6 +55,10 @@ omit = [
 	"flock_os/engagement_api.py",
 	"flock_os/engagement_frappe.py",
 	"flock_os/engagement_views.py",
+	# Frappe www portal pages — rendered by Frappe's website router inside a
+	# bench (they ``import frappe``); exercised via ``bench run-tests`` + the
+	# structural routing smoke test, not the SQL-light project gate (FLO-615).
+	"flock_os/www/*",
 	# Live-site smoke probe (FLO-53) — runtime, not unit.
 	"flock_os/_smoke_runtime.py",
 	# Bench-only helper.

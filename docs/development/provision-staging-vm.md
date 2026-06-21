@@ -382,10 +382,12 @@ Once §1–§7 are in place, the first staging deploy is just a merge to `master
 1. Confirm CI (`.github/workflows/ci.yml`) is green on the tip of `master`.
 2. Merge (or push) to `master`. Watch the **Deploy** workflow:
    - `lint-and-test` → `build-image` → `deploy-staging` → "Post-deploy smoke".
-3. The smoke step (`scripts/deploy/smoke-staging.sh`) runs three probes:
-   `[1/3]` HTTP 2xx/3xx on `$STAGING_URL`, `[2/3]` `/api/method/ping` returns `pong`,
-   `[3/3]` a WS handshake succeeds against the scaled-socketio tier. All three
-   must pass; a failure blocks prod promotion ([FLO-251](/FLO/issues/FLO-251)).
+3. The smoke step (`scripts/deploy/smoke-staging.sh`) runs four probes:
+   `[1/4]` HTTP 2xx/3xx on `$STAGING_URL`, `[2/4]` `/api/method/ping` returns `pong`,
+   `[3/4]` a WS handshake succeeds against the scaled-socketio tier, and
+   `[4/4]` engagement assets return 200 (proves `bench build --app flock_os` ran
+   + web worker restarted; FLO-617). All four must pass; a failure blocks prod
+   promotion ([FLO-251](/FLO/issues/FLO-251)).
 4. Record the green smoke output (and the staging URL) in the
    [FLO-249](/FLO/issues/FLO-249) thread — that is the Phase 6.1 acceptance
    evidence ("a reachable staging URL over TLS").
@@ -412,7 +414,7 @@ STAGING_URL=https://staging.<your-domain> scripts/deploy/smoke-staging.sh
       `SOPS_AGE_KEY` secret; `secrets/staging.enc.yaml` filled with real values;
       `render-secrets.sh --env staging --check` + `render-config.sh --check`
       both pass off-image.
-- [ ] First `master` push → Deploy workflow green; `smoke-staging.sh` `[1/3] [2/3] [3/3]` all pass.
+- [ ] First `master` push → Deploy workflow green; `smoke-staging.sh` `[1/4] [2/4] [3/4] [4/4]` all pass.
 - [ ] Staging URL posted to the [FLO-249](/FLO/issues/FLO-249) thread; this
       runbook updated with the real hostname/SKU once provisioned.
 

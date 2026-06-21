@@ -436,3 +436,136 @@ def test_install_and_get_service(gw):
 	assert service is notifications.get_service()
 	# Restore the default to keep module-level state clean for other tests.
 	notifications.install_gateway(notifications.NullNotificationFanoutGateway())
+
+
+# --------------------------------------------------------------------------- #
+# FLO-465 §1: FrappeNotificationFanoutGateway._leaders must filter status='Active'.
+#
+# Inactive leaders (e.g. elders emeriti, removed officers whose roster row is
+# kept for history) must NOT receive scoped notifications. The roster read also
+# has to match the (branch, status) / (group, status) composites (FLO-459) so
+# the fan-out path is index-served.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeFrappeDB:
+	"""In-memory Flock Group / Group Member table over a tiny world.
+
+	Simulates just enough of ``frappe.get_all(filters=..., pluck=...)`` for the
+	``_leaders`` read path: applies the dict filters as equality / `["in", ...]`
+	predicates and returns the plucked column. Behavior-grounded (the test
+	asserts an Inactive leader is actually excluded), not just filter-shape.
+
+	Every ``get_all`` call is recorded in ``self.calls`` so tests can assert on
+	the exact (doctype, filters) pair the gateway issued.
+	"""
+
+	def __init__(self) -> None:
+		# Flock Group rows: name -> {branch, leader}.
+		self.groups: dict[str, dict[str, str | None]] = {
+			"G-North-A": {"branch": "North-A", "leader": "M1"},
+			"G-South": {"branch": "South", "leader": "M2"},
+		}
+		# Flock Group Member rows.
+		self.group_members: list[dict[str, str]] = [
+			# Active roster leader in North-A — must be included.
+			{"member": "M1", "role": "Leader", "status": "Active", "branch": "North-A", "group": "G-North-A"},
+			# Inactive roster leader in North-A — must be EXCLUDED.
+			{
+				"member": "M9-Inactive",
+				"role": "Leader",
+				"status": "Inactive",
+				"branch": "North-A",
+				"group": "G-North-A",
+			},
+			# Active Co-Leader in South — isolation target (different branch).
+			{"member": "M2", "role": "Co-Leader", "status": "Active", "branch": "South", "group": "G-South"},
+		]
+		# Captured (doctype, filters) for each get_all call.
+		self.calls: list[dict] = []
+
+	def get_all(self, doctype, *, filters=None, pluck=None, **_kwargs):  # type: ignore[no-untyped-def]
+		filters = filters or {}
+		self.calls.append({"doctype": doctype, "filters": dict(filters)})
+		if doctype == "Flock Group":
+			rows = [
+				{"name": name, **cols}
+				for name, cols in self.groups.items()
+				if all(self._match({"name": name, **cols}, k, v) for k, v in filters.items())
+			]
+		elif doctype == "Flock Group Member":
+			rows = [
+				row for row in self.group_members if all(self._match(row, k, v) for k, v in filters.items())
+			]
+		else:  # pragma: no cover - the gateway only reads the two doctypes above.
+			rows = []
+		if pluck:
+			return [r[pluck] for r in rows if r.get(pluck)]
+		return rows
+
+	@staticmethod
+	def _match(row, key, value) -> bool:  # type: ignore[no-untyped-def]
+		if isinstance(value, list) and len(value) == 2 and value[0] == "in":
+			return row.get(key) in value[1]
+		return row.get(key) == value
+
+
+class _FakeFrappe:
+	def __init__(self) -> None:
+		self.db = _FakeFrappeDB()
+		self.get_all = self.db.get_all
+
+	@property
+	def calls(self) -> list[dict]:
+		return self.db.calls
+
+
+def test_leaders_roster_read_filters_status_active(monkeypatch) -> None:
+	"""The roster ``frappe.get_all`` call issued by ``_leaders`` MUST carry
+	``status == 'Active'``. This is the contract that keeps Inactive leaders off
+	the notification audience and aligns the read with the FLO-459 composites."""
+	from flock_os.notifications import FrappeNotificationFanoutGateway
+
+	fake = _FakeFrappe()
+	monkeypatch.setattr(FrappeNotificationFanoutGateway, "_frappe", fake)
+
+	gateway = FrappeNotificationFanoutGateway()
+	gateway.leaders_in_branches(["North-A"])
+
+	# Find the Flock Group Member read (the roster read — the one that used to
+	# omit status). The Flock Group accountable-leader read is separate.
+	roster_calls = [call for call in fake.calls if call["doctype"] == "Flock Group Member"]
+	assert roster_calls, "expected a Flock Group Member roster read"
+	assert roster_calls[-1]["filters"].get("status") == "Active", (
+		"roster_filters must include status='Active' so Inactive leaders are excluded (FLO-465 §1)"
+	)
+
+
+def test_leaders_excludes_inactive_roster_leader(monkeypatch) -> None:
+	"""Behavioral guarantee: an Inactive Leader on the roster is NOT part of the
+	resolved notification audience. Pins the P1 correctness fix end-to-end."""
+	from flock_os.notifications import FrappeNotificationFanoutGateway
+
+	fake = _FakeFrappe()
+	monkeypatch.setattr(FrappeNotificationFanoutGateway, "_frappe", fake)
+
+	gateway = FrappeNotificationFanoutGateway()
+	audience = gateway.leaders_in_branches(["North-A"])
+
+	assert "M1" in audience  # Active Leader still resolved.
+	assert "M9-Inactive" not in audience, "Inactive leader must not receive notifications (FLO-465 §1)"
+
+
+def test_leaders_excludes_inactive_roster_leader_group_axis(monkeypatch) -> None:
+	"""Same invariant on the group axis — the group-scoped fan-out path also
+	excludes Inactive roster leaders."""
+	from flock_os.notifications import FrappeNotificationFanoutGateway
+
+	fake = _FakeFrappe()
+	monkeypatch.setattr(FrappeNotificationFanoutGateway, "_frappe", fake)
+
+	gateway = FrappeNotificationFanoutGateway()
+	audience = gateway.leaders_in_groups(["G-North-A"])
+
+	assert "M1" in audience
+	assert "M9-Inactive" not in audience
