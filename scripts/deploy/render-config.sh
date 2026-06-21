@@ -105,19 +105,54 @@ if [[ -z "$SITES_DIR" ]]; then
 fi
 mkdir -p "$SITES_DIR/$SITE_NAME"
 
-command -v envsubst >/dev/null 2>&1 || {
-    echo "$PROG: envsubst not found (apt-get install gettext-base / brew install gettext)." >&2
-    exit 1
+# Resolve every ${VAR} / ${VAR:-default} in the template from the current
+# environment. Keep the template schema in sync with deploy/templates/*.json.tmpl.
+#
+# Portability: GNU envsubst (gettext) is PREFERRED (fast, well-tested), but it
+# is absent on a bare macOS and on minimal CI runners that did not install
+# gettext. The container image installs it (deploy/Dockerfile apt `gettext`),
+# but the HOST that builds/tags/verifies may not have it. The pure-bash fallback
+# below handles exactly the two expansion forms the templates use (${VAR} and
+# ${VAR:-default}), so `render-config.sh` works wherever bash>=4 + jq exist —
+# verified byte-equivalent to envsubst on the template set by
+# scripts/test_deploy_render.sh.
+_render_subst() {
+    # FLOCK_RENDER_FORCE_BASH_SUBST=1 skips envsubst even when present, so the
+    # pure-bash fallback is exercisable on every host (CI installs gettext, so
+    # without this hook the fallback would be untestable there). Test-only.
+    if [[ -z "${FLOCK_RENDER_FORCE_BASH_SUBST:-}" ]] \
+        && command -v envsubst >/dev/null 2>&1; then
+        envsubst
+        return $?
+    fi
+    local line name default
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Substitute every ${...} on the line. bash =~ + BASH_REMATCH give the
+        # whole token, the var name, and the optional default value. Loop until
+        # no token remains (handles multiple expansions per line). The bash
+        # ${var/pat/repl} form is a LITERAL first-occurrence replace (no &/\
+        # metacharacters), so secret values are substituted verbatim.
+        while [[ "$line" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\} ]]; do
+            name="${BASH_REMATCH[1]}"
+            default="${BASH_REMATCH[3]:-}"
+            # NOTE: the outer double-quotes are deliberately OMITTED. Wrapping
+            # the whole ${var/pat/repl} in "..." makes the inner replacement
+            # quotes literal (a classic bash gotcha) and would emit
+            # ""value"". The bare assignment RHS does NOT word-split or glob,
+            # so leaving it unquoted is safe; the inner "..." keep both the
+            # pattern (the exact ${TOKEN}) and the replacement literal.
+            line=${line/"${BASH_REMATCH[0]}"/"${!name:-$default}"}
+        done
+        printf '%s\n' "$line"
+    done
 }
 
-# envsubst resolves every ${VAR} in the template from the current environment.
-# Keep the template schema in sync with deploy/templates/*.json.tmpl.
 render() {
     local tmpl="$1" out="$2"
     [[ -f "$tmpl" ]] || { echo "$PROG: template missing: $tmpl" >&2; exit 1; }
     # The _comment field is documentation-only; strip it from the rendered file
     # so the deployed config is lean (and never carries a stray template hint).
-    envsubst < "$tmpl" | jq 'del(._comment)' > "$out"
+    _render_subst < "$tmpl" | jq 'del(._comment)' > "$out"
     chmod 0600 "$out"
     echo "$PROG: rendered $out"
 }

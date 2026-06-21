@@ -66,3 +66,16 @@ jobs:
       # out of the foundation gate (Architect directive, FLO-21).
       - name: Unit tests + coverage gate
         run: git ls-files -z 'flock_os/tests/test_*.py' | xargs -0 pytest --cov=flock_os --cov-branch --cov-report=term-missing
+
+      # Deploy render gate (FLO-672 Phase 6.1 no-board). The unit-of-deploy is
+      # the `flock-os-bench` container image, whose site_config.json /
+      # common_site_config.json are rendered from env at container start by
+      # scripts/deploy/render-config.sh (and decrypted from the SOPS+age bundle
+      # by render-secrets.sh). This runs the hermetic behavioral test
+      # (scripts/test_deploy_render.sh): Section 1 (render-config from synthetic
+      # env) + Section 3 (image/template artifacts) ALWAYS run; Section 2
+      # (SOPS decrypt) SKIPs because CI has no age key. Catches template/render
+      # drift + the zero-secrets fail-fast gate BEFORE the deploy workflow's own
+      # --check runs post-merge. Needs only bash + jq (both runner-builtin).
+      - name: Deploy render gate (config/secret rendering)
+        run: scripts/test_deploy_render.sh

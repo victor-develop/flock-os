@@ -272,6 +272,24 @@ scripts/deploy/render-config.sh --check
 
 See [secrets-runbook.md](secrets-runbook.md) for editing/rotating the bundles.
 
+### Verify the render path (`test_deploy_render.sh`)
+
+The config/secret rendering contract has a hermetic behavioral test
+(FLO-672) that drives the REAL `render-config.sh` + `render-secrets.sh`:
+
+```bash
+scripts/test_deploy_render.sh
+```
+
+It runs three sections: (1) `render-config.sh` from synthetic env — the
+zero-secrets fail-fast gate, valid-JSON render, 0600 perms, `_comment` stripped,
+and **portability** (the pure-bash fallback is byte-equivalent to `envsubst`, so
+the render works on a bare macOS / minimal CI runner without `gettext`);
+(2) `render-secrets.sh` SOPS decrypt (SKIPs in CI — no age key — runs on the
+local Mac + the deploy runner); (3) the `flock-os-bench` image + template
+artifacts. This test is wired into CI (`.github/workflows/ci.yml`) so render /
+template drift is caught pre-merge, before the deploy workflow's own `--check`.
+
 ## nginx sticky-L7 (Cloudflare caveat)
 
 The prod nginx upstream uses `ip_hash` for sticky L7 — correct for a direct
