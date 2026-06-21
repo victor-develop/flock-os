@@ -157,9 +157,11 @@ launch value as the new floor; alert on regression" rather than a fixed number.
 
 ## 2. Dashboards
 
-Three boards. Each is a *panel list*, not a finished Grafana JSON — Phase 6.1
-implements against this spec. Panels marked **LIVE** update ≤ 5 s (event-day);
-**HIST** panels are 1 h rolling with a 24 h comparison.
+Three boards. The panel lists below are the spec; **importable Grafana JSON
+templates** for all three live in [`dashboards/`](dashboards/) (committed by
+[FLO-694](/FLO/issues/FLO-694), no-spend — Phase 6.1 stands up the Prometheus
+datasource + exporters they query against). Panels marked **LIVE** update ≤ 5 s
+(event-day); **HIST** panels are 1 h rolling with a 24 h comparison.
 
 ### 2.1 Event-day real-time ops board (the on-call screen)
 
@@ -365,6 +367,8 @@ Maps this doc back to the [FLO-586](/FLO/issues/FLO-586) issue and the
 - 15k load profile (the threshold source): [FLO-365](/FLO/issues/FLO-365) [findings](scale-15k-findings.md) + [profile JSON](scale-15k-profile-report.json); §8 WS gate [FLO-347](/FLO/issues/FLO-347).
 - Launch gate (signals S1–S15): [`launch-go-no-go.md`](launch-go-no-go.md) ([FLO-357](/FLO/issues/FLO-357)).
 - Event-day procedure (the response layer this alerts into): [FLO-581](/FLO/issues/FLO-581) — [`event-day-runbook.md`](event-day-runbook.md).
+- Per-incident response runbooks (the procedure layer this alerts into): [`incident-runbooks.md`](incident-runbooks.md) ([FLO-694](/FLO/issues/FLO-694)).
+- Dashboard templates (the Grafana JSON for §2): [`dashboards/`](dashboards/) ([FLO-694](/FLO/issues/FLO-694)).
 - Staging VM provisioning (lands the §6 collectors): [FLO-544](/FLO/issues/FLO-544) / [FLO-249](/FLO/issues/FLO-249).
 - Backup/restore drill + runbook: [`backup-restore.md`](backup-restore.md) ([FLO-288](/FLO/issues/FLO-288)).
 - Migration runbook (realtime-tier no-go #3): [`migration-runbook.md` §6](migration-runbook.md#6-the-realtime-tier-across-migrations).

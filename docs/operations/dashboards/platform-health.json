@@ -1,0 +1,230 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "description": "Prometheus datasource", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" }
+  ],
+  "description": "Flock OS day-to-day platform health board. Mirrors docs/operations/metrics-alerting-design.md \u00a72.2. HIST, last 24h with 7-day comparison. The board DevOps glances at daily outside event windows. Owner: FLO-694 / FLO-586.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Backup + restore drill", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/backup-restore.md" },
+    { "title": "15k scale findings", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/scale-15k-findings.md" }
+  ],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 200,
+      "title": "Uptime strip (24h green/red per service)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"flock-app\"}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "gunicorn (bench web)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "clamp_max(sum(up{job=\"flock-socketio\"}), 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "socketio cluster",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"mariadb\"}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "MariaDB",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"redis\",role=\"adapter\"}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "adapter Redis",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "up{job=\"redis\",role=\"cache\"}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "cache Redis",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 201,
+      "title": "Traffic + error budget (24h, 7d comparison)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flock_http_requests_total[5m]))", "legendFormat": "today", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(flock_http_requests_total[5m] offset 7d))", "legendFormat": "7d ago", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Traffic trend (today vs 7d ago)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "percentunit" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 7,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1h])) / clamp_min(sum(rate(flock_http_requests_total[1h])), 1)", "legendFormat": "5xx %", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(flock_rq_failed_jobs_total[1h])) / clamp_min(sum(rate(flock_rq_jobs_total[1h])), 1)", "legendFormat": "RQ fail %", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "C", "expr": "sum(rate(mysql_deadlocks_total[1h]))", "legendFormat": "deadlocks/h", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Error budget (5xx / RQ fail / deadlocks)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 202,
+      "title": "DB + Redis capacity trend",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 95 }, { "color": "green", "value": 99 } ] },
+          "unit": "percent",
+          "min": 0, "max": 100
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
+      "id": 8,
+      "options": { "reduceOptions": { "calcs": ["mean"], "fields": "", "values": false }, "showThresholdMarkers": true },
+      "targets": [{ "refId": "A", "expr": "100 * (1 - rate(mysql_innodb_buffer_pool_reads_total[5m]) / clamp_min(rate(mysql_innodb_buffer_pool_read_requests_total[5m]), 1))", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Buffer pool hit ratio (7d \u2014 index regression detector)",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "expr": "redis_memory_used_rss_bytes{instance=~\".*adapter.*\"}", "legendFormat": "adapter rss", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "redis_connected_clients{instance=~\".*adapter.*\"}", "legendFormat": "adapter clients", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Adapter Redis trend (rss + clients)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flock_http_request_duration_ms_count{route_class=\"attendance\"}[1h]))", "legendFormat": "attendance ops/h", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(flock_http_request_duration_ms_bucket{route_class=\"attendance\"}[1h])))", "legendFormat": "attendance p95 ms (watch for 4.06ms COUNT(*) regression)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Slow-query trend + index regression",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 203,
+      "title": "Backup drill + CI health",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 604800 }, { "color": "green", "value": 1 } ] },
+          "mappings": [ { "options": { "0": { "color": "red", "text": "STALE > 7d" } }, "type": "value" } ],
+          "unit": "s"
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 24 },
+      "id": 11,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "time() - flock_restore_drill_last_success_timestamp_seconds", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Restore drill staleness (alert if > 7d)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 80 }, { "color": "green", "value": 91.29 } ] },
+          "unit": "percent",
+          "min": 0, "max": 100
+        }
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 24 },
+      "id": 12,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "flock_ci_branch_coverage_percent{branch=\"master\"}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Branch coverage at HEAD (bar = 91.29%)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "mappings": [ { "options": { "0": { "color": "red", "text": "FAIL" }, "1": { "color": "green", "text": "PASS" } }, "type": "value" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } } },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 24 },
+      "id": 13,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "flock_ci_last_run_success", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Last CI run",
+      "type": "stat"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["flock-os", "platform-health", "phase-6"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "title": "Flock OS \u2014 Day-to-day platform health",
+  "uid": "flock-platform-health",
+  "version": 1
+}
