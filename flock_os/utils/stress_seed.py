@@ -34,14 +34,19 @@ import time
 from dataclasses import dataclass, field
 
 # Scale knobs — kept here (not in fixtures) because this is a bench drill, not
-# a catalog entity. ~15,000 attendees is the FLO-10 §8 bar; the split across 3
-# branches + nested groups mirrors a real multi-campus org tree.
+# a catalog entity. ~15,000 attendees is the FLO-10 §8 bar. The split across
+# 30 branches + nested groups mirrors a real multi-campus org tree AND makes
+# `branch` selective enough (~3.3% per branch at 15k rows) for the optimizer to
+# use the FLO-459 `(branch, status)` / `(group, status)` composites instead of
+# full-scanning. The earlier 3-branch seed (FLO-454) gave ~33% per-branch
+# selectivity, which the [FLO-465] review showed was hiding the real fan-out
+# plan — see `docs/development/flo-454-stress-findings.md`.
 TARGET_MEMBERS = 15_000
-BRANCH_COUNT = 3
+BRANCH_COUNT = 30
 GROUPS_PER_BRANCH = 6  # 2 root + 4 nested (parent_group set)
 GATHERINGS_PER_BRANCH = 2
-ATTENDANCE_PER_GATHERING = 2_500  # ~15k rows across 6 gatherings
-REGISTRATIONS_PER_GATHERING = 1_000
+ATTENDANCE_PER_GATHERING = 250  # ~15k rows across 60 gatherings (30 branches × 2)
+REGISTRATIONS_PER_GATHERING = 100  # ~6k rows across 60 gatherings
 
 NAMESPACE = "stress"
 """Namespace tag on every seeded row so cleanup + replays are a scoped DELETE."""

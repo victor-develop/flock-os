@@ -798,10 +798,14 @@ def test_invitation_index_patch_registered_in_patches_txt():
 # --------------------------------------------------------------------------- #
 # Group Member roster index contract (FLO-459 / FLO-454 15k stress drill).
 #
-# The scope predicate `is_member_in_scope` resolves the roster on every
-# `register_for_event` call. The [FLO-454] drill proved the single-column
-# `branch` index is non-selective at 15k rows (optimizer full-scans). The
-# v0_3 patch adds the two composites the scope queries filter on.
+# The notification fan-out audience resolver (`_leaders` in `notifications.py`)
+# plucks Active Leader/Co-Leader rows scoped by branch or group — a composite
+# `(branch|group, status)` predicate. The [FLO-454] drill proved the
+# single-column `branch` index is non-selective at 15k rows (optimizer
+# full-scans). The v0_3 patch adds the two composites that fan-out read filters
+# on. (The registration critical path is served by the single-column `member`
+# index — see the FLO-459 patch docstring / FLO-465 for the corrected
+# attribution.)
 # --------------------------------------------------------------------------- #
 EXPECTED_GROUP_MEMBER_INDEX_COLUMNS = {
 	("group", "status"),

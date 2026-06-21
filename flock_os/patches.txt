@@ -44,8 +44,9 @@ flock_os.patches.v0_2.add_registration_indexes
 # table is synced.
 flock_os.patches.v0_3.add_invitation_indexes
 # FLO-459: hot-path composite indexes for the Flock Group Member roster. The
-# [FLO-454] 15k stress drill showed the scope predicate full-scanning because
-# the single-column `branch` index has poor selectivity. (group, status) covers
-# the Own Group / Group Subtree roster path; (branch, status) covers the Branch
-# roster path. Runs after the Flock Group Member table is synced.
+# [FLO-454] 15k stress drill showed the notification fan-out audience read
+# full-scanning because the single-column `branch` index has poor selectivity.
+# (group, status) covers the Own Group / Group Subtree fan-out path;
+# (branch, status) covers the Branch fan-out path. Runs after the Flock Group
+# Member table is synced.
 flock_os.patches.v0_3.add_group_member_indexes

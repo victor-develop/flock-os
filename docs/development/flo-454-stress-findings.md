@@ -8,10 +8,20 @@
 ## Drill
 
 **Seed**: `flock_os/utils/stress_seed.py` + `scripts/dev/stress-15k.sh` — a
-repeatable, idempotent seeder that creates 3 branches, 18 nested groups (2 root
-+ 4 children × 3), 15,000 members, 15,000 group-member links, 15,000 attendance
-records across 6 gatherings, and 6,000 event registrations on the local Docker
+repeatable, idempotent seeder that creates 30 branches, 180 nested groups (2 root
++ 4 children × 30), 15,000 members, 15,000 group-member links, 15,000 attendance
+records across 60 gatherings, and 6,000 event registrations on the local Docker
 bench (`docker/docker-compose.yml` — MariaDB 11.4 + Redis 7 + Frappe v15).
+
+> **Cardinality note (FLO-465).** The original FLO-454 run seeded only 3
+> branches (~5k members each, ~33% per-branch selectivity). That made `branch`
+> non-selective enough to hide the real fan-out plan behind the synthetic
+> `roster_1500` query. The seed now fans 15k members across 30 branches (~500
+> each, ~3.3% selectivity) so the optimizer actually exercises the FLO-459
+> `(branch, status)` / `(group, status)` composites. The historical results
+> snapshot below is from the original 3-branch run; re-running the drill with
+> the enriched seed produces the index-served `type: ref` plans the FLO-459
+> patch targets.
 
 **Profile**: captures `EXPLAIN` plans and wall-clock timings for the four hot
 paths the FLO-10 scale ADR locks down: bulk-attendance `filter_unseen` + aggregate,
@@ -121,14 +131,34 @@ versioned patch.
 
 ### P1 — Group Member roster needs composite index on `(branch, status)` / `(group, status)`
 
-**Path**: `Flock Group Member` roster resolution — the scope predicate that
-`is_member_in_scope` and `member_groups` run. `EXPLAIN type: ALL` (full scan of
-15,000 rows). At 15k members per branch this will dominate the eligibility
-check.
+> **Corrected by [FLO-459](/FLO/issues/FLO-459) + [FLO-465](/FLO/issues/FLO-465).**
+> The original FLO-454 text below misattributed this read to `is_member_in_scope`
+> on the registration critical path. That was wrong: `is_member_in_scope` reads
+> `tabFlock Member.branch` (branch scope) or a single-column `member` lookup on
+> `tabFlock Group Member` (group scope) — neither filters on `(branch, status)`.
+> The authoritative consumer is the **notification fan-out audience resolver**
+> (`FrappeNotificationFanoutGateway._leaders`), which plucks Active
+> Leader/Co-Leader rows scoped by branch or group. FLO-465 added the missing
+> `status = 'Active'` predicate so the read aligns with these composites.
 
-**Proposed fix**: `ALTER TABLE \`tabFlock Group Member\` ADD INDEX
-\`idx_group_status\` (\`group\`, \`status\`)` via a versioned patch. The
-`(branch, status)` variant is also useful for branch-wide roster pulls.
+**Path**: `Flock Group Member` notification fan-out audience —
+`_leaders` plucks `member` where `role IN (Leader, Co-Leader)` AND
+`status = 'Active'` AND (`branch IN (...)` or `group IN (...)`). `EXPLAIN
+type: ALL` (full scan of 15,000 rows) without the composites.
+
+**Fix shipped (FLO-459)**: `idx_group_status (group, status)` +
+`idx_branch_status (branch, status)` via
+`flock_os/patches/v0_3/add_group_member_indexes.py`.
+
+**Covering-index evaluation (FLO-465 §4)**: a covering
+`(branch, status, member)` / `(group, status, member)` variant would let the
+fan-out `pluck="member"` run as an index-only scan. **Decision: not warranted
+at 15k scale.** The fan-out also filters on `role` (not in the composite), so
+the covering variant only saves the final heap-fetch of the `member` column for
+the ~3-5% of rows that survive the `role` filter — single-digit-ms benefit at
+this scale, not worth the extra index-maintenance cost on every roster write.
+Revisit if fan-out latency becomes a bottleneck at 50k+ members or 100+
+branches.
 
 ### P2 — `filter_unseen` IN-clause pattern at 500 tuples is a lock-in hazard
 
