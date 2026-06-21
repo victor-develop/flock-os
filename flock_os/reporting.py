@@ -668,12 +668,16 @@ class FrappeBulkAttendanceGateway:
 				self.SUMMARY_DOCTYPE, {"branch": scope.branch, "event": event}, "total"
 			)
 			return int(total or 0)
-		rows = frappe.db.get_all(
-			self.SUMMARY_DOCTYPE,
-			filters={"branch": scope.branch},
-			fields=["total"],
-		)
-		return sum(int(r.total or 0) for r in rows)
+		# Branch-total: push the SUM to MariaDB instead of fetching every summary
+		# row into Python. The unbounded get_all read is the bottleneck the FLO-365
+		# 15k stress flagged: a busy branch fans out one summary row per event, so
+		# the read grew with the event count. A single aggregate query returns one
+		# scalar regardless of row count (FLO-520).
+		result = frappe.db.sql(
+			f"SELECT SUM(total) FROM `tab{self.SUMMARY_DOCTYPE}` WHERE branch=%s",
+			values=(scope.branch,),
+		)[0][0]
+		return int(result or 0)
 
 	def emit(self, event: DomainEvent) -> None:
 		from flock_os.events import emit
