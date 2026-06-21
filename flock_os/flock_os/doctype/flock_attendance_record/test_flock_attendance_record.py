@@ -60,6 +60,82 @@ class TestFlockAttendanceRecord(FrappeTestCase):
 				f"missing UNIQUE index {index_name} on tab{doctype}",
 			)
 
+	def _drop_attendance_indexes(self):
+		# Drop every composite UNIQUE index this patch owns (ignore already-absent).
+		for doctype, index_name, _columns in INDEXES:
+			frappe.db.sql(
+				f"ALTER TABLE `tab{doctype}` DROP INDEX `{index_name}`",
+			)
+
+	def test_index_patch_collapses_duplicates_then_recreates_unique(self):
+		"""FLO-457: ``ADD UNIQUE INDEX`` must succeed on a dirty DB that
+		double-wrote while the index was absent (the FLO-454 finding — replays
+		double-counted, so the dedupe backstop never fired). Drop the indexes,
+		seed duplicate rows, then re-run the patch and assert it collapses the
+		dupes and re-creates the UNIQUE constraints."""
+		self._drop_attendance_indexes()
+
+		# Seed THREE rows for the SAME (event, attendee_ref) — exactly what a
+		# replay storm writes when the backstop is missing. bulk_insert omits
+		# `name`; the autoincrement DEFAULT (FLO-53 patch) fills it.
+		frappe.db.bulk_insert(
+			"Flock Attendance Record",
+			fields=["event", "attendee_ref", "branch", "status", "source", "client_req_id"],
+			values=[
+				["g-dup", "m-dup", self.branch_a, "present", "bulk", "b1"],
+				["g-dup", "m-dup", self.branch_a, "present", "bulk", "b2"],
+				["g-dup", "m-dup", self.branch_a, "present", "bulk", "b3"],
+			],
+		)
+		# Seed TWO summary rows for the SAME (branch, event) with totals 10 + 5.
+		frappe.db.sql(
+			"""INSERT INTO `tabEvent Attendance Summary` (branch, event, total)
+			VALUES (%s, %s, 10), (%s, %s, 5)""",
+			(self.branch_a, "g-dup", self.branch_a, "g-dup"),
+		)
+
+		# Re-run the patch — must dedup THEN add the UNIQUE indexes without
+		# raising a duplicate-key error.
+		run_index_patch()
+
+		# All three UNIQUE indexes are present again.
+		for doctype, index_name, _columns in INDEXES:
+			self.assertTrue(
+				frappe.db.sql(
+					"""SELECT 1 FROM information_schema.STATISTICS
+					WHERE table_schema = DATABASE() AND table_name = %s
+					AND index_name = %s LIMIT 1""",
+					(f"tab{doctype}", index_name),
+				),
+				f"index {index_name} not recreated after dirty-DB recovery",
+			)
+
+		# Attendance dups collapsed to ONE row per (event, attendee_ref).
+		self.assertEqual(
+			frappe.db.count("Flock Attendance Record", {"event": "g-dup", "attendee_ref": "m-dup"}),
+			1,
+		)
+
+		# Summary collapsed to ONE row per (branch, event) with totals SUMMED (15).
+		self.assertEqual(
+			frappe.db.count("Event Attendance Summary", {"branch": self.branch_a, "event": "g-dup"}),
+			1,
+		)
+		total = frappe.db.get_value(
+			"Event Attendance Summary",
+			{"branch": self.branch_a, "event": "g-dup"},
+			"total",
+		)
+		self.assertEqual(int(total), 15)
+
+		# Re-running the patch is a no-op (idempotent): indexes already exist.
+		run_index_patch()
+		self.assertEqual(
+			frappe.db.count("Flock Attendance Record", {"event": "g-dup"}),
+			1,
+		)
+		self.assertEqual(int(total), 15)
+
 	def test_bulk_insert_without_name_auto_generates_rows(self):
 		# Raw bulk insert omits `name`; auto-increment must fill it.
 		frappe.db.bulk_insert(

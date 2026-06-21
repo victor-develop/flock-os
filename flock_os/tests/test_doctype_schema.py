@@ -668,3 +668,65 @@ def test_composite_unique_index_contract_matches_gateway(attendance_schemas):
 			assert col in field_names, f"{doctype}: index column {col!r} is not a field"
 
 	assert declared == EXPECTED_ATTENDANCE_INDEXES
+
+
+# --------------------------------------------------------------------------- #
+# FLO-457: the migrate patch must also survive a *dirty* DB. While the
+# composite UNIQUE indexes were absent (the FLO-454 finding), replays could
+# double-write rows, so a plain `ADD UNIQUE INDEX` would raise a duplicate-key
+# error and abort `bench migrate`. The patch now dedups before adding each
+# index; these no-bench tests pin that dedup contract (the live round-trip —
+# seed dupes, re-run the patch, assert collapse + index — lives in the bench
+# integration test test_flock_attendance_record.py).
+# --------------------------------------------------------------------------- #
+
+
+def test_attendance_index_dedup_targets_real_indexes_and_known_strategies():
+	"""Every registered dedup must name a real index in INDEXES and use an
+	implemented strategy — drift fails the no-bench gate."""
+	from flock_os.patches.v0_1.add_attendance_indexes import DEDUP, INDEXES, STRATEGIES
+
+	index_names = {name for _dt, name, _cols in INDEXES}
+	for index_name, strategy in DEDUP.items():
+		assert index_name in index_names, f"DEDUP names unknown index {index_name!r}"
+		assert strategy in STRATEGIES, f"DEDUP uses unknown strategy {strategy!r}"
+
+
+def test_attendance_index_dedup_registers_only_the_broadest_key():
+	"""The (event, attendee_ref, client_req_id) index is a strict superset of
+	(event, attendee_ref): once the prefix is deduped the superset is
+	guaranteed unique, so it must NOT carry a redundant dedup entry. The
+	prefix index must. Pinning this keeps the dedup set minimal + correct."""
+	from flock_os.patches.v0_1.add_attendance_indexes import DEDUP, INDEXES
+
+	def find(*cols):
+		target = set(cols)
+		for _dt, name, columns_sql in INDEXES:
+			if set(_columns_of(columns_sql)) == target:
+				return name
+		raise AssertionError(f"no index on {cols}")
+
+	prefix = find("event", "attendee_ref")
+	superset = find("event", "attendee_ref", "client_req_id")
+	summary = find("branch", "event")
+	assert prefix in DEDUP, "prefix (event, attendee_ref) must dedup"
+	assert summary in DEDUP, "summary (branch, event) must dedup"
+	assert superset not in DEDUP, "superset index is covered by the prefix dedup"
+
+
+def test_attendance_index_dedup_columns_are_not_null():
+	"""The dedup self-joins use plain ``=`` (not NULL-safe ``<=>``); every
+	dedup key column must therefore be ``reqd`` (NOT NULL) on its DocType, or a
+	NULL duplicate would evade collapse and crash ``ADD UNIQUE INDEX``."""
+	from flock_os.patches.v0_1.add_attendance_indexes import DEDUP, INDEXES
+
+	by_name = {name: (_dt, _columns_of(cols)) for _dt, name, cols in INDEXES}
+	for index_name in DEDUP:
+		doctype, columns = by_name[index_name]
+		schema = _load(doctype)
+		for fieldname in columns:
+			field = _field(schema, fieldname)
+			assert field.get("reqd") == 1, (
+				f"{doctype}.{fieldname} is nullable but the {index_name} dedup joins on"
+				" it with `=`; either mark it reqd or switch the dedup to `<=>`."
+			)
