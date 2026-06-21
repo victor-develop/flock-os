@@ -383,7 +383,7 @@ Once §1–§7 are in place, the first staging deploy is just a merge to `master
 2. Merge (or push) to `master`. Watch the **Deploy** workflow:
    - `lint-and-test` → `build-image` → `deploy-staging` → "Post-deploy smoke".
 3. The smoke step (`scripts/deploy/smoke-staging.sh`) runs three probes:
-   `[1/3]` HTTP 2xx/3xx on `$STAGING_URL`, `[2/3]` `/api/ping` returns `pong`,
+   `[1/3]` HTTP 2xx/3xx on `$STAGING_URL`, `[2/3]` `/api/method/ping` returns `pong`,
    `[3/3]` a WS handshake succeeds against the scaled-socketio tier. All three
    must pass; a failure blocks prod promotion ([FLO-251](/FLO/issues/FLO-251)).
 4. Record the green smoke output (and the staging URL) in the
