@@ -72,6 +72,16 @@ keys off one gathering id. Know that id before doors open.
 > T-7/T-0 command blocks as **the operational contract the pipeline must
 > satisfy**, not executable runbook lines.
 
+> 📎 **Cross-linked sibling runbooks land on their own slices** —
+> [`scale-15k-findings.md`](scale-15k-findings.md)
+> ([FLO-365](/FLO/issues/FLO-365)), [`launch-go-no-go.md`](launch-go-no-go.md)
+> ([FLO-332](/FLO/issues/FLO-332)/[FLO-357](/FLO/issues/FLO-357)), and
+> [`migration-runbook.md`](migration-runbook.md)
+> ([FLO-332](/FLO/issues/FLO-332)/[FLO-350](/FLO/issues/FLO-350)) are real and
+> correctly shaped but **not yet on `master`**; the links resolve once those
+> Phase 6.1/6.2 slices merge. They dangle only if this slice merges first (see
+> [Out of scope](#out-of-scope)).
+
 ---
 
 ## 1. T-7 days — pre-event checklist
@@ -301,9 +311,19 @@ The two hot write paths on event day, both already load-proven
   its receipt p95 IS the §8 `< 500ms` SLO (the `measure_bulk_latency` histogram
   in [`flock_os.telemetry`](../../flock_os/telemetry.py)).
 - **Registration check-in** — `check_in_registration` bumps
-  `checked_in_count`. Note PERF-CHK-NONATOMIC from the scale drill: if you see
-  check-in count drift under heavy concurrency, that is the known non-atomic
-  read-then-write — not data loss, but flag it for the post-event retro.
+  `checked_in_count` via the **atomic single-statement UPDATE**
+  `_bump_gathering_count(doc.gathering, "checked_in_count", +1)`
+  ([`flock_event_registration.py:649`](../../flock_os/flock/doctype/flock_event_registration/flock_event_registration.py)).
+  PERF-CHK-NONATOMIC from the scale drill is **closed by
+  [FLO-515](/FLO/issues/FLO-515)** (`aa87d4d`, on this slice): it replaced the
+  racy read-then-write with the atomic counter helper shared with
+  `registered_count`, and the regression test
+  `test_check_in_counter_is_atomic_update_not_read_then_write`
+  ([`test_registrations.py:983`](../../flock_os/tests/test_registrations.py))
+  pins it. Check-in count drift is therefore **no longer expected** — if you
+  observe it under heavy concurrency, treat it as a **new counter regression,
+  not a known benign race**: triage as [§4 Sev-2](#severity-rubric) and file a
+  child issue immediately, rather than deferring it to the post-event retro.
 
 ### 3c. Confirm a broadcast landed (the 30-second check)
 
@@ -481,7 +501,7 @@ event ticket and fill it within 48h:
 
 ### Follow-ups
 - [ ] <each Sev-1/Sev-2 gets a child issue; link them here>
-- [ ] PERF-* items confirmed/resolved (e.g. PERF-CHK-NONATOMIC if check-in drifted)
+- [ ] PERF-* items confirmed/resolved (PERF-CHK-NONATOMIC is closed by [FLO-515](/FLO/issues/FLO-515); any observed check-in drift should already be filed as a §4 Sev-2 child issue, not a retro item)
 
 ### Numbers vs the pre-event plan
 - Expected vs actual peak, expected vs actual write rate, any capacity re-size done.
@@ -519,6 +539,13 @@ event ticket and fill it within 48h:
   [`ws-broadcast-delivery.md`](../development/ws-broadcast-delivery.md) +
   [`realtime-edge-cases.md`](realtime-edge-cases.md).
 - **Launch go/no-go gate definition** — [`launch-go-no-go.md`](launch-go-no-go.md).
+- **Sibling doc cross-links not yet on `master`** —
+  [`scale-15k-findings.md`](scale-15k-findings.md)
+  ([FLO-365](/FLO/issues/FLO-365)), [`launch-go-no-go.md`](launch-go-no-go.md)
+  ([FLO-332](/FLO/issues/FLO-332)/[FLO-357](/FLO/issues/FLO-357)), and
+  [`migration-runbook.md`](migration-runbook.md)
+  ([FLO-332](/FLO/issues/FLO-332)/[FLO-350](/FLO/issues/FLO-350)) land on their
+  own Phase 6.1/6.2 slices; links resolve once those merge to master.
 - The **incident-response runbook as a separate doc** — folded into §4 for now;
   splits only if §4 grows past ~300 lines.
 
@@ -544,3 +571,4 @@ event ticket and fill it within 48h:
 | Date | Issue | Change |
 | --- | --- | --- |
 | 2026-06-21 | [FLO-581](/FLO/issues/FLO-581) | Initial event-day runbook (T-7 → T-0 → live ops → incident → post-event). Endorsement-independent; prod-infra steps flagged. |
+| 2026-06-21 | [FLO-583](/FLO/issues/FLO-583) | Architect review re-draft: §3b `PERF-CHK-NONATOMIC` note rewritten — drift is now a [§4 Sev-2](#severity-rubric) regression, not a benign race, since [FLO-515](/FLO/issues/FLO-515) shipped the atomic `checked_in_count` UPDATE (retro checklist aligned); §0 + Out-of-scope note the three sibling-doc cross-links that resolve on [FLO-365](/FLO/issues/FLO-365)/[FLO-332](/FLO/issues/FLO-332)/[FLO-350](/FLO/issues/FLO-350). |
