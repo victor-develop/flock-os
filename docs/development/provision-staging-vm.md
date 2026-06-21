@@ -15,6 +15,18 @@
 >
 > Companion runbook: [`deploy-runbook.md`](deploy-runbook.md) (how to deploy /
 > roll back once the VM exists). This runbook ends where that one starts.
+>
+> **Related runbooks** (cross-linked where they apply below):
+> - [`deploy-runbook.md`](deploy-runbook.md) — steady-state deploy / rollback operator guide.
+> - [`ws-broadcast-delivery.md`](ws-broadcast-delivery.md) — the scaled-socketio
+>   tier (FLO-121) this VM hosts; the §4 WS / §6 adapter-Redis / §8 WS-smoke
+>   steps assume it.
+> - [`backup-restore.md`](../operations/backup-restore.md) — VM-independent
+>   `bench backup` / `restore` / restore-drill (Phase 6.2); run the drill against
+>   staging before any prod promotion.
+> - [`mvp-operational-runbook.md`](../operations/mvp-operational-runbook.md) —
+>   core admin & troubleshooting (Phase 6.2); the day-2 operator reference for
+>   the live staging site.
 
 ## TL;DR
 
@@ -413,6 +425,14 @@ Once the VM is live, day-2 operations (rollback, scaled-socketio tier health,
 nginx sticky-L7 Cloudflare caveat, troubleshooting matrix) live in the
 companion runbook: **[`deploy-runbook.md`](deploy-runbook.md)**. This document
 is the **one-time bring-up**; that one is the **steady-state operator guide**.
+
+For backup/restore and the pre-release restore drill, see
+**[`backup-restore.md`](../operations/backup-restore.md)** (the same scripts run
+on the staging VM). For the scaled-socketio tier topology this VM hosts
+(node workers, adapter Redis, per-connection auth cache), see
+**[`ws-broadcast-delivery.md`](ws-broadcast-delivery.md)**. For general admin &
+troubleshooting of the live staging site, see
+**[`mvp-operational-runbook.md`](../operations/mvp-operational-runbook.md)**.
 
 ## Out of scope
 
