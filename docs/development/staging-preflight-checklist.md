@@ -124,18 +124,20 @@ rm -f /tmp/flock.env   # plaintext — clean up immediately
 
 ## 4. Smoke script green
 
-The three-probe gate the deploy workflow runs post-deploy, by hand. This is the
+The four-probe gate the deploy workflow runs post-deploy, by hand. This is the
 single command that closes Phase 6.1's "reachable staging URL" acceptance.
 
 ```bash
 scripts/deploy/smoke-staging.sh
 ```
 
-- [ ] **`[1/3] OK`** — HTTP reachability + TLS (2xx/3xx on the site root).
-- [ ] **`[2/3] OK`** — `/api/method/ping` returns `pong` (gunicorn + bench boot +
+- [ ] **`[1/4] OK`** — HTTP reachability + TLS (2xx/3xx on the site root).
+- [ ] **`[2/4] OK`** — `/api/method/ping` returns `pong` (gunicorn + bench boot +
       site config rendered).
-- [ ] **`[3/3] OK`** — WS handshake completed (scaled-socketio tier up + adapter
+- [ ] **`[3/4] OK`** — WS handshake completed (scaled-socketio tier up + adapter
       armed).
+- [ ] **`[4/4] OK`** — engagement assets serve 200 (proves `bench build --app
+      flock_os` ran + the web worker restarted; FLO-617).
 - [ ] Final line reads **`SMOKE: PASS`** (exit 0). A `SMOKE: FAIL` blocks prod
       promotion — do **not** proceed; triage via
       [deploy-runbook.md → Troubleshooting](deploy-runbook.md#troubleshooting).
@@ -149,7 +151,7 @@ before relying on the auto-deploy, run one manual deploy and watch it go green:
 2. Trigger the **Deploy** workflow from the Actions tab (or push a trivial
    change to `master`) and watch the jobs:
    `lint-and-test` → `build-image` → `deploy-staging` → "Post-deploy smoke".
-3. Confirm the smoke step shows `[1/3] [2/3] [3/3]` all `OK`.
+3. Confirm the smoke step shows `[1/4] [2/4] [3/4] [4/4]` all `OK`.
 
 - [ ] A manual/automatic `master` deploy completes with all four jobs green and
       the post-deploy smoke `PASS`.

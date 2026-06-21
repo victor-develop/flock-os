@@ -282,8 +282,9 @@ the site healthy.
 | Migrate aborts on a patch (traceback) | Default behavior — a patch is broken. Read the traceback, fix the patch or the data, re-run `bench migrate` (idempotent). Only use `--skip-failing` under the §3 rules. |
 | `RealtimeWiringError` during `after_migrate` | A wire script's marker guard fired — `index.js` shape changed. Re-run `scripts/dev/wire-socketio-redis-adapter.sh` by hand, confirm the marker, then `bench --site <site> migrate` again. |
 | Post-migrate `doctor` fails (boot error) | A patch left schema inconsistent. Restore the pre-migrate backup (§5); do not patch forward blind. |
-| Smoke `[3/3] FAIL` (WS handshake) | The socketio tier collapsed to 1 process. `supervisorctl restart socketio-tier`; if it stays collapsed, the adapter marker is missing (see row above). |
-| Smoke `[2/3] FAIL` (`ping` ≠ `pong`) | gunicorn up but site config broken — usually a render-config issue post-restore. Check `site_config.json` rendered; see [`deploy-runbook.md` → Render site config](../development/deploy-runbook.md#render-site-config-manual). |
+| Smoke `[3/4] FAIL` (WS handshake) | The socketio tier collapsed to 1 process. `supervisorctl restart socketio-tier`; if it stays collapsed, the adapter marker is missing (see row above). |
+| Smoke `[2/4] FAIL` (`ping` ≠ `pong`) | gunicorn up but site config broken — usually a render-config issue post-restore. Check `site_config.json` rendered; see [`deploy-runbook.md` → Render site config](../development/deploy-runbook.md#render-site-config-manual). |
+| Smoke `[4/4] FAIL` (engagement assets 404) | `bench build --app flock_os` skipped or web worker not restarted post-migrate (FLO-617). Run the build, then `supervisorctl restart gunicorn`; see [`deploy-runbook.md` → Asset build](../development/deploy-runbook.md#asset-build--web-worker-restart-flo-617). |
 | `--skip-failing` used; site seems fine | Not done — file the follow-up issue for the skipped patch and add it to the next go/no-go. A skipped patch is migration debt until re-run green. |
 
 ## Out of scope

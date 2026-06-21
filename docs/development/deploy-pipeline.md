@@ -29,16 +29,16 @@ push to master
    ▼
 ┌──────────────┐    ┌───────────────┐    ┌─────────────────┐
 │ lint-and-test│───►│  build-image  │───►│ deploy-staging  │──┐
-│ (CI reuse)   │    │ (push to GHCR)│    │ + smoke [1..3/3]│  │
+│ (CI reuse)   │    │ (push to GHCR)│    │ + smoke [1..4/4]│  │
 └──────────────┘    └───────────────┘    └─────────────────┘  │
-                                                          record
-                                                       FLOCK_PREVIOUS_TAG
-                                                              │
-                    manual workflow_dispatch                  ▼
-                    (CEO/QA sign-off)              ┌───────────────────────┐
-                 ┌──────────────────────────────► │ promote-to-prod       │
-                 │   (same artifact, no rebuild)  │ + smoke [1..3/3]      │
-                 │                                └───────────────────────┘
+                                                           record
+                                                        FLOCK_PREVIOUS_TAG
+                                                               │
+                     manual workflow_dispatch                  ▼
+                     (CEO/QA sign-off)              ┌───────────────────────┐
+                  ┌──────────────────────────────► │ promote-to-prod       │
+                  │   (same artifact, no rebuild)  │ + smoke [1..4/4]      │
+                  │                                └───────────────────────┘
 ```
 
 - **Staging is automatic.** Any push to `master` with a green CI gate builds the
@@ -287,15 +287,19 @@ rollback flow itself (deploy → break → roll back → re-smoke) is documented
 ## Post-deploy smoke (the pipeline's quality gate)
 
 Both `deploy-staging` and `promote-to-prod` end with
-`scripts/deploy/smoke-staging.sh` — the same three-probe gate used by hand and
+`scripts/deploy/smoke-staging.sh` — the same four-probe gate used by hand and
 in the pre-flight checklist:
 
-- **`[1/3]` HTTP reachability + TLS** — `curl` the site root, expect 2xx/3xx.
-- **`[2/3]` Frappe API liveness** — `/api/method/ping` returns `pong` (proves
+- **`[1/4]` HTTP reachability + TLS** — `curl` the site root, expect 2xx/3xx.
+- **`[2/4]` Frappe API liveness** — `/api/method/ping` returns `pong` (proves
   gunicorn + bench boot + site config rendered cleanly).
-- **`[3/3]` WebSocket connect** — a WS handshake completes against the
+- **`[3/4]` WebSocket connect** — a WS handshake completes against the
   scaled-socketio tier (proves the FLO-121 N-worker sticky-L7 tier is up and
   the `@socket.io/redis-adapter` is armed).
+- **`[4/4]` Engagement asset smoke** — `/assets/flock_os/js/*.js` +
+  `/assets/flock_os/css/engage.css` return 200 (proves `bench build --app
+  flock_os` ran AND the web worker was restarted after the build; a skipped
+  build or skipped restart 404s freshly-added asset dirs — FLO-617).
 
 A smoke failure fails the workflow → blocks prod promotion. The probe source +
 per-probe troubleshooting is in
@@ -311,7 +315,8 @@ step-through (with expected output) is in
 | Decrypt gate: `sops decrypt failed` | `SOPS_AGE_KEY` doesn't match the recipient in `.sops.yaml`. Re-rotate the bundle. See [`secrets-runbook.md` → Troubleshooting](secrets-runbook.md#troubleshooting). |
 | Decrypt gate: `bundle is missing required keys` | Open `secrets/<env>.enc.yaml` with `sops` and add the listed keys; save → commit. |
 | Config gate: `missing required env vars` | A template placeholder has no value. `render-config.sh --print-env` shows which (redacted). |
-| Smoke `[3/3] FAIL` (WS handshake) | Scaled-socketio tier down or `FLOCK_SIO_ADAPTER_REDIS` unreachable. See [`deploy-runbook.md` → Troubleshooting](deploy-runbook.md#troubleshooting). |
+| Smoke `[3/4] FAIL` (WS handshake) | Scaled-socketio tier down or `FLOCK_SIO_ADAPTER_REDIS` unreachable. See [`deploy-runbook.md` → Troubleshooting](deploy-runbook.md#troubleshooting). |
+| Smoke `[4/4] FAIL` (engagement assets 404) | `bench build --app flock_os` skipped or web worker not restarted after the build (FLO-617). See [`deploy-runbook.md` → Asset build](deploy-runbook.md#asset-build--web-worker-restart-flo-617). |
 | `build-image` denied: packages | `FLOCK_IMAGE_REGISTRY_TOKEN` missing/invalid, or the workflow lacks `packages: write`. |
 | Two deploys raced | Should be impossible (concurrency lock). If seen, confirm `cancel-in-progress: false` and the group key are intact. |
 
