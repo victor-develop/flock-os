@@ -18,6 +18,19 @@
 	if (!FORM) return;
 
 	const _ = (window.frappe && window.frappe._ && ((s) => window.frappe._(s))) || ((s) => s);
+	// SEC-XSS-1: setStatus renders via innerHTML, so any exception/server text
+	// concatenated into a status line must be HTML-escaped first. Prefer Frappe's
+	// own escaper; fall back to a self-contained one if utils isn't loaded yet.
+	const escape_html =
+		(window.frappe && window.frappe.utils && window.frappe.utils.escape_html) ||
+		function (s) {
+			return String(s == null ? "" : s)
+				.replace(/&/g, "&amp;")
+				.replace(/</g, "&lt;")
+				.replace(/>/g, "&gt;")
+				.replace(/"/g, "&quot;")
+				.replace(/'/g, "&#39;");
+		};
 	const $ = (id) => document.getElementById(id);
 	const el = (tag, cls, text) => {
 		const n = document.createElement(tag);
@@ -106,7 +119,7 @@
 			if (ROUNDS && cfg.rounds) ROUNDS.value = String(cfg.rounds);
 			if (CALM && (tpl.accessibility_mode_default || cfg.calm_default)) CALM.checked = true;
 		} catch (e) {
-			setStatus("error", _("Could not load that template. ") + ((e && e.message) || ""));
+			setStatus("error", _("Could not load that template. ") + escape_html((e && e.message) || ""));
 		}
 	}
 
@@ -209,7 +222,7 @@
 			BTN_OPEN.dataset.ready = "1";
 			BTN_OPEN.disabled = false;
 		} catch (e) {
-			setStatus("error", _("Could not create session. ") + ((e && e.message) || ""));
+			setStatus("error", _("Could not create session. ") + escape_html((e && e.message) || ""));
 		} finally {
 			busy(false);
 		}
@@ -227,7 +240,7 @@
 			BTN_CLOSE.dataset.ready = "1";
 			BTN_CLOSE.disabled = false;
 		} catch (e) {
-			setStatus("error", _("Could not open. ") + ((e && e.message) || ""));
+			setStatus("error", _("Could not open. ") + escape_html((e && e.message) || ""));
 		} finally {
 			busy(false);
 		}
@@ -246,7 +259,7 @@
 			BTN_CLOSE.disabled = true;
 			renderReview();
 		} catch (e) {
-			setStatus("error", _("Could not close. ") + ((e && e.message) || ""));
+			setStatus("error", _("Could not close. ") + escape_html((e && e.message) || ""));
 		} finally {
 			busy(false);
 		}
@@ -371,7 +384,7 @@
 			setStatus("success", _("Override recorded."));
 			await renderReview();
 		} catch (e) {
-			setStatus("error", _("Override failed. ") + ((e && e.message) || ""));
+			setStatus("error", _("Override failed. ") + escape_html((e && e.message) || ""));
 		} finally {
 			busy(false);
 		}
