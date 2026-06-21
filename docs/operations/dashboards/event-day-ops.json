@@ -1,0 +1,330 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "description": "Prometheus datasource (app + DB + Redis + WS exporters)", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "1.0.0" },
+    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "1.0.0" }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "enable": true,
+        "expr": "changes(bench_deploy_info{job=\"flock-app\"}[5m]) > 0",
+        "iconColor": "red",
+        "name": "Deploy",
+        "tags": ["deploy"],
+        "titleFormat": "deploy"
+      }
+    ]
+  },
+  "description": "Flock OS event-day real-time ops board (the on-call screen). Mirrors docs/operations/metrics-alerting-design.md \u00a72.1. Every panel LIVE, last 15 min. Owner: FLO-694 / FLO-586.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Incident runbooks", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/incident-runbooks.md" },
+    { "title": "Launch go/no-go no-go list", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/launch-go-no-go.md#no-go-conditions" },
+    { "title": "15k scale findings", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/scale-15k-findings.md" }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Headline SLO strip (traffic-light)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 14000 },
+              { "color": "red", "value": 15000 }
+            ]
+          },
+          "unit": "short",
+          "max": 15000
+        }
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "sum(flock_ws_connections_active)", "legendFormat": "active", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "WS connections / 15,000",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 500 },
+              { "color": "red", "value": 1000 }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(flock_ws_connect_duration_ms_bucket[5m])) by (le))", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "WS connect p95 (last 5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 500 },
+              { "color": "red", "value": 1000 }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(flock_ws_broadcast_latency_ms_bucket[5m])) by (le))", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "WS broadcast p95 (last 5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.005 }
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 15, "y": 1 },
+      "id": 4,
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1m])) / clamp_min(sum(rate(flock_http_requests_total[1m])), 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "HTTP 5xx rate (green = 0)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          },
+          "unit": "cps"
+        }
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
+      "id": 5,
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(flock_ws_receive_errors_total[5m]))", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "WS receive errors (green = 0)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "WS cluster shape + sticky-LB affinity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10, "stacking": { "mode": "none" } }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "flock_ws_connections_per_worker", "legendFormat": "{{worker}}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Per-worker connections (round-robin distribution \u2014 FLO-121)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 } ] },
+          "unit": "percent",
+          "max": 100
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 6 },
+      "id": 7,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [{ "refId": "A", "expr": "100 * sum(rate(flock_ws_lb_affinity_miss_total[5m])) / clamp_min(sum(rate(flock_ws_lb_decisions_total[5m])), 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Sticky-LB affinity miss rate (FLO-116 wall)",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.85 }, { "color": "red", "value": 0.95 } ] },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 6 },
+      "id": 8,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdMarkers": true },
+      "targets": [{ "refId": "A", "expr": "flock_redis_pubsub_numsub_socketio", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Adapter pub/sub subscribers (expect N workers)",
+      "type": "gauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "title": "Adapter Redis (the WS-scale bottleneck \u2014 FLO-127)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "bytes" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "redis_memory_used_rss_bytes{instance=~\".*adapter.*\"}", "legendFormat": "used_rss", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "redis_memory_max_bytes{instance=~\".*adapter.*\"}", "legendFormat": "maxmemory", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Adapter Redis memory (rss vs maxmemory)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 15 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "redis_connected_clients{instance=~\".*adapter.*\"}", "legendFormat": "clients", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(redis_evicted_keys_total{instance=~\".*adapter.*\"}[1m]))", "legendFormat": "evicted/s (MUST be 0)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Adapter clients + evictions (eviction = config drift)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 50 } ] },
+          "unit": "ms"
+        }
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 15 },
+      "id": 11,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdMarkers": true },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum(rate(redis_commands_latency_seconds_bucket{instance=~\".*adapter.*\",cmd=~\"PUBLISH|SUBSCRIBE\"}[5m])) by (le,cmd)) * 1000", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Adapter PUBLISH/SUBSCRIBE p95 latency",
+      "type": "gauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "title": "App throughput + DB pressure + Edge",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" }, "fillOpacity": 30 }, "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "id": 12,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [{ "refId": "A", "expr": "sum by (route_class) (rate(flock_http_requests_total[1m]))", "legendFormat": "{{route_class}}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "App throughput by route class",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "id": 13,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [{ "refId": "A", "expr": "flock_rq_queue_depth", "legendFormat": "{{queue}}", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "RQ queue depth (bulk-attendance backlog)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "id": 14,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "mysql_threads_running / mysql_threads_connected", "legendFormat": "DB busy ratio", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(mysql_slow_queries_total[1m]))", "legendFormat": "slow q/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "DB pressure (connections + slow queries)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["flock-os", "event-day", "on-call", "phase-6"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": { "refresh_intervals": ["5s", "10s", "30s", "1m"] },
+  "timezone": "browser",
+  "title": "Flock OS \u2014 Event-day real-time ops (on-call)",
+  "uid": "flock-event-day",
+  "version": 1,
+  "weekStart": ""
+}

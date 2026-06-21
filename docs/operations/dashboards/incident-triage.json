@@ -1,0 +1,173 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "description": "Prometheus datasource", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" }
+  ],
+  "description": "Flock OS incident-triage view. Mirrors docs/operations/metrics-alerting-design.md \u00a72.3. The board the on-call opens when an alert fires. Optimized for correlation, not overview. LIVE, last 1h. Owner: FLO-694 / FLO-586.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    { "title": "Incident runbooks (start here)", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/incident-runbooks.md" },
+    { "title": "Metrics + alerting design \u00a73.4 alert routing", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/metrics-alerting-design.md#34-alert-routing-table-critical-rows-only--see-1-for-the-full-threshold-set" },
+    { "title": "Event-day runbook", "type": "link", "url": "https://github.com/victor-develop/flock-os/blob/master/docs/operations/event-day-runbook.md" }
+  ],
+  "liveNow": true,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 300,
+      "title": "1. Fired-alert header (read the firing alert, then \u00a70 of incident-runbooks.md)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "displayMode": "table" } } },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "showHeader": true, "sortBy": [ { "desc": true, "displayName": "active_at" } ] },
+      "targets": [{ "refId": "A", "expr": "ALERTS{alertstate=\"firing\"}", "format": "table", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Firing alerts (name, severity, active since, value)",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 },
+      "id": 301,
+      "title": "2. Correlated tier view (aligned time axis \u2014 which tier moved FIRST?)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 8 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(flock_ws_connections_active)", "legendFormat": "WS total conns", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "avg(flock_ws_connections_per_worker)", "legendFormat": "WS avg/worker", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "WS tier (connections + per-worker)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "id": 3,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "redis_memory_used_rss_bytes{instance=~\".*adapter.*\"}", "legendFormat": "adapter rss", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "redis_connected_clients{instance=~\".*adapter.*\"}", "legendFormat": "adapter clients", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "C", "expr": "histogram_quantile(0.95, sum(rate(redis_commands_latency_seconds_bucket{instance=~\".*adapter.*\",cmd=~\"PUBLISH|SUBSCRIBE\"}[5m])) by (le,cmd)) * 1000", "legendFormat": "PUBLISH/SUB p95 ms", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Adapter Redis (memory + clients + cmd latency)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 22 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "mysql_threads_connected", "legendFormat": "DB conns active", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(mysql_slow_queries_total[1m]))", "legendFormat": "slow q/min", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "C", "expr": "sum(rate(mysql_lock_waits_total[1m]))", "legendFormat": "lock waits/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "D", "expr": "sum(rate(mysql_deadlocks_total[1m]))", "legendFormat": "deadlocks/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "DB tier (connections + slow queries + lock waits + deadlocks)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
+      "id": 302,
+      "title": "3. Recent-deploy marker + 5xx traces + rate-limit activity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" } },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "changes(bench_deploy_info[1h])", "legendFormat": "deploys (last 1h)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "5xx rate + deploy markers (most incidents are deploy-correlated)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "cps" } },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(flock_rate_limit_rejections_total[1m]))", "legendFormat": "app limiter rejects/s (FLO-319)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "B", "expr": "sum(rate(cloudflare_rate_limit_tripped_total[1m]))", "legendFormat": "edge rate-limit/s (FLO-294)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
+      ],
+      "title": "Rate-limit activity (abuse vs capacity)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 },
+      "id": 303,
+      "title": "4. Top-K slow queries + realtime-tier process count",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "displayMode": "table" } } },
+      "gridPos": { "h": 7, "w": 16, "x": 0, "y": 38 },
+      "id": 5,
+      "options": { "showHeader": true, "sortBy": [ { "desc": true, "displayName": "Value" } ] },
+      "targets": [{ "refId": "A", "expr": "topk(10, sum by (digest) (rate(mysql_slow_query_time_seconds_sum[5m])))", "format": "table", "instant": true, "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "Top-10 slow queries (re-run profile-15k-scale.sh for baseline)",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+          "mappings": [ { "options": { "0": { "color": "red", "text": "COLLAPSED \u2014 no-go #3" }, "1": { "color": "red", "text": "COLLAPSED \u2014 no-go #3" } }, "type": "value" } ],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 38 },
+      "id": 6,
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
+      "targets": [{ "refId": "A", "expr": "count(up{job=\"flock-socketio\"} == 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "title": "socketio workers alive (must be N \u2014 no-go #3)",
+      "type": "stat"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["flock-os", "incident-triage", "phase-6"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Flock OS \u2014 Incident triage",
+  "uid": "flock-incident-triage",
+  "version": 1
+}
