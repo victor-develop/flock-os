@@ -295,26 +295,46 @@ def _authoritative_registration_status(gathering: str) -> str:
 	return decision.status
 
 
-def _bump_registered_count(gathering: str, delta: int) -> None:
-	"""Adjust ``registered_count`` within the caller's held transaction (§5 #3 / §10).
+_GATHERING_COUNTER_FIELDS = frozenset(("registered_count", "checked_in_count"))
 
-	``+1`` claims a seat (capacity already verified under the ``FOR UPDATE``
-	lock by :func:`_authoritative_registration_status`); ``-1`` releases one on
-	cancel (clamped at 0). No commit: the caller's request commits atomically —
-	or rolls the claim back on a failed insert — so the counter never diverges
-	from the registration rows. Reindex-free, single-statement, the 15k path.
+
+def _bump_gathering_count(gathering: str, field: str, delta: int) -> None:
+	"""Atomically adjust a gathering counter within the caller's held transaction
+	(§5 #3 / §10; FLO-515).
+
+	A single ``UPDATE … SET field = field + delta`` — never a read-then-write —
+	so concurrent leaders checking the same event in cannot lose updates (the
+	old ``_bump`` get_value → +1 in Python → set_value race, where two leaders
+	both read 5 and both write 6). ``+delta`` claims a seat / check-in; ``-delta``
+	releases one on cancel (clamped at 0 via ``GREATEST``). No commit: the
+	caller's request commits atomically — or rolls back on a failed write — so
+	the counter never diverges from the registration rows. Reindex-free,
+	single-statement, the 15k path. ``field`` is allowlisted against the
+	gathering's integer counters; it is never user-supplied.
 	"""
+	if field not in _GATHERING_COUNTER_FIELDS:
+		raise ValueError(f"unsafe gathering counter field: {field!r}")
 	if delta > 0:
 		frappe.db.sql(
-			"UPDATE `tabFlock Gathering` SET registered_count = registered_count + %s WHERE name = %s",
+			f"UPDATE `tabFlock Gathering` SET `{field}` = `{field}` + %s WHERE name = %s",
 			values=(delta, gathering),
 		)
 	else:
 		frappe.db.sql(
-			"UPDATE `tabFlock Gathering` "
-			"SET registered_count = GREATEST(registered_count + %s, 0) WHERE name = %s",
+			f"UPDATE `tabFlock Gathering` SET `{field}` = GREATEST(`{field}` + %s, 0) WHERE name = %s",
 			values=(delta, gathering),
 		)
+
+
+def _bump_registered_count(gathering: str, delta: int) -> None:
+	"""Increment/release the ``registered_count`` seat counter (§5 #3 / §10).
+
+	``+1`` claims a seat (capacity already verified under the ``FOR UPDATE``
+	lock by :func:`_authoritative_registration_status`); ``-1`` releases one on
+	cancel (clamped at 0). Delegates to the shared atomic helper so
+	``checked_in_count`` and ``registered_count`` share one race-free path.
+	"""
+	_bump_gathering_count(gathering, "registered_count", delta)
 
 
 # ---------------------------------------------------------------------------- #
@@ -603,9 +623,10 @@ def check_in_registration(registration_id: str, attendance_ref: str | None = Non
 	if attendance_ref:
 		doc.checked_in_attendance = attendance_ref
 	doc.save(ignore_permissions=True)
-	frappe.db.set_value(
-		"Flock Gathering", doc.gathering, "checked_in_count", _bump(doc.gathering, "checked_in_count")
-	)
+	# FLO-515: atomic single-statement UPDATE inside this held transaction —
+	# mirrors _bump_registered_count. The old _bump read-then-write lost updates
+	# when two leaders checked the same event in concurrently.
+	_bump_gathering_count(doc.gathering, "checked_in_count", +1)
 	events.emit(
 		events.REGISTRATION_CHECKED_IN,
 		payload={
@@ -970,9 +991,3 @@ def _assert_may_check_in(doc: FlockEventRegistration) -> None:
 		"Only a group leader, branch admin, or org admin may check in a registration (FLO-7 §6.1).",
 		frappe.PermissionError,
 	)
-
-
-def _bump(gathering: str, field: str) -> int:
-	"""Read + 1 on a gathering counter field (the check-in bridge, §5 #5)."""
-	current = int(frappe.db.get_value("Flock Gathering", gathering, field) or 0)
-	return current + 1

@@ -905,6 +905,29 @@ def test_counter_bumped_after_insert_not_before():
 	assert "frappe.db.rollback()" in register_body
 
 
+def test_check_in_counter_is_atomic_update_not_read_then_write():
+	# FLO-515: two leaders checking the same event in concurrently must not lose
+	# updates. The old `_bump` did get_value → +1 in Python → set_value: both
+	# callers read 5, both write 6 (lost update). The fix mirrors
+	# `_bump_registered_count` — a single atomic
+	# `UPDATE … SET field = field + %s` inside the caller's held transaction.
+	# A regression of either surfaces here, without a bench.
+	src = _CONTROLLER.read_text()
+	# 1. The racy read-then-write helper is gone entirely.
+	assert "def _bump(" not in src, "racy _bump(gathering, field) read-then-write must be removed"
+	assert '_bump(doc.gathering, "checked_in_count")' not in src, (
+		"check-in must not read-then-write checked_in_count (FLO-515)"
+	)
+	# 2. check_in_registration bumps via the atomic single-statement helper.
+	assert '_bump_gathering_count(doc.gathering, "checked_in_count", +1)' in src, (
+		"check-in must bump checked_in_count via the atomic counter helper"
+	)
+	# 3. The atomic UPDATE form exists (shared by registered_count + checked_in_count).
+	assert "`{field}` = `{field}` + %s" in src, (
+		"counter must be bumped by an atomic UPDATE, not a Python re-write (FLO-515)"
+	)
+
+
 # --------------------------------------------------------------------------- #
 # Phase B (FLO-79) — waitlist auto-promotion + bulk chunking + invitation
 # expiry + Flock Event Invitation schema/scoping contract.
