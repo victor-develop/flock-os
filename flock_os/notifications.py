@@ -525,9 +525,10 @@ class FrappeNotificationFanoutGateway:
 		return self._leaders(filters_group=list(groups) if groups else [])
 
 	def _leaders(
-		self, *, filters_branch: list[str], filters_group: list[str] | None = None
+		self, *, filters_branch: list[str] | None = None, filters_group: list[str] | None = None
 	) -> tuple[str, ...]:
 		frappe = self._frappe
+		filters_branch = filters_branch or []
 		leader_roles = list(perms.LEADER_ROSTER_ROLES)
 		refs: list[str] = []
 		# Accountable leaders: Flock Group.leader, scoped by branch or group.
@@ -538,8 +539,13 @@ class FrappeNotificationFanoutGateway:
 			group_filters["name"] = ["in", filters_group]
 		if group_filters:
 			refs.extend(r for r in frappe.get_all("Flock Group", filters=group_filters, pluck="leader") if r)
-		# Roster leaders: Flock Group Member(role ∈ Leader/Co-Leader).
-		roster_filters: dict[str, Any] = {"role": ["in", leader_roles]}
+		# Roster leaders: Flock Group Member(role ∈ Leader/Co-Leader, Active).
+		# `status = 'Active'` is required so Inactive leaders do not receive
+		# notifications (FLO-465 §1 — latent correctness bug surfaced by the
+		# FLO-459 review). The predicate also aligns the read with the
+		# `(branch, status)` / `(group, status)` composites (FLO-459) so the
+		# fan-out path is index-served.
+		roster_filters: dict[str, Any] = {"role": ["in", leader_roles], "status": "Active"}
 		if filters_branch:
 			roster_filters["branch"] = ["in", filters_branch]
 		if filters_group:

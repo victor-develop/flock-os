@@ -1,0 +1,24 @@
+{
+    "_comment": "Flock OS site_config template (FLO-246 Phase 6.1). Rendered by scripts/deploy/render-config.sh from environment — NO secret is ever committed. Placeholders use the shell-style ${VAR} form understood by envsubst (render-config.sh). The schema mirrors Frappe's site_config.json; flock_os adds FLOCK_SIO_ADAPTER_REDIS (the dedicated adapter Redis for the FLO-121 tier, FLO-127 §2).",
+    "db_name": "${DB_NAME}",
+    "db_host": "${DB_HOST}",
+    "db_port": ${DB_PORT},
+    "db_user": "${DB_USER}",
+    "db_password": "${DB_PASSWORD}",
+    "redis_cache": "${REDIS_CACHE_URI}",
+    "redis_queue": "${REDIS_QUEUE_URI}",
+    "redis_socketio": "${REDIS_SOCKETIO_URI}",
+    "adapter_redis_uri": "${FLOCK_SIO_ADAPTER_REDIS}",
+    "encryption_key": "${SECRET_KEY}",
+    "host_name": "${SITE_URL}",
+    "mute_emails": ${MUTE_EMAILS:-1},
+    "flock_os": {
+        "env": "${FLOCK_ENV}",
+        "tier": "prod",
+        "feature_flags": {
+            "enable_fun_attendance": true,
+            "enable_scoped_push": true,
+            "enable_one_time_events": true
+        }
+    }
+}

@@ -1,0 +1,29 @@
+{
+    "_comment": "Flock OS common_site_config template (FLO-246 Phase 6.1). Rendered by scripts/deploy/render-config.sh from environment. This is the bench-wide config (applies to all sites on the bench); per-site config lives in site_config.json.tmpl. NO secret is committed — every value is rendered from env at deploy time.",
+    "db_host": "${DB_HOST}",
+    "db_port": ${DB_PORT},
+    "db_user": "${DB_USER}",
+    "redis_cache": "${REDIS_CACHE_URI}",
+    "redis_queue": "${REDIS_QUEUE_URI}",
+    "redis_socketio": "${REDIS_SOCKETIO_URI}",
+    "adapter_redis_uri": "${FLOCK_SIO_ADAPTER_REDIS}",
+    "socketio_port": 9000,
+    "webserver_port": 8080,
+    "file_watcher_port": 6789,
+    "developer_mode": 0,
+    "serve_node_assets": 1,
+    "dropbox_access_key": "${DROPBOX_ACCESS_KEY:-}",
+    "dropbox_secret_key": "${DROPBOX_SECRET_KEY:-}",
+    "google_drive_access_key": "${GDRIVE_ACCESS_KEY:-}",
+    "google_drive_secret_key": "${GDRIVE_SECRET_KEY:-}",
+    "flock_os": {
+        "scaled_socketio": {
+            "enabled": true,
+            "processes": ${FLOCK_SIO_PROCESSES:-4},
+            "lb_kind": "nginx",
+            "sticky": "ip_hash",
+            "base_port": 9001,
+            "lb_port": 9000
+        }
+    }
+}

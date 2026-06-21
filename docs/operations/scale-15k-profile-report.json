@@ -1,0 +1,259 @@
+{
+  "dataset": {
+    "members_present": 15000,
+    "branches": [
+      "scale-branch-1",
+      "scale-branch-2",
+      "scale-branch-3",
+      "scale-branch-4",
+      "scale-branch-5"
+    ],
+    "anchors": [
+      "GATH-00009",
+      "GATH-00010",
+      "GATH-00011",
+      "GATH-00012",
+      "GATH-00013"
+    ],
+    "one_time": "GATH-00014"
+  },
+  "timings": [
+    {
+      "label": "attendance.aggregate (rollup)",
+      "median_ms": 0.726,
+      "min_ms": 0.684,
+      "max_ms": 0.882,
+      "samples": 5,
+      "rows": null,
+      "note": "Maintained Event Attendance Summary row read."
+    },
+    {
+      "label": "attendance.aggregate (COUNT(*) anti-pattern)",
+      "median_ms": 4.063,
+      "min_ms": 3.496,
+      "max_ms": 4.909,
+      "samples": 5,
+      "rows": null,
+      "note": "The forbidden live count \u2014 quantifies the gap the rollup closes."
+    },
+    {
+      "label": "attendance.bulk_write (500-row batch)",
+      "median_ms": 97.34,
+      "min_ms": 97.34,
+      "max_ms": 97.34,
+      "samples": 1,
+      "rows": 500,
+      "note": "5137 rows/s through the canonical BulkAttendanceService."
+    },
+    {
+      "label": "registration.dashboard",
+      "median_ms": 2.548,
+      "min_ms": 2.47,
+      "max_ms": 2.574,
+      "samples": 3,
+      "rows": null,
+      "note": "Counter read + waitlist COUNT over 15k registration rows."
+    },
+    {
+      "label": "registration.gateway_gathering_reads (N+1)",
+      "median_ms": 1.366,
+      "min_ms": 1.31,
+      "max_ms": 2.166,
+      "samples": 5,
+      "rows": null,
+      "note": "3 queries for branch+group+org \u2014 collapsible to 1."
+    },
+    {
+      "label": "realtime.room_join_scope",
+      "median_ms": 1.204,
+      "min_ms": 1.047,
+      "max_ms": 1.254,
+      "samples": 5,
+      "rows": null,
+      "note": "gathering\u2192branch resolve + user-permission check (per WS join)."
+    },
+    {
+      "label": "attendance.scoped_list (branch, limit 100)",
+      "median_ms": 16.428,
+      "min_ms": 15.517,
+      "max_ms": 22.505,
+      "samples": 5,
+      "rows": 100,
+      "note": "Branch-scoped list view over the 15k-row attendance table."
+    }
+  ],
+  "plans": [
+    {
+      "label": "attendance.summary_read",
+      "sql": "SELECT total FROM `tabEvent Attendance Summary` WHERE branch=%s AND event=%s",
+      "uses_index": true,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "tabEvent Attendance Summary",
+          "type": "const",
+          "possible_keys": "unique_branch_event,branch,event",
+          "key": "unique_branch_event",
+          "key_len": "1126",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "label": "attendance.count_star",
+      "sql": "SELECT COUNT(*) FROM `tabFlock Attendance Record` WHERE branch=%s AND event=%s",
+      "uses_index": false,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "tabFlock Attendance Record",
+          "type": "index_merge",
+          "possible_keys": "unique_event_attendee_ref,unique_event_attendee_req,unique_branch_gathering_member,event,branch,idx_branch_org_gathering_submitted",
+          "key": "event,branch",
+          "key_len": "563,563",
+          "ref": null,
+          "rows": "210",
+          "Extra": "Using intersect(event,branch); Using where; Using index"
+        }
+      ]
+    },
+    {
+      "label": "attendance.filter_unseen",
+      "sql": "SELECT event, attendee_ref, client_req_id FROM `tabFlock Attendance Record` WHERE (event, attendee_ref, client_req_id) IN ((%s, %s, %s), (%s, %s, %s), (%s, %s, %s))",
+      "uses_index": false,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": null,
+          "type": null,
+          "possible_keys": null,
+          "key": null,
+          "key_len": null,
+          "ref": null,
+          "rows": null,
+          "Extra": "Impossible WHERE noticed after reading const tables"
+        }
+      ]
+    },
+    {
+      "label": "registration.waitlist_count",
+      "sql": "SELECT COUNT(*) FROM `tabFlock Event Registration` WHERE gathering=%s AND registration_status='Waitlisted'",
+      "uses_index": true,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "tabFlock Event Registration",
+          "type": "ref",
+          "possible_keys": "unique_gathering_registrant,gathering,registration_status,index_gathering_status",
+          "key": "index_gathering_status",
+          "key_len": "1126",
+          "ref": "const,const",
+          "rows": "1",
+          "Extra": "Using where; Using index"
+        }
+      ]
+    },
+    {
+      "label": "realtime.gathering_branch_resolve",
+      "sql": "SELECT branch FROM `tabFlock Gathering` WHERE name=%s",
+      "uses_index": true,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "tabFlock Gathering",
+          "type": "const",
+          "possible_keys": "PRIMARY",
+          "key": "PRIMARY",
+          "key_len": "562",
+          "ref": "const",
+          "rows": "1",
+          "Extra": ""
+        }
+      ]
+    },
+    {
+      "label": "attendance.branch_scoped_list",
+      "sql": "SELECT name, attendee_ref, event, status FROM `tabFlock Attendance Record` WHERE branch=%s ORDER BY modified DESC LIMIT 100",
+      "uses_index": false,
+      "full_scan": false,
+      "plan": [
+        {
+          "id": 1,
+          "select_type": "SIMPLE",
+          "table": "tabFlock Attendance Record",
+          "type": "index",
+          "possible_keys": "unique_branch_gathering_member,branch,idx_branch_org_gathering_submitted",
+          "key": "modified",
+          "key_len": "9",
+          "ref": null,
+          "rows": "1427",
+          "Extra": "Using where"
+        }
+      ]
+    }
+  ],
+  "issues": [
+    {
+      "id": "PERF-REG-N1",
+      "severity": "medium",
+      "path": "FrappeRegistrationScopeGateway.gathering_*",
+      "evidence": "3 separate SELECTs for branch+group+org per registration; register_for_event + process_bulk_batch call all three.",
+      "fix": "Single db.get_value(gathering, ['branch','group','organization'], as_dict=True)."
+    },
+    {
+      "id": "PERF-LIST-IDX",
+      "severity": "medium",
+      "path": "Branch-scoped attendance list (Flock Attendance Record list view)",
+      "evidence": "EXPLAIN picks the `modified` index scanning 1427 rows with 'Using where' instead of the branch index \u2014 the ORDER BY modified DESC overrides the branch filter. ~18ms median at 3k rows/branch.",
+      "fix": "Composite index (branch, modified DESC) so the filter + sort share one index; or deferred sort."
+    },
+    {
+      "id": "PERF-CHK-NONATOMIC",
+      "severity": "high",
+      "path": "flock_event_registration._bump (check_in_registration)",
+      "evidence": "_bump does read-then-write (get_value + set_value) for checked_in_count \u2014 non-atomic; loses updates under concurrent check-in AND costs 2 queries where 1 suffices. Compare _bump_registered_count which correctly uses UPDATE ... = count + 1.",
+      "fix": "Atomic UPDATE ... SET checked_in_count = checked_in_count + 1."
+    },
+    {
+      "id": "PERF-BULK-FORUPDATE",
+      "severity": "high",
+      "path": "process_bulk_batch per-member _authoritative_registration_status",
+      "evidence": "Each member in a bulk batch runs SELECT ... FOR UPDATE on the gathering row \u2192 500 serial row locks per batch. Serializes the 15k bulk-registration path.",
+      "fix": "Decide capacity once per batch under a single lock, not per member."
+    },
+    {
+      "id": "PERF-INVITE-N1",
+      "severity": "medium",
+      "path": "FrappeRegistrationScopeGateway.has_valid_invitation",
+      "evidence": "Loops invitee_groups calling group_subtree (recursive tree query) + a per-group get_value(expires_on). O(invitations \u00d7 subtree depth) at eligibility-check time.",
+      "fix": "Bulk-resolve subtrees once; fold expiry into the invitation fetch."
+    },
+    {
+      "id": "PERF-AGG-SUM",
+      "severity": "low",
+      "path": "FrappeBulkAttendanceGateway.aggregate (no event)",
+      "evidence": "Branch-total aggregate fetches every event summary row then Python sum() \u2014 grows with event count per branch.",
+      "fix": "SELECT SUM(total) ... WHERE branch=%s at the DB."
+    }
+  ],
+  "throttle": {
+    "surface": "register_for_event",
+    "cap_per_second": 10,
+    "allowed": 10,
+    "rejected": 5,
+    "holds": true,
+    "note": "In-memory primitive; production Redis backend shares the throttle_allows contract (FLO-319)."
+  }
+}
