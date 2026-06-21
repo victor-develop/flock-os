@@ -412,6 +412,14 @@ class E2EWorld:
 	def gathering_group(self, gathering: str) -> str | None:
 		return GATHERING_GROUP.get(gathering)
 
+	def gathering_scope(self, gathering: str) -> registrations.GatheringScope:
+		# PERF-REG-N1 ([FLO-518]): single-call compose mirroring the production adapter.
+		return registrations.GatheringScope(
+			branch=self.gathering_branch(gathering),
+			group=self.gathering_group(gathering),
+			organization=self.gathering_organization(gathering),
+		)
+
 	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:  # noqa: ARG002
 		return False
 

@@ -157,6 +157,24 @@ class FrappeRegistrationScopeGateway:
 			return None
 		return self._frappe.db.get_value("Flock Gathering", gathering, "group")
 
+	def gathering_scope(self, gathering: str) -> registrations.GatheringScope:
+		# PERF-REG-N1 ([FLO-518]): one gathering read, not three. Branch + group +
+		# organization come back in a single ``db.get_value`` so the eligibility
+		# predicate and the registration row-build each pay one query (not three).
+		if not gathering:
+			return registrations.GatheringScope(branch=None, group=None, organization=None)
+		row = (
+			self._frappe.db.get_value(
+				"Flock Gathering", gathering, ["branch", "group", "organization"], as_dict=True
+			)
+			or {}
+		)
+		return registrations.GatheringScope(
+			branch=row.get("branch"),
+			group=row.get("group"),
+			organization=row.get("organization"),
+		)
+
 	def has_valid_invitation(self, *, gathering: str, member: str) -> bool:
 		# Phase B ([FLO-79]): ``Invited Only`` eligibility (§5). A valid
 		# invitation is a Sent/Accepted, non-expired ``Flock Event Invitation``
@@ -481,8 +499,10 @@ def register_for_event(
 	status = _authoritative_registration_status(gathering)
 
 	registrant_name = frappe.db.get_value("Flock Member", registrant, "full_name") or ""
-	branch = gateway.gathering_branch(gathering) or ""
-	group = gateway.gathering_group(gathering) or ""
+	# PERF-REG-N1 ([FLO-518]): branch + group + organization in one gathering read.
+	scope_anchors = gateway.gathering_scope(gathering)
+	branch = scope_anchors.branch or ""
+	group = scope_anchors.group or ""
 	# Insert-first: the unique ``(gathering, registrant)`` index is the
 	# idempotency backstop. A failed insert rolls the whole request tx back
 	# (releasing the row lock + undoing any counter work), so the counter is
@@ -492,7 +512,7 @@ def register_for_event(
 		doc = frappe.get_doc(
 			{
 				"doctype": "Flock Event Registration",
-				"organization": gateway.gathering_organization(gathering),
+				"organization": scope_anchors.organization,
 				"branch": branch,
 				"group": group,
 				"gathering": gathering,
@@ -816,9 +836,12 @@ def process_bulk_batch(
 	"""
 	now = frappe.utils.now()
 	gateway = FrappeRegistrationScopeGateway()
-	branch = gateway.gathering_branch(gathering) or ""
-	group = gateway.gathering_group(gathering) or ""
-	org = gateway.gathering_organization(gathering)
+	# PERF-REG-N1 ([FLO-518]): one gathering read per batch (not three, and not
+	# per member) — the anchors are gathering-scoped, identical for every row.
+	scope_anchors = gateway.gathering_scope(gathering)
+	branch = scope_anchors.branch or ""
+	group = scope_anchors.group or ""
+	org = scope_anchors.organization
 	registrant_name_cache: dict[str, str] = {}
 	created = waitlisted = skipped = 0
 	for member in members:
