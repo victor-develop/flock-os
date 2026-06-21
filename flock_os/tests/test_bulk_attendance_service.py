@@ -466,6 +466,52 @@ def test_seed_aggregate_inserts_and_commits_in_its_own_transaction(monkeypatch) 
 	assert fake.db.commits == 1, "seed must commit in its own transaction"
 
 
+def test_branch_total_aggregate_uses_db_side_sum_not_get_all(monkeypatch) -> None:
+	"""FLO-520: the branch-total aggregate pushes ``SUM`` to MariaDB as one
+	scalar query instead of the unbounded ``get_all`` + Python ``sum()`` the
+	FLO-365 15k stress flagged (a branch fans out one summary row per event, so
+	the read grew with the event count)."""
+
+	class _SumReturningFrappeDB:
+		"""Returns one scalar for the SUM query and trips if ``get_all`` runs."""
+
+		def __init__(self) -> None:
+			self.calls: list[tuple[str, object]] = []
+			self.get_all_called = False
+
+		def sql(self, query, values=None, **_kwargs):  # type: ignore[no-untyped-def]
+			self.calls.append((query, values))
+			return [[15000]]
+
+		def get_all(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]  # noqa: ARG002
+			self.get_all_called = True
+			return []
+
+	class _SumReturningFrappe:
+		def __init__(self) -> None:
+			self.db = _SumReturningFrappeDB()
+
+	from flock_os.reporting import FrappeBulkAttendanceGateway
+
+	fake = _SumReturningFrappe()
+	monkeypatch.setattr(FrappeBulkAttendanceGateway, "_frappe", fake)
+
+	total = FrappeBulkAttendanceGateway().aggregate(SCOPE_A)
+
+	# The scalar SUM is returned verbatim.
+	assert total == 15000
+	# Exactly one statement, and it is the aggregate read (no get_all fan-out).
+	assert not fake.db.get_all_called, "branch-total must not use unbounded get_all"
+	assert len(fake.db.calls) == 1, "branch-total must be one aggregate query"
+	query, values = fake.db.calls[0]
+	normalised = query.upper().replace("\n", " ")
+	assert "SELECT SUM(TOTAL)" in normalised
+	assert "WHERE BRANCH=%S" in normalised
+	assert "TABEVENT ATTENDANCE SUMMARY" in normalised
+	# The branch is parameterised, not string-interpolated (no injection surface).
+	assert values == (SCOPE_A.branch,)
+
+
 # ---------------------------------------------------------------------------- #
 # QA-conformance adapter: production service satisfies the FLO-16 contract layer
 # ---------------------------------------------------------------------------- #
