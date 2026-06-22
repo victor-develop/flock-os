@@ -65,9 +65,55 @@ function isFlockEventRoom(room) {
 // module still imports clean under `node --test`.
 const FLOCK_SCOPE_ENDPOINT = "/api/method/flock_os.realtime_views.can_join_event_room";
 
+// Per-session scope-check cache (FLO-815): at the §8 15k bar every client shares
+// one sid and joins the same ~11 rooms (10 shards + broadcast). The branch-scope
+// decision is identical for every socket with the same (sid, room), so caching it
+// with a short TTL collapses 30k HTTP callbacks to ~11 per worker — keeping
+// gunicorn from 504-ing under the join burst (the remaining gate-blocker after
+// the per-socket throttle fix eliminated the 429 storm).
+//
+// Security: only successful (HTTP 200) responses are cached — errors/timeouts
+// are never cached so a transient failure doesn't pin a false denial. Entries
+// expire on a short TTL so a revoked/changed scope is re-checked within the
+// window. Branch-scope changes are rare and deliberate during a live event, so a
+// 60 s staleness bound is safe (mirrors the auth-cache tradeoff, FLO-116).
+const SCOPE_CACHE_TTL_MS = 60_000;
+const SCOPE_CACHE_MAX = 10_000;
+const _scopeCache = new Map(); // `${sid}\0${room}` -> { allowed, exp }
+
+function scopeCacheGet(sid, room) {
+	const key = `${sid}\0${room}`;
+	const entry = _scopeCache.get(key);
+	if (!entry) return undefined;
+	if (entry.exp <= Date.now()) {
+		_scopeCache.delete(key);
+		return undefined;
+	}
+	_scopeCache.delete(key);
+	_scopeCache.set(key, entry); // LRU promote
+	return entry.allowed;
+}
+
+function scopeCacheSet(sid, room, allowed) {
+	const key = `${sid}\0${room}`;
+	while (_scopeCache.size >= SCOPE_CACHE_MAX) {
+		const oldest = _scopeCache.keys().next().value;
+		if (oldest === undefined) break;
+		_scopeCache.delete(oldest);
+	}
+	_scopeCache.set(key, { allowed, exp: Date.now() + SCOPE_CACHE_TTL_MS });
+}
+
 function defaultAuthorize(socket, frappeRequest) {
 	const request = frappeRequest || requireFrappeRequest();
 	return async function authorize(room) {
+		// Cache hit: skip the redundant HTTP scope-check callback (FLO-815). At
+		// the 15k bar every client shares one sid → 30k callbacks collapse to ~11.
+		const sid = socket.sid;
+		if (sid) {
+			const cached = scopeCacheGet(sid, room);
+			if (cached !== undefined) return cached;
+		}
 		return new Promise((resolve) => {
 			request(FLOCK_SCOPE_ENDPOINT, socket)
 				.type("form")
@@ -80,7 +126,10 @@ function defaultAuthorize(socket, frappeRequest) {
 				.query({ room, socket_id: socket.id })
 				.end((err, res) => {
 					if (err || !res || res.status !== 200) return resolve(false);
-					resolve(Boolean(res.body && res.body.message));
+					const allowed = Boolean(res.body && res.body.message);
+					// Cache only successful 200 responses (never errors/timeouts).
+					if (sid) scopeCacheSet(sid, room, allowed);
+					resolve(allowed);
 				});
 		});
 	};
@@ -133,5 +182,8 @@ module.exports = flock_room_handlers;
 module.exports.isFlockEventRoom = isFlockEventRoom;
 module.exports.makeJoinListener = makeJoinListener;
 module.exports.defaultAuthorize = defaultAuthorize;
+module.exports.scopeCacheGet = scopeCacheGet;
+module.exports.scopeCacheSet = scopeCacheSet;
+module.exports.SCOPE_CACHE_TTL_MS = SCOPE_CACHE_TTL_MS;
 module.exports.FLOCK_SCOPE_ENDPOINT = FLOCK_SCOPE_ENDPOINT;
 module.exports.FLOCK_EVENT_ROOM_RE = FLOCK_EVENT_ROOM_RE;

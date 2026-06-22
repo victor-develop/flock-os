@@ -12,6 +12,8 @@ import {
 	isFlockEventRoom,
 	makeJoinListener,
 	defaultAuthorize,
+	scopeCacheGet,
+	scopeCacheSet,
 	FLOCK_EVENT_ROOM_RE,
 	FLOCK_SCOPE_ENDPOINT,
 } from "./flock_room_handlers.js";
@@ -168,4 +170,84 @@ test("defaultAuthorize forwards socket.id as socket_id for per-socket throttle (
 		room: "flock_os:event:g1:broadcast",
 		socket_id: "flock_os.localhost#abc-123-socket",
 	});
+});
+
+// --- FLO-815: per-session scope-check cache ------------------------------- #
+// At the 15k bar every client shares one sid; the scope decision per (sid, room)
+// is identical. The cache collapses 30k HTTP callbacks to ~11 per worker.
+const ROOM_B = "flock_os:event:g1:broadcast";
+const ROOM_S = "flock_os:event:g1:shard:3";
+
+test("scope cache miss returns undefined (first call per sid+room)", () => {
+	assert.equal(scopeCacheGet("sid-cache-test", ROOM_B), undefined);
+});
+
+test("scope cache stores and replays a successful allow decision", () => {
+	scopeCacheSet("sid-allow", ROOM_B, true);
+	assert.equal(scopeCacheGet("sid-allow", ROOM_B), true);
+});
+
+test("scope cache stores and replays a deny decision", () => {
+	scopeCacheSet("sid-deny", ROOM_S, false);
+	assert.equal(scopeCacheGet("sid-deny", ROOM_S), false);
+});
+
+test("scope cache keys are independent per room", () => {
+	scopeCacheSet("sid-mixed", ROOM_B, true);
+	scopeCacheSet("sid-mixed", ROOM_S, false);
+	assert.equal(scopeCacheGet("sid-mixed", ROOM_B), true);
+	assert.equal(scopeCacheGet("sid-mixed", ROOM_S), false);
+});
+
+test("scope cache keys are independent per sid", () => {
+	scopeCacheSet("sid-a", ROOM_B, true);
+	scopeCacheSet("sid-b", ROOM_B, false);
+	assert.equal(scopeCacheGet("sid-a", ROOM_B), true);
+	assert.equal(scopeCacheGet("sid-b", ROOM_B), false);
+});
+
+test("defaultAuthorize serves a cache hit without calling frappe_request", async () => {
+	const sid = "sid-hit-test";
+	scopeCacheSet(sid, ROOM_B, true);
+	let httpCalled = false;
+	const socket = { id: "s1", sid };
+	const auth = defaultAuthorize(socket, () => {
+		httpCalled = true;
+		return fakeFrappeRequest({ status: 200, body: { message: true } })();
+	});
+	const result = await auth(ROOM_B);
+	assert.equal(result, true);
+	assert.equal(httpCalled, false, "cache hit must NOT call frappe_request");
+});
+
+test("defaultAuthorize caches a 200 allow for subsequent sockets with same sid", async () => {
+	const sid = "sid-cache-after-200";
+	let callCount = 0;
+	const makeReq = () => {
+		callCount++;
+		return fakeFrappeRequest({ status: 200, body: { message: true } })();
+	};
+	// First socket: miss → HTTP → cache.
+	const auth1 = defaultAuthorize({ id: "s1", sid }, makeReq);
+	await auth1(ROOM_B);
+	// Second socket: same sid → cache hit, no HTTP.
+	const auth2 = defaultAuthorize({ id: "s2", sid }, makeReq);
+	await auth2(ROOM_B);
+	assert.equal(callCount, 1, "second socket with same sid must hit cache");
+});
+
+test("defaultAuthorize does NOT cache error/timeout responses", async () => {
+	const sid = "sid-no-cache-error";
+	const outcomes = [
+		{ error: new Error("ECONNREFUSED") },
+		{ status: 200, body: { message: true } },
+	];
+	let i = 0;
+	const makeReq = () => fakeFrappeRequest(outcomes[i++])();
+	// First call: error → resolve(false), NOT cached.
+	const auth1 = defaultAuthorize({ id: "s1", sid }, makeReq);
+	assert.equal(await auth1(ROOM_B), false);
+	// Second call: should NOT be cached → hits HTTP → 200 → true.
+	const auth2 = defaultAuthorize({ id: "s2", sid }, makeReq);
+	assert.equal(await auth2(ROOM_B), true);
 });
