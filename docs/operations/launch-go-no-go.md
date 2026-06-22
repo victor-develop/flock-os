@@ -84,7 +84,7 @@
 | S12 | Staging smoke at promoted tag | **`SMOKE: PASS`** (HTTP/TLS + `ping`→`pong` + WS handshake) | [`scripts/deploy/smoke-staging.sh`](../../scripts/deploy/smoke-staging.sh) ([FLO-250](/FLO/issues/FLO-250)) | DevOps | no-go #2 |
 | S13 | Edge rate-limit | active on registration + realtime-connect (Cloudflare) | Cloudflare WAF rule ([FLO-294](/FLO/issues/FLO-294)); complements the app limiter ([FLO-319](/FLO/issues/FLO-319)) | DevOps | no-go #5 |
 | S14 | Dedicated adapter Redis in prod | present (separate from cache Redis) | prod topology ([FLO-245](/FLO/issues/FLO-245) / [FLO-127](/FLO/issues/FLO-127) §2) | DevOps | no-go #6 |
-| S15 | Observability exercised | dashboards reachable; **≥1 alert fired-and-handled** pre-launch | [FLO-266](/FLO/issues/FLO-266) monitoring | DevOps | §1e |
+| S15 | Observability exercised | dashboards reachable; **≥1 alert fired-and-handled** pre-launch | [FLO-922](/FLO/issues/FLO-922) production instrumentation G1–G5 (complements [FLO-266](/FLO/issues/FLO-266) control-plane) | DevOps | §1e |
 
 > **Business signals** (launch partner named + onboarded, budget approved, launch
 > date set) are CEO-held and listed in §3 — they are not script-checkable.
@@ -146,9 +146,11 @@
 
 | Item | Owner | Done-criteria | Status |
 |------|-------|---------------|--------|
-| [FLO-266](/FLO/issues/FLO-266) CEO heartbeat monitoring and observability | DevOps | Metrics (app + DB + Redis + WS connections), dashboards, alerting live; at least one alert fired-and-handled recorded before launch | **done** |
+| [FLO-266](/FLO/issues/FLO-266) CEO heartbeat / agent control-plane monitoring | DevOps | Control-plane metrics + dashboard live (the CEO-heartbeat monitoring stack) | **done** |
+| [FLO-922](/FLO/issues/FLO-922) Production instrumentation G1–G5 + alert (Phase 6.2) | DevOps | Production app/DB/Redis/WS metrics + dashboards live; **≥1 alert fired-and-handled** pre-launch (`WSErrorCounterNonZero` exercised e2e: inject → Prometheus → Alertmanager → webhook) | **done** |
 
-- [ ] FLO-266 — dashboards reachable; an alert has been exercised (not just armed).
+- [ ] FLO-266 — control-plane dashboard reachable.
+- [ ] FLO-922 — production dashboards reachable; an alert has been exercised (not just armed).
 
 ## 2. Merge-gate / coverage bar (QA holds)
 
