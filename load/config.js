@@ -65,6 +65,11 @@ export const ws = {
 	shardCount: parseInt(__ENV.SHARD_COUNT || "10", 10),
 	vus: parseInt(__ENV.WS_VUS || "15000", 10),
 	durationSec: parseInt(__ENV.WS_DURATION_SEC || "120", 10),
+	// Ramp-up duration to full VU count. A gentler ramp reduces connection-burst
+	// establishment failures (k6 client-side) at the 15k bar — the default 60s is
+	// the §8 spec ramp; increase via WS_RAMP_UP_SEC if the host can't sustain the
+	// 250 VUs/s connect rate without dropping sockets.
+	rampUpSec: parseInt(__ENV.WS_RAMP_UP_SEC || "60", 10),
 	// A broadcast is "seen" within this many ms (FLO-10 §8: ws broadcast < 1s).
 	broadcastBudgetMillis: parseInt(__ENV.BROADCAST_BUDGET_MILLIS || "1000", 10),
 	// Auth: a Frappe user (defaults to the bulk leader). The site namespace
@@ -73,7 +78,49 @@ export const ws = {
 	password: __ENV.FLOCK_PASSWORD || write.password,
 };
 
+// -- Registration load profile (event_registration.js) ----------------------
+// Drives concurrent ``register_for_event`` calls (FLO-7 §5 public registration
+// endpoint) at ramp rates up to the 15k-attendee burst. Each iteration registers
+// one unique ``Flock Member`` (by PK) against the target gathering. The caller
+// (the smoke leader) must hold branch scope over the gathering's branch so the
+// on-behalf registration path (§5) admits the member. Replays hit the
+// ``(gathering, registrant)`` UNIQUE index and return ``already_registered:
+// true`` — the idempotency backstop the §8 gate quotes (FLO-669 #2).
+//
+// Member identity: each VU maps to a deterministic member PK
+// ``${memberPrefix}-${memberOffset + __VU}`` so the 200-VU smoke registers 200
+// distinct members and the full run registers up to 15k. The members must be
+// pre-seeded on the gathering's branch (scale seed or a smoke-specific fixture).
+export const registration = {
+	baseUrl: __ENV.BASE_URL || DEFAULT_BASE_URL,
+	// FLO-7 §8 REST contract: POST /api/method/<dotted-path>.register_for_event
+	endpoint:
+		__ENV.REGISTRATION_ENDPOINT ||
+		"/api/method/flock_os.flock_os.doctype.flock_event_registration.flock_event_registration.register_for_event",
+	// The approved Flock Gathering id (must be Approved + scope != None).
+	eventId: __ENV.EVENT_ID || write.eventId,
+	// Member PK prefix + offset so each VU maps to a unique, in-scope member.
+	memberPrefix: __ENV.MEMBER_PREFIX || "scale-member",
+	memberOffset: parseInt(__ENV.MEMBER_OFFSET || "0", 10),
+	// Auth: the smoke leader (holds branch scope over the gathering's branch).
+	username: __ENV.FLOCK_USER || write.username,
+	password: __ENV.FLOCK_PASSWORD || write.password,
+	// Leader registers on behalf (§5); the caller's branch scope is checked.
+	registeredVia: __ENV.REGISTERED_VIA || "Leader",
+	// Ramp to this many registrations/sec (15k over ~120s = ~125/s at full bar).
+	registrationsPerSec: parseInt(__ENV.REGISTRATIONS_PER_SEC || "50", 10),
+	durationSec: parseInt(__ENV.REG_DURATION_SEC || "120", 10),
+	rampUpSec: parseInt(__ENV.REG_RAMP_UP_SEC || "20", 10),
+	// §8 registration p95 target (registration is user-facing → 1s budget).
+	p95Millis: parseInt(__ENV.REG_P95_MILLIS || "1000", 10),
+};
+
 // Compose the full bulk_submit URL.
 export function bulkUrl() {
 	return write.baseUrl + write.endpoint;
+}
+
+// Compose the full register_for_event URL.
+export function registrationUrl() {
+	return registration.baseUrl + registration.endpoint;
 }

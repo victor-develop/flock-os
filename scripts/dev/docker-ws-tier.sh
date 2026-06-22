@@ -282,6 +282,7 @@ cmd_gate() {
 	ensure_env
 	local vus="${1:-${FLOCK_GATE_VUS:-15000}}"
 	local dur="${FLOCK_GATE_DURATION_SEC:-120}"
+	local ramp="${FLOCK_GATE_RAMP_UP_SEC:-60}"
 	local lb_port="${WS_LB_HOST_PORT:-9000}"
 	local web_port="${WEBSERVER_HOST_PORT:-8000}"
 	local site="${SITE_NAME:-flock_os.localhost}"
@@ -322,7 +323,7 @@ cmd_gate() {
 			--network "$network" \
 			-v "$REPO_ROOT/load:/scripts" \
 			"${FLOCK_K6_IMAGE:-grafana/k6:latest}" run \
-			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" -e WS_RAMP_UP_SEC="$ramp" \
 			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
 			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
 			--out "json=/scripts/telemetry/$(basename "$outdir")/k6-summary.json" \
@@ -343,7 +344,7 @@ cmd_gate() {
 		ws_url="ws://$site:$lb_port"
 		log "running §8 gate (host k6): $vus VUs x ${dur}s -> $ws_url (web auth on :$web_port)"
 		k6 run \
-			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" -e WS_RAMP_UP_SEC="$ramp" \
 			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
 			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
 			--out "json=$outdir/k6-summary.json" \

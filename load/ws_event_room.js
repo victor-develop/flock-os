@@ -93,7 +93,7 @@ export const options = {
 			executor: "ramping-vus",
 			startVUs: 0,
 			stages: [
-				{ target: cfg.vus, duration: "60s" }, // ramp to 15k over 60s
+				{ target: cfg.vus, duration: `${cfg.rampUpSec}s` }, // ramp to 15k
 				{ target: cfg.vus, duration: `${cfg.durationSec}s` },
 				{ target: 0, duration: "30s" },
 			],

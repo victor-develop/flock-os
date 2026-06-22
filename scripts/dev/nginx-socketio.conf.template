@@ -22,8 +22,9 @@ pid __STATE_DIR__/nginx.pid;
 
 events {
 	# Each proxied WS connection is 2 fds on the LB (client side + backend side),
-	# so size for >= 2x peak concurrent connections. 32k covers a 15k gate.
-	worker_connections 32768;
+	# so size for >= 2x peak concurrent connections. 65k covers a 15k gate with
+	# ample headroom for HTTP callbacks and connection churn during ramp-up.
+	worker_connections 65536;
 }
 
 http {
@@ -41,7 +42,7 @@ http {
 	}
 
 	server {
-		listen __LB_PORT__;
+		listen __LB_PORT__ backlog=4096;
 		server_name flock_os.localhost;
 
 		location / {
