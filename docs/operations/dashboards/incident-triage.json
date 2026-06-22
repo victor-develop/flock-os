@@ -92,7 +92,7 @@
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "A", "expr": "sum(rate(flock_http_errors_total[1m]))", "legendFormat": "5xx/s", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
         { "refId": "B", "expr": "changes(bench_deploy_info[1h])", "legendFormat": "deploys (last 1h)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
       ],
       "title": "5xx rate + deploy markers (most incidents are deploy-correlated)",
