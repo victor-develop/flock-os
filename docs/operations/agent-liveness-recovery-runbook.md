@@ -78,6 +78,28 @@ These are the defaults in `tools/ops/agent_liveness/recovery.py` (`LivenessThres
 
 ## Automatic recovery — what the watchdog does each fire
 
+> **Deterministic runner.** The entire Step 1–4 procedure below is implemented
+> as `scripts/dev/agent-liveness-watchdog.py` ([FLO-968](/FLO/issues/FLO-968)),
+> backed by the orchestration core `tools/ops/agent_liveness/watchdog.py`. The
+> recovery-owner agent **invokes the script** on each fire rather than
+> hand-executing the REST steps — the FLO-968 incident proved hand-executed curl
+> is fragile (a transient adapter error stranded the watchdog with no live
+> path). The script posts the runbook comment and exits `0` (ok) / `1`
+> (recovered) / `2` (escalated to the board). One-shot + observe-only:
+>
+> ```bash
+> # Live recovery pass (the routine-fire entry point):
+> python3 scripts/dev/agent-liveness-watchdog.py
+> # Observe-only — runbook Verification #1 (fire while paused → healthy, no action):
+> python3 scripts/dev/agent-liveness-watchdog.py --dry-run
+> # Pure-logic gate (no API, no mutations):
+> python3 scripts/dev/agent-liveness-watchdog.py --self-test
+> ```
+>
+> The procedure text below is the contract the script obeys; the unit suite
+> `tools/ops/agent_liveness/tests/test_watchdog.py` pins the loop, the
+> suppressions, and the recovery-owner invariant.
+
 The watchdog is the **recovery-owner agent** waking on a **`<Agent> Liveness Watchdog`** run issue. On every fire it runs the procedure below and records the outcome as a comment on the run issue (and on the watched agent's open stale-run review issue, e.g. the platform-created *Review silent active run for …* issue, only when it acts).
 
 ### Step 1 — Detect (read liveness)
@@ -253,3 +275,4 @@ To exercise the live path safely:
 | 2026-06-21 | Architect Liveness Watchdog provisioned + activated (CEO-owned); Coverage table records routine ids | [FLO-398](/FLO/issues/FLO-398) |
 | 2026-06-21 | Zombie run-record suppression — a newer non-coalesced base run supersedes an older in-flight run; detection + verdict agree a zombie is healthy | [FLO-419](/FLO/issues/FLO-419) |
 | 2026-06-22 | Successful-run-missing-disposition signal — a run that succeeded but left the issue without a terminal status (`missing_disposition` / `successful_run_missing_state`) is HEALTHY, avoiding a false-positive STUCK on a healthy agent | [FLO-771](/FLO/issues/FLO-771) |
+| 2026-06-23 | Deterministic runner — Step 1–4 implemented as `scripts/dev/agent-liveness-watchdog.py` + `tools/ops/agent_liveness/watchdog.py` (ports & adapters, unit-pinned). Recovery owner invokes the script instead of hand-executing curl, closing the FLO-968 fragility gap. | [FLO-968](/FLO/issues/FLO-968) |
