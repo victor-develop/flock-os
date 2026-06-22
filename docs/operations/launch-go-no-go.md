@@ -255,5 +255,14 @@ run:
 - Migration runbook: [`migration-runbook.md`](migration-runbook.md).
 - Backup & restore drill: [`backup-restore.md`](backup-restore.md) ([FLO-288](/FLO/issues/FLO-288)).
 - Deploy / rollback: [`docs/development/deploy-runbook.md`](../development/deploy-runbook.md) ([FLO-246](/FLO/issues/FLO-246)).
+- Event-day on-call: [`event-day-runbook.md`](event-day-runbook.md) ([FLO-581](/FLO/issues/FLO-581)).
+- Incident response: [`incident-runbooks.md`](incident-runbooks.md) ([FLO-694](/FLO/issues/FLO-694)).
 - Staging pre-flight: [`docs/development/staging-preflight-checklist.md`](../development/staging-preflight-checklist.md).
 - Permission audit: [`docs/security/permission-audit.md`](../security/permission-audit.md) ([FLO-290](/FLO/issues/FLO-290)).
+- Pre-production security audit: [`docs/security/pre-production-audit.md`](../security/pre-production-audit.md) ([FLO-682](/FLO/issues/FLO-682)).
+- Metrics + alerting design: [`metrics-alerting-design.md`](metrics-alerting-design.md) ([FLO-586](/FLO/issues/FLO-586)).
+
+> **The four operational runbooks** this gate depends on (deploy/rollback,
+> event-day, incident) are the deploy/rollback, event-day, and incident links
+> above — all cross-linked here per the [FLO-533](/FLO/issues/FLO-533) AC#3
+> "four runbooks linked from the go/no-go checklist".
