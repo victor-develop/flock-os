@@ -737,6 +737,13 @@ def _parse_iso8601(value: str | None) -> float | None:
 
 _TERMINAL_ISSUE_STATUSES = frozenset({"done", "cancelled"})
 
+# The platform stamps its stale-run detector's review issue with this origin
+# kind. The assignment-driven reader filters on it so the watchdog never adopts
+# its *own* routine-execution issue (or any other issue that merely quotes the
+# "Review silent active run for {name}" phrase) as a liveness signal — that
+# self-match would age to ~epoch 0 and falsely escalate every fire.
+_STALE_RUN_ORIGIN_KIND = "stale_active_run_evaluation"
+
 # The stale-run review issue body is a stable platform template, e.g.
 # "Started at: 2026-06-20T15:51:21.034Z" (runbook §Step 1). Capture the
 # timestamp token so assignment-driven detection can age the run.
@@ -893,7 +900,11 @@ class PaperclipLivenessReader:
 		else:
 			issues = payload if isinstance(payload, list) else []
 		open_issues = [
-			i for i in issues if isinstance(i, dict) and str(i.get("status")) not in _TERMINAL_ISSUE_STATUSES
+			i
+			for i in issues
+			if isinstance(i, dict)
+			and str(i.get("status")) not in _TERMINAL_ISSUE_STATUSES
+			and i.get("originKind") == _STALE_RUN_ORIGIN_KIND
 		]
 		if not open_issues:
 			return None
