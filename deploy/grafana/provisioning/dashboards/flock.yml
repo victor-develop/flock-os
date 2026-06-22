@@ -1,0 +1,23 @@
+# Flock OS — Grafana dashboard provider config (FLO-922 / FLO-694).
+#
+# Tells Grafana where to find the dashboard JSON files at boot. The dashboards
+# themselves live under dashboards/ at the repo root (committed by FLO-694):
+#   - event-day-realtime-ops.json  (the on-call screen)
+#   - day-to-day-platform-health.json
+#   - incident-triage.json
+# The Grafana container's docker/observability.yml volume mount maps that dir
+# to /var/lib/grafana/dashboards/flock so this provider picks them up.
+apiVersion: 1
+
+providers:
+  - name: flock-os
+    orgId: 1
+    folder: Flock OS
+    folderUid: flock-os
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/flock
+      foldersFromFilesStructure: false

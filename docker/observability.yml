@@ -1,0 +1,282 @@
+# Flock OS — Phase 6.2 production instrumentation stack (FLO-922 / FLO-586 §6).
+#
+# A docker compose OVERLAY that brings up the Prometheus + Grafana + Alertmanager
+# monitoring stack ALONGSIDE the existing docker/docker-compose.yml flock-ws tier
+# (FLO-347). It is the lowest-friction realization of the FLO-586 §5 default
+# (Grafana + Prometheus): all five tiers (App / DB / Redis / WS / Edge) scrape
+# the tier that docker/docker-compose.yml + scripts/dev/docker-ws-tier.sh already
+# stand up — no extra VM, no extra spend.
+#
+#   scripts/dev/docker-ws-tier.sh up                       # tier (existing)
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/.runtime/ws-workers.yml \
+#                  -f docker/observability.yml \
+#                  --env-file docker/.env.docker up -d     # + monitoring stack
+#
+# The stack wires the five Phase 6.2 instrumentation gaps that a fresh bench
+# does NOT ship (FLO-586 §6):
+#
+#   * prometheus        — the central scraper + alerting rule evaluator.
+#   * grafana           — the dashboard surface (provisioned against the three
+#                         dashboards/ JSON templates committed by FLO-694).
+#   * alertmanager      — the paging/routing layer the critical alerts fire into.
+#   * statsd-exporter   — gap G2: receives Frappe + gunicorn statsd, exposes as
+#                         Prometheus. The web container points STATSD_HOST at it.
+#   * redis-pubsub-exporter — gap G3: the custom PUBSUB NUMSUB probe
+#                             (scripts/ops/redis-pubsub-exporter.py) against the
+#                             dedicated adapter Redis.
+#   * nginx-exporter    — gap G5: scrapes ws-lb's stub_status + reads the
+#                         sticky access log for the affinity-miss metric.
+#   * synth-probe       — gap G4: a sidecar that runs scripts/ops/synthetic-slo-
+#                         probe.sh on a schedule + writes its metrics to a
+#                         textfile the prometheus node-exporter picks up.
+#   * node-exporter     — host-level + the textfile collector for the synth probe.
+#   * mysqld-exporter   — gap G7 (partial; the self-hosted piece). The remaining
+#                         slow-query-log + managed-DB bits ride FLO-249 (G7).
+#
+# G1 (per-worker socket.io /metrics) is NOT here — it is wired into each
+# socketio worker itself (realtime/metrics/flock_prometheus.js → Prometheus
+# scrapes socketio-N:9100 directly). G6 (Cloudflare Logpush + GraphQL) requires
+# the cloud account and tracks with FLO-249.
+#
+# All services join the SAME flock-ws_backend network as the tier so they reach
+# mariadb / redis-* / web / socketio-* / ws-lb via docker DNS. The stack is
+# OPTIONAL — `docker compose -f docker-compose.yml ... up` without this overlay
+# keeps the tier unchanged. Runbook:
+# docs/operations/production-instrumentation.md (FLO-922).
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ../deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../deploy/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ../deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # Alert manager location for firing notifications.
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+      - --web.enable-admin-api
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    networks: [backend]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ../deploy/alertmanager/alertmanager.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/config.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    networks: [backend]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - ../deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../dashboards:/var/lib/grafana/dashboards/flock:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    depends_on: [prometheus]
+    networks: [backend]
+    restart: unless-stopped
+
+  # Gap G2 — receives statsd from Frappe (frappe.request_time etc.) + gunicorn
+  # (worker saturation). Translates the statsd line protocol into Prometheus
+  # metrics on :9102. The web container points STATSD_HOST at this service.
+  statsd-exporter:
+    image: prom/statsd-exporter:latest
+    command:
+      - --statsd.listen-udp=:9125
+      - --statsd.listen-tcp=:9125
+      - --web.listen-address=:9102
+      # Map the gunicorn worker-state gauges (the GunicornSaturation alert basis).
+      # The Frappe statsd lines are auto-mapped by name prefix.
+      - --statsd.mapping-config=/etc/statsd/mapping.yml
+    volumes:
+      - ../deploy/statsd-exporter/mapping.yml:/etc/statsd/mapping.yml:ro
+    ports:
+      - "${STATSD_EXPORTER_HOST_PORT:-9102}:9102"
+      - "${STATSD_HOST_PORT:-9125}:9125/udp"
+    networks: [backend]
+    restart: unless-stopped
+
+  # Gap G3 — the custom PUBSUB NUMSUB probe (scripts/ops/redis-pubsub-exporter.py).
+  # Pure stdlib Python, runs in the same flock-os-frappe image the web container
+  # uses (it already has python3 + the repo mounted via the image's apps/flock_os
+  # symlink). Exposes :9300 — prometheus scrapes redis-pubsub-exporter:9300.
+  # The repo is bind-mounted read-only over the image's app source so the
+  # latest scripts/ops/ changes are picked up without an image rebuild (dev-time
+  # convenience; production uses the image-baked copy).
+  redis-pubsub-exporter:
+    image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
+    environment:
+      FLOCK_ADAPTER_REDIS_URL: redis://redis-adapter:6379
+      FLOCK_SIO_ADAPTER_KEY: ${FLOCK_SIO_ADAPTER_KEY:-socket.io}
+      FLOCK_PUBSUB_EXPORTER_PORT: "9300"
+      FLOCK_PUBSUB_SCRAPE_INTERVAL: "5"
+    command: ["python3", "-u", "/tmp/flock_os/scripts/ops/redis-pubsub-exporter.py"]
+    volumes:
+      - ..:/tmp/flock_os:ro
+    expose: ["9300"]
+    depends_on:
+      redis-adapter: {condition: service_healthy}
+    networks: [backend]
+    restart: unless-stopped
+
+  # Commodity redis_exporter against the cache instance (FLO-586 §1.3 footnote —
+  # the cache Redis is commodity: standard used_memory / evicted_keys pair, NOT
+  # duplicated under the adapter-pubsub probe). One container per Redis.
+  redis-cache-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      REDIS_ADDR: redis://redis-cache:6379
+    expose: ["9121"]
+    depends_on:
+      redis-cache: {condition: service_healthy}
+    networks: [backend]
+    restart: unless-stopped
+
+  # Commodity redis_exporter against the queue instance (Frappe rq workers).
+  redis-queue-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      REDIS_ADDR: redis://redis-queue:6379
+    expose: ["9121"]
+    depends_on:
+      redis-queue: {condition: service_healthy}
+    networks: [backend]
+    restart: unless-stopped
+
+  # Gap G5 — nginx exporter. Scrapes ws-lb:8090/stub_status + reads the sticky
+  # access log so the ws.lb.affinity_miss_rate metric can be computed downstream.
+  # The optional --track-syslog-affinity-miss is left off by default; the metric
+  # derivation is a Logpush / filebeat job on a real prod VM (out of scope here).
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    command:
+      - -nginx.scrape-uri=http://ws-lb:8090/stub_status
+    expose: ["9113"]
+    depends_on: []
+    networks: [backend]
+    restart: unless-stopped
+
+  # Gap G7 (partial, self-hosted) — mysqld_exporter for the MariaDB pool, slow
+  # queries, buffer pool. Tracks with FLO-249 for the managed-DB monitor; this
+  # self-hosted piece works against the docker-compose mariadb today.
+  # NOTE: prom/mysqld_exporter v0.19+ removed env-var DSN support and reads
+  # config only from a config file (or .my.cnf). We bake a minimal config via
+  # the `command:` flag using the modern --config.my-cnf path.
+  mysqld-exporter:
+    image: prom/mysqld-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: "root:${MARIADB_ROOT_PASSWORD}@(mariadb:3306)/"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/.my.cnf <<CNF
+        [client]
+        user=root
+        password=${MARIADB_ROOT_PASSWORD}
+        host=mariadb
+        port=3306
+        CNF
+        exec /bin/mysqld_exporter --config.my-cnf=/tmp/.my.cnf
+    expose: ["9104"]
+    depends_on:
+      mariadb: {condition: service_healthy}
+    networks: [backend]
+    restart: unless-stopped
+
+  # Gap G4 — scheduled synthetic SLO probe. Runs the k6 low-VU probe on a
+  # schedule + writes metrics to a textfile the node-exporter textfile collector
+  # picks up. The cron loop is a single bash script that runs forever (sleep
+  # between probes); the probe itself is non-fatal to the realtime tier.
+  synth-probe:
+    image: ${FLOCK_IMAGE:-flock-os-frappe:ws-tier}
+    environment:
+      WS_BASE_URL: ws://ws-lb:9000
+      BASE_URL: http://ws-lb:8100
+      WS_ORIGIN: http://ws-lb:8100
+      SITE: ${SITE_NAME:-flock_os.localhost}
+      FLOCK_USER: ${FLOCK_USER:-leader@flock.os}
+      FLOCK_PASSWORD: ${FLOCK_PASSWORD:-flock}
+      FLOCK_SYNTH_VUS: "${FLOCK_SYNTH_VUS:-200}"
+      FLOCK_SYNTH_DURATION_SEC: "${FLOCK_SYNTH_DURATION_SEC:-30}"
+      FLOCK_SYNTH_RAMP_UP_SEC: "${FLOCK_SYNTH_RAMP_UP_SEC:-10}"
+      FLOCK_SYNTH_PROBE_OUT: /textfile/synth-slo.prom
+      FLOCK_SYNTH_PROBE_INTERVAL_SEC: "${FLOCK_SYNTH_PROBE_INTERVAL_SEC:-900}"
+      FLOCK_K6_IMAGE: "${FLOCK_K6_IMAGE:-grafana/k6:latest}"
+    working_dir: /home/frappe/frappe-bench
+    entrypoint: ["bash", "-lc"]
+    # The probe loop. The repo is bind-mounted read-only over the image's
+    # /tmp/flock_os COPY so the wrapper script + load/ws_event_room.js both
+    # resolve from the live repo without an image rebuild. We escape $ in the
+    # YAML heredoc with $$ so docker compose does not try to interpolate them
+    # at render time — the variables come from `environment:` into bash.
+    command:
+      - |
+        set -uo pipefail
+        mkdir -p /textfile
+        # Repoint the bench's apps/flock_os symlink at the bind-mounted repo so
+        # the wrapper resolves scripts/ops/... from the live source.
+        rm -f apps/flock_os && ln -s /tmp/flock_os apps/flock_os
+        echo "flock synth-probe: starting (interval $${FLOCK_SYNTH_PROBE_INTERVAL_SEC}s, VUs $${FLOCK_SYNTH_VUS})"
+        while true; do
+          # Run the probe; non-fatal — a failure writes up=0 + we loop.
+          bash apps/flock_os/scripts/ops/synthetic-slo-probe.sh || \
+            echo "flock synth-probe: probe iteration failed (will retry next interval)"
+          sleep "$${FLOCK_SYNTH_PROBE_INTERVAL_SEC:-900}"
+        done
+    volumes:
+      - synth-textfile:/textfile
+      - ..:/tmp/flock_os:ro
+    depends_on:
+      - ws-lb
+    networks: [backend]
+    restart: unless-stopped
+
+  # node-exporter with the textfile collector pointed at the synth-probe's
+  # volume, so Prometheus picks up the four synthetic SLO metrics + the
+  # per-iteration probe health gauge.
+  node-exporter:
+    image: prom/node-exporter:latest
+    command:
+      - --collector.textfile.directory=/textfile
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host)($$|/)
+    volumes:
+      - synth-textfile:/textfile:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    expose: ["9100"]
+    networks: [backend]
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+  synth-textfile:
+
+networks:
+  backend:
+    external: true
+    name: flock-ws_backend

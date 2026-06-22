@@ -1,0 +1,56 @@
+# Flock OS — Alertmanager routing (FLO-922 / FLO-586 §3.2).
+#
+# Two-tier paging policy (design §3.2):
+#   * critical  → page the event-day on-call (PagerDuty / webhook) + post #ops.
+#   * warning   → post #ops only (Slack/Teams webhook), open a tracking issue.
+#   * info      → log only.
+#
+# This file ships SANE DEFAULTS for local / docker staging:
+#   * the critical receiver is a webhook the operator wires (a dummy endpoint
+#     for the staging alert drill — typically just a local file or a request
+#     bin). NO real PagerDuty/Slack creds are committed.
+#   * the warning receiver logs to the alertmanager log.
+#
+# Runbook: docs/operations/production-instrumentation.md (FLO-922).
+
+global:
+  resolve_timeout: 5m
+
+# Receiver templates — placeholders the operator fills with real PagerDuty /
+# Slack / Teams webhook URLs at deploy time. Stored as separate receivers so
+# the routing below can pick them by name (page vs. channel).
+receivers:
+  - name: critical-page
+    webhook_configs:
+      # The local webhook endpoint. For the staging drill, point this at a
+      # simple echo server / a request bin / a local file logger — the goal is
+      # to prove the alert FIRES + ROUTES, not to wire real paging creds.
+      # Default hostname `flock-am-webhook` matches the docker container stood
+      # up by docs/operations/production-instrumentation.md's drill procedure.
+      - url: http://flock-am-webhook:9000/critical
+        send_resolved: true
+  - name: ops-channel
+    webhook_configs:
+      - url: http://flock-am-webhook:9000/warning
+        send_resolved: true
+  - name: info-log
+    # No webhook — info-severity alerts are logged only (no notification).
+    webhook_configs: []
+
+route:
+  receiver: info-log
+  group_by: ["alertname", "tier"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+  routes:
+    - matchers:
+        - severity = critical
+      receiver: critical-page
+      continue: true  # also fall through to the ops channel (single-channel principle)
+    - matchers:
+        - severity = warning
+      receiver: ops-channel
+    - matchers:
+        - severity = info
+      receiver: info-log

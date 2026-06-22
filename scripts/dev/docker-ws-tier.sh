@@ -166,7 +166,16 @@ render_workers() {
       # wiring (resolveAdapterClients) honors this env over the shared redis_socketio.
       FLOCK_SIO_ADAPTER_REDIS: redis://redis-adapter:6379
       FRAPPE_SOCKETIO_PORT: "9000"
+      # FLO-922 / FLO-586 §6 gap G1: per-worker Prometheus /metrics port. Each
+      # socketio worker attaches a prom-client Registry on this port
+      # (realtime/metrics/flock_prometheus.js -> attachMetrics(io)) so Prometheus
+      # scrapes io.engine.clientsCount + per-room counts + connect/disconnect
+      # per worker. The expose stanza (not ports) keeps it docker-network-only —
+      # the Prometheus scraper reaches socketio-N:9100 via DNS, no host port leak.
+      FLOCK_SIO_METRICS_PORT: "9100"
     command: ["bash", "-lc", "node apps/frappe/socketio.js"]
+    expose:
+      - "9100"
     # Each worker holds ~VUs/N concurrent sockets; raise nofile so the 15k gate
     # never hits a per-process fd ceiling (the macOS loopback ceiling this tier
     # clears is about ephemeral ports, but fd limits are a separate cap).

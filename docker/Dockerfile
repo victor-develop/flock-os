@@ -111,16 +111,21 @@ RUN mkdir -p sites && grep -qx flock_os sites/apps.txt 2>/dev/null || printf 'fl
 # flock_os app root (repo root) so the realtime modules resolve it via Node's
 # walk-up resolution. @redis/client is already a frappe dep, but pin it so the
 # adapter's createClient factory resolves even if frappe's layout shifts.
+# prom-client (FLO-922 / FLO-586 §6 gap G1) is the per-worker /metrics surface
+# — exposes io.engine.clientsCount, per-room counts, connect/disconnect,
+# broadcast fan-out so Prometheus can scrape each socketio worker directly.
 RUN cd apps/flock_os && npm install --no-audit --no-fund
 
-# Pre-apply the three realtime wirings to vendored apps/frappe/realtime/index.js
-# (join handler FLO-107, auth cache FLO-116, redis adapter FLO-121). These are
-# the same idempotent marker-guarded scripts the after_migrate hook re-runs; we
-# bake them into the image so a fresh container is wired on first boot without
-# needing a migrate. Each is independently reversible + idempotent.
+# Pre-apply the four realtime wirings to vendored apps/frappe/realtime/index.js
+# (join handler FLO-107, auth cache FLO-116, redis adapter FLO-121, per-worker
+# Prometheus /metrics FLO-922). These are the same idempotent marker-guarded
+# scripts the after_migrate hook re-runs; we bake them into the image so a
+# fresh container is wired on first boot without needing a migrate. Each is
+# independently reversible + idempotent.
 RUN bash apps/flock_os/scripts/dev/wire-socketio-handler.sh --bench "$PWD" \
 	&& bash apps/flock_os/scripts/dev/wire-socketio-auth-cache.sh --bench "$PWD" \
-	&& bash apps/flock_os/scripts/dev/wire-socketio-redis-adapter.sh --bench "$PWD"
+	&& bash apps/flock_os/scripts/dev/wire-socketio-redis-adapter.sh --bench "$PWD" \
+	&& bash apps/flock_os/scripts/dev/wire-socketio-metrics.sh --bench "$PWD"
 
 # The entrypoint renders sites/common_site_config.json from compose env (DB
 # host, Redis service names) at container start, then execs the compose

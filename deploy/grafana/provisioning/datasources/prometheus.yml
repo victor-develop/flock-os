@@ -1,0 +1,16 @@
+# Flock OS — Prometheus datasource for Grafana provisioning (FLO-922).
+#
+# Provisioned automatically by the Grafana container on first boot (see
+# docker/observability.yml `grafana` volume mount). The dashboard JSON files
+# under dashboards/ (committed by FLO-694) reference `DS_PROMETHEUS` as their
+# datasource UID, so this provisioner links the two.
+apiVersion: 1
+
+datasources:
+  - name: Flock Prometheus
+    type: prometheus
+    uid: DS_PROMETHEUS
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

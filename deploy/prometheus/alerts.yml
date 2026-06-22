@@ -1,0 +1,150 @@
+# Flock OS — Prometheus alerting rules (FLO-922 / FLO-586 §3.4 + FLO-897 §2).
+#
+# Companion to docs/operations/alerting.md (FLO-897) — the rules here are the
+# concrete, armable Prometheus expressions; that doc owns the prose rationale.
+#
+# The four critical WS-SLO alerts (WSConnectSLOBreach, WSBroadcastSLOBreach,
+# WSErrorCounterNonZero, WSessionsDropped) arm against the gap-G1 worker scrape
+# + gap-G4 synthetic probe. The three adapter alerts arm against the gap-G3
+# pubsub probe. The App/DB/Redis-cache alerts (FLO-897 §2.1–§2.3) ride the
+# unified app scrape and are reproduced here so an operator arms them in ONE
+# file.
+#
+# Each rule names the runbook (a deep link into docs/operations/) + the
+# launch-gate no-go signal where applicable. Runbook prose is owned there, not
+# here — these rules OWN the detection.
+
+groups:
+  - name: flock_ws_critical
+    interval: 15s
+    rules:
+      # CRITICAL — §8 WS SLO signal S4: synthetic connect p95 > 1s for 1 min.
+      # The launch-gate no-go #9 (FLO-347 §8). Arming basis: gap G4.
+      - alert: WSConnectSLOBreach
+        expr: flock_synth_ws_connect_duration_ms_p95 > 1000
+        for: 1m
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "Synthetic WS connect-duration p95 > 1s for 1m (signal S4)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+          nogosignal: "no-go #9 / S4"
+
+      # CRITICAL — §8 WS SLO signal S5: synthetic broadcast p95 > 1s for 1 min.
+      - alert: WSBroadcastSLOBreach
+        expr: flock_synth_ws_broadcast_latency_ms_p95 > 1000
+        for: 1m
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "Synthetic WS broadcast-latency p95 > 1s for 1m (signal S5)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+          nogosignal: "no-go #9 / S5"
+
+      # CRITICAL — §8 WS SLO signal S6: any synthetic receive error.
+      # Suspect FLO-107/FLO-116 regression (broadcast reached zero clients).
+      - alert: WSErrorCounterNonZero
+        expr: flock_synth_ws_receive_errors_total > 0
+        for: 30s
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "Synthetic WS receive-errors > 0 (signal S6 — FLO-107/116 regression?)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+          nogosignal: "no-go #9 / S6"
+
+      # CRITICAL — §8 WS SLO signal S7: <99% of synthetic sessions established.
+      - alert: WSessionsDropped
+        expr: flock_synth_ws_sessions_established_pct < 99
+        for: 1m
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "Synthetic WS sessions-established < 99% (signal S7)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+          nogosignal: "no-go #9 / S7"
+
+      # CRITICAL — adapter coordination subscribers dropped (a worker's adapter
+      # subscriber is down → cross-worker broadcast gap). Arming basis: gap G3.
+      - alert: AdapterSubscribersLost
+        expr: flock_redis_adapter_pubsub_adapter_subscribers < 8
+        for: 1m
+        labels:
+          severity: critical
+          tier: redis
+        annotations:
+          summary: "Adapter Redis cross-worker subscriber count < N (a worker's adapter is down)"
+          runbook: "docs/operations/event-day-runbook.md#redis"
+          nogosignal: "no-go #6 / FLO-121 adapter"
+
+  - name: flock_ws_operational
+    interval: 30s
+    rules:
+      # CRITICAL — cluster connections breaching the 15k load-proven cap.
+      - alert: WSConnectionsNearCap
+        expr: flock_ws_connections_active_cluster > 14000
+        for: 1m
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "WS active connections > 14k (approaching 15k load-proven cap)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+
+      # CRITICAL — mass disconnect (adapter blip / LB restart / auth-cache storm).
+      - alert: WSMassDisconnect
+        expr: flock_ws_disconnect_rate:cluster > 500
+        for: 30s
+        labels:
+          severity: critical
+          tier: ws
+        annotations:
+          summary: "WS disconnect rate > 500/s (mass disconnect)"
+          runbook: "docs/operations/event-day-runbook.md#ws"
+          nogosignal: "signal S8 (realtime tier collapse signature)"
+
+  - name: flock_app
+    interval: 30s
+    rules:
+      # CRITICAL — 5xx rate > 2% on any route class for 1 min.
+      - alert: App5xxSpike
+        expr: |
+          sum(rate(flock_http_errors_total[1m])) by (route_class)
+            / clamp_min(sum(rate(flock_http_requests_total[1m])) by (route_class), 1)
+            > 0.02
+        for: 1m
+        labels:
+          severity: critical
+          tier: app
+        annotations:
+          summary: "HTTP 5xx rate > 2% on {{ $labels.route_class }} for 1m"
+          runbook: "docs/operations/event-day-runbook.md#app"
+
+      # WARNING — registration p95 over the 300ms budget (design §1.1).
+      - alert: RegistrationLatencyBudget
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(flock_http_request_duration_ms_bucket{route_class="register"}[5m])) by (le)
+          ) > 300
+        for: 5m
+        labels:
+          severity: warning
+          tier: app
+        annotations:
+          summary: "Registration p95 latency > 300ms for 5m"
+          runbook: "docs/operations/event-day-runbook.md#app"
+
+      # CRITICAL — RQ `long` backlog not draining.
+      - alert: RQLongQueueBacklog
+        expr: flock_redis_rq_depth > 10000
+        for: 15m
+        labels:
+          severity: critical
+          tier: app
+        annotations:
+          summary: "RQ queue depth > 10k for 15m (bulk path not draining)"
+          runbook: "docs/operations/event-day-runbook.md#app"

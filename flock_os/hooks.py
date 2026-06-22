@@ -116,34 +116,42 @@ permission_query_conditions = {
 # ---------------------------------------------------------------------------- #
 
 # ---------------------------------------------------------------------------- #
-# Realtime-handler + auth-cache + redis-adapter auto-wiring (FLO-109 / FLO-116 / FLO-121)
+# Realtime-handler + auth-cache + redis-adapter + metrics auto-wiring
+# (FLO-109 / FLO-116 / FLO-121 / FLO-922)
 # ---------------------------------------------------------------------------- #
 # A `bench update` rewrites apps/frappe/realtime/index.js and would silently
-# drop three flock_os wirings:
+# drop four flock_os wirings:
 #   * the join handler inserted by scripts/dev/wire-socketio-handler.sh
 #     (FLO-107) — joins then no-op and broadcasts reach zero clients;
 #   * the auth-cache `.wrap(authenticate)` swap inserted by
 #     scripts/dev/wire-socketio-auth-cache.sh (FLO-116) — the per-connection
 #     `get_user_info` HTTP returns, bringing back the §8 15k WS auth wall
-#     (connect p95 > 2 s, flock_ws_receive_errors > 0); and
+#     (connect p95 > 2 s, flock_ws_receive_errors > 0);
 #   * the `@socket.io/redis-adapter` attach block inserted by
 #     scripts/dev/wire-socketio-redis-adapter.sh (FLO-121) — without it the
 #     scaled socketio tier (N node processes behind a WS-aware LB) cannot fan
 #     Socket.IO room/broadcast coordination across workers, so the §8 15k WS
-#     connection-setup wall (the wall the auth cache did NOT clear) recurs.
-# Re-wire all three automatically on every migrate (which `bench update` performs)
+#     connection-setup wall (the wall the auth cache did NOT clear) recurs; and
+#   * the per-worker Prometheus `/metrics` attach inserted by
+#     scripts/dev/wire-socketio-metrics.sh (FLO-922 / FLO-586 §6 gap G1) —
+#     without it Prometheus has no per-worker socket.io scrape target, so the
+#     four critical §8 WS-SLO alerts (WSConnectSLOBreach, WSBroadcastSLOBreach,
+#     WSErrorCounterNonZero, WSessionsDropped) silently stop firing.
+# Re-wire all four automatically on every migrate (which `bench update` performs)
 # and on install, so none is ever missing without a manual runbook step.
-# All three wire scripts are idempotent + marker-guarded; the hooks fail loud on
+# All four wire scripts are idempotent + marker-guarded; the hooks fail loud on
 # a missing marker (RealtimeWiringError) rather than shipping a silent regression.
 after_migrate = [
 	"flock_os.utils.realtime_setup.rewire_socketio_handler",
 	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
 	"flock_os.utils.realtime_setup.rewire_socketio_redis_adapter",
+	"flock_os.utils.realtime_setup.rewire_socketio_metrics",
 ]
 after_install = [
 	"flock_os.utils.realtime_setup.rewire_socketio_handler",
 	"flock_os.utils.realtime_setup.rewire_socketio_auth_cache",
 	"flock_os.utils.realtime_setup.rewire_socketio_redis_adapter",
+	"flock_os.utils.realtime_setup.rewire_socketio_metrics",
 ]
 
 

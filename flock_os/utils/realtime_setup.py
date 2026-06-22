@@ -69,6 +69,19 @@ AUTH_WIRING_MARKER = "FLOCK_OS_REALTIME_AUTH_CACHE_START"
 REDIS_ADAPTER_WIRE_SCRIPT_REL = ("scripts", "dev", "wire-socketio-redis-adapter.sh")
 REDIS_ADAPTER_WIRING_MARKER = "FLOCK_OS_REALTIME_REDIS_ADAPTER_START"
 
+# FLO-922: the per-worker Prometheus ``/metrics`` wiring (FLO-586 §6 gap G1).
+# Without it the four critical §8 WS-SLO alerts (WSConnectSLOBreach,
+# WSBroadcastSLOBreach, WSErrorCounterNonZero, WSessionsDropped) have no metric
+# to arm against — they need ``io.engine.clientsCount`` + per-room + connect/
+# disconnect counters that live INSIDE each node socketio worker, none of which
+# the app-side scrape (FLO-897) can see. This wiring INSERTS a guarded
+# ``attachMetrics(io)`` block before ``realtime.on("connection", ...);`` (INSERT
+# semantics; a fourth independent anchor so all four wirings compose). Same
+# marker-guarded idempotent shape; the metrics LOGIC lives in
+# ``realtime/metrics/flock_prometheus.js``.
+METRICS_WIRE_SCRIPT_REL = ("scripts", "dev", "wire-socketio-metrics.sh")
+METRICS_WIRING_MARKER = "FLOCK_OS_REALTIME_METRICS_START"
+
 # Path to the vendored Frappe realtime server, relative to the bench root.
 _FRAPPE_REALTIME_INDEX = ("apps", "frappe", "realtime", "index.js")
 
@@ -298,4 +311,32 @@ def rewire_socketio_redis_adapter() -> None:
 			"workers (§8 15k WS connection-setup wall would recur)"
 		),
 		regression="FLO-121",
+	)
+
+
+def rewire_socketio_metrics() -> None:
+	"""Frappe ``after_migrate`` / ``after_install`` hook: re-wire the per-worker ``/metrics``.
+
+	FLO-922 (FLO-586 §6 gap G1): a ``bench update`` rewrites
+	``apps/frappe/realtime/index.js`` and would silently drop the
+	``attachMetrics(io)`` block. Without it Prometheus has no per-worker
+	socket.io scrape target, so the four critical §8 WS-SLO alerts
+	(``WSConnectSLOBreach``, ``WSBroadcastSLOBreach``, ``WSErrorCounterNonZero``,
+	``WSessionsDropped`` — design §3.4) and the cluster-shape panels lose their
+	metric source and silently stop firing. This re-applies the guarded INSERT
+	(idempotent + fail-loud, same harness as the other three wirings). Runbook:
+	docs/operations/production-instrumentation.md.
+	"""
+	_rewire_realtime(
+		script_rel=METRICS_WIRE_SCRIPT_REL,
+		marker=METRICS_WIRING_MARKER,
+		noun="realtime per-worker metrics",
+		script_name="wire-socketio-metrics.sh",
+		consequence=(
+			"Prometheus would have no per-worker socket.io scrape target, so the "
+			"four critical §8 WS-SLO alerts (WSConnectSLOBreach, "
+			"WSBroadcastSLOBreach, WSErrorCounterNonZero, WSessionsDropped) would "
+			"silently stop firing"
+		),
+		regression="FLO-922",
 	)

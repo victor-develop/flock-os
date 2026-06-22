@@ -1,0 +1,46 @@
+# Flock OS — statsd → Prometheus metric mappings (FLO-922 / FLO-586 §6 gap G2).
+#
+# Mapping for the Frappe + gunicorn statsd line protocol. Frappe's built-in
+# client emits `frappe.*` lines; gunicorn's --statsd-host emits `gunicorn.*`.
+# Without a mapping the statsd_exporter auto-generates metric names from the
+# dotted statsd names — this file pins them to the names the dashboards +
+# alerts reference (FLO-586 §1.1 + FLO-897 alerting.md §2.1).
+#
+# Format docs: https://github.com/prometheus/statsd_exporter/blob/master/docs/mapping.md
+# Note: statsd_exporter v0.30+ dropped the explicit `action:` key for the
+# legacy metric types — the metric TYPE (counter/gauge/observer) is inferred
+# from the statsd line's sample type (c/g/ms). Mapping only renames + labels.
+
+mappings:
+  # ----- gunicorn worker saturation (the GunicornSaturation alert basis) -----
+  # gunicorn emits workers_busy / workers_idle as gauges (the `g` sample type).
+  - match: gunicorn.workers.busy
+    name: flock_gunicorn_workers_busy
+    help: "Busy gunicorn workers (workers_busy / (busy + idle) is the saturation ratio)."
+  - match: gunicorn.workers.idle
+    name: flock_gunicorn_workers_idle
+    help: "Idle gunicorn workers."
+  - match: gunicorn.workers.max
+    name: flock_gunicorn_workers_max
+    help: "Configured max gunicorn workers."
+  - match: gunicorn.requests.*
+    name: flock_gunicorn_requests_total
+    help: "Total gunicorn requests handled."
+    labels:
+      worker: "$1"
+
+  # ----- Frappe app statsd (the §1.1 request / latency / db rows) -----
+  - match: frappe.request_time
+    name: flock_frappe_request_time_ms
+    help: "Frappe request handling time (ms)."
+  - match: frappe.db.query_time
+    name: flock_frappe_db_query_time_ms
+    help: "Frappe DB query time per request (ms)."
+  - match: frappe.db.query_count
+    name: flock_frappe_db_query_count
+    help: "Frappe DB queries per request."
+  - match: frappe.cache.*
+    name: flock_frappe_cache_op_total
+    help: "Frappe cache operation count."
+    labels:
+      op: "$1"
