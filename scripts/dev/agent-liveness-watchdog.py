@@ -389,6 +389,7 @@ def self_test() -> int:
 		return {
 			"id": "rv",
 			"status": status,
+			"originKind": "stale_active_run_evaluation",
 			"originRunId": run_id,
 			"parentId": source,
 			"createdAt": "2026-06-20T16:00:00.000Z",
@@ -424,6 +425,29 @@ def self_test() -> int:
 		http_get=_FakeHttp([[]]),
 	)
 	cases.append(("ad reader no open issue -> no run", _none_reader.probe().run, None))
+
+	# The watchdog's own routine-execution issue quotes the search phrase and is
+	# in_progress while it runs, but originKind != stale_active_run_evaluation.
+	# It must NOT be adopted as a liveness signal (would age to ~epoch 0 and
+	# falsely escalate every fire).
+	_self_issue = {
+		"id": "self",
+		"status": "in_progress",
+		"originKind": "routine_execution",
+		"originRunId": "routine-run",
+		"parentId": None,
+		"createdAt": "2026-06-22T20:19:53.000Z",
+		"description": "Review silent active run for Architect detection path.\n",
+	}
+	_self_reader = _Reader(
+		api_url="x",
+		api_key="y",
+		company_id="c",
+		watched_agent_id=arch,
+		watched_agent_name="Architect",
+		http_get=_FakeHttp([[_self_issue]]),
+	)
+	cases.append(("ad reader ignores self-match issue", _self_reader.probe().run, None))
 
 	# (3) decision loop with an assignment-driven config (watched = Architect,
 	# no routine id). Owner resolves to its manager (the CEO) — never the stuck

@@ -512,6 +512,48 @@ def test_assignment_driven_reader_returns_none_when_no_open_review_issue():
 	assert reader.probe().run is None  # healthy — no open issue
 
 
+def test_assignment_driven_reader_ignores_self_match_issue():
+	# The watchdog's OWN routine-execution issue quotes the search phrase
+	# ("Review silent active run for DevOpsEngineer") in its description and is
+	# in_progress while it runs, but originKind != stale_active_run_evaluation.
+	# Without the origin-kind guard it would self-match, age to ~epoch 0, and
+	# falsely escalate every fire. It must be ignored -> healthy noop.
+	self_issue = {
+		"id": "watchdog-self",
+		"identifier": "FLO-986",
+		"title": "DevOps Liveness Watchdog",
+		"status": "in_progress",
+		"originKind": "routine_execution",
+		"originRunId": "routine-run-1",
+		"parentId": None,
+		"createdAt": "2026-06-22T20:19:53.000Z",
+		"description": "Review silent active run for DevOpsEngineer detection path.\n",
+	}
+	reader = _ad_reader([[self_issue]])
+	assert reader.probe().run is None  # ignored — not a stale_active_run issue
+	outcome, actions = _run_watchdog_with_reader(_ad_cfg(), reader)
+	assert outcome.action == ACTION_NOOP
+	assert actions.releases == []
+	assert actions.approvals == []
+
+
+def test_assignment_driven_reader_ignores_non_stale_origin_that_quotes_phrase():
+	# Any other open issue that merely mentions the phrase (e.g. a planning
+	# ticket) must also be ignored — only the platform's stale-run detector
+	# signal counts.
+	noise = {
+		"id": "noise",
+		"status": "in_progress",
+		"originKind": "manual",
+		"originRunId": None,
+		"parentId": None,
+		"createdAt": "2026-06-22T20:19:53.000Z",
+		"description": "Plan: wire up Review silent active run for DevOpsEngineer.\n",
+	}
+	reader = _ad_reader([[noise]])
+	assert reader.probe().run is None
+
+
 def test_assignment_driven_reader_builds_run_from_open_review_issue():
 	reader = _ad_reader([[_review_issue(started_epoch=NOW - 25 * 60, run_id="run-9")]])
 	probe = reader.probe()
