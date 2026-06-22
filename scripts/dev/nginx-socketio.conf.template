@@ -27,6 +27,38 @@ events {
 }
 
 http {
+	# FLO-922 / FLO-586 §6 gap G5: sticky-upstream log format + stub_status.
+	# `upstream_backend` surfaces the chosen backend per WS-upgrade request so
+	# a log-derived `ws.lb.affinity_miss_rate` counter can detect a sticky-hash
+	# miss storm (the §8 auth-callback wall's early indicator).
+	log_format flock_sticky '$remote_addr - $remote_user [$time_local] '
+	                        '"$request" $status $body_bytes_sent '
+	                        'rt=$request_time '
+	                        'upstream="$upstream_addr" '
+	                        'upstream_status="$upstream_status" '
+	                        'upstream_connect_time="$upstream_connect_time" '
+	                        'upstream_response_time="$upstream_response_time"';
+
+	# stub_status on a container-reachable port so the Prometheus scraper (in
+	# a sibling container on the docker network) can read nginx's own
+	# connection counters (FLO-922 G5). Compiled into nginx:alpine by default —
+	# no module needed. ``allow`` rules restrict to the private docker subnet
+	# (172.16.0.0/12) so it is NOT exposed to the public ingress.
+	server {
+		listen 8090;
+		server_name _;
+		location /stub_status {
+			stub_status on;
+			access_log off;
+			allow 127.0.0.1;
+			allow ::1;
+			allow 172.16.0.0/12;
+			allow 10.0.0.0/8;
+			allow 192.168.0.0/16;
+			deny all;
+		}
+	}
+
 	upstream flock_socketio {
 		# BACKENDS_INJECTED_HERE
 		# Default round-robin is correct for the k6 ws-only smoke: each client is
@@ -43,6 +75,8 @@ http {
 	server {
 		listen __LB_PORT__;
 		server_name flock_os.localhost;
+		# FLO-922 G5: per-request backend visibility for the affinity-miss metric.
+		access_log __STATE_DIR__/socketio-access.log flock_sticky;
 
 		location / {
 			proxy_pass http://flock_socketio;

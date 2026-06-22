@@ -1,0 +1,144 @@
+# Flock OS — Prometheus scrape + rule config (FLO-922 / FLO-586 §6).
+#
+# One scrape config that reaches ALL FIVE Phase 6.2 tiers the docker stack
+# exposes (App / DB / Redis / WS / Edge) — the realization of FLO-586 §4
+# "collection mechanism Phase 6.1 must provision".
+#
+#   * App tier          — flock_os.metrics_scrape.scrape (FLO-897) via web:8000.
+#                         Plus statsd-exporter:9102 for the gunicorn worker stats.
+#   * DB tier           — mysqld-exporter:9104 (gap G7 self-hosted piece).
+#   * Redis adapter     — redis-pubsub-exporter:9300 (gap G3) + redis_exporter
+#                         via redis-adapter (deployed separately).
+#   * WebSocket tier    — each socketio-N:9100 (gap G1 — wired into the workers
+#                         by scripts/dev/wire-socketio-metrics.sh). Static
+#                         scrape targets expanded to FLOCK_SIO_WORKERS.
+#   * nginx LB          — nginx-exporter:9113 (gap G5 — stub_status on ws-lb:8090).
+#   * Synthetic probe   — node-exporter:9100 textfile collector (gap G4).
+#
+# The cloud-provider tiers (Cloudflare Analytics / managed-DB monitor — gaps
+# G6 / G7) ride FLO-249; arm them when the cloud account is live.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: flock-os-staging
+    monitor: flock-os-observability
+
+rule_files:
+  - rules.yml
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # ----- App tier (FLO-897 unified scrape endpoint) -------------------------
+  # Auth: service account carrying Flock Auditor (SEC-AUTH-1) — set up via the
+  # FLOCK_PROM_AUTH_TOKEN env on the prometheus container, or use the basic_auth
+  # pair provisioned in deploy/prometheus/auth.yml (gitignored; see .example).
+  #
+  # Routing: scrape via ws-lb:8100 instead of web:8000. The ws-lb's nginx :8100
+  # server block (scripts/dev/docker-ws-tier.sh render_nginx) rewrites the
+  # Host header to flock_os.localhost (the provisioned site name) on the proxy
+  # hop to web:WEBSERVER_PORT, so Frappe's multi-site WSGI dispatch resolves the
+  # correct site. Without that rewrite the scrape returns 404 (no site matches
+  # the docker DNS hostname "web").
+  - job_name: flock_app
+    metrics_path: /api/method/flock_os.metrics_scrape.scrape
+    scheme: http
+    honor_labels: true
+    static_configs:
+      - targets: ["ws-lb:8100"]
+        labels:
+          tier: app
+          tier_role: frappe-bench
+    # basic_auth: $FLOCK_PROM_AUTH (set up in the .env.docker secret; comment in
+    # when the scrape role gate is armed. See deploy/nginx/prod.conf SEC-AUTH-1.)
+
+  # Gap G2 — statsd → Prometheus bridge (gunicorn worker stats + Frappe
+  # statsd metrics when the web container's STATSD_HOST points here).
+  - job_name: flock_statsd
+    static_configs:
+      - targets: ["statsd-exporter:9102"]
+        labels:
+          tier: app
+          tier_role: statsd-bridge
+
+  # ----- DB tier (gap G7 self-hosted piece) ---------------------------------
+  - job_name: flock_db
+    static_configs:
+      - targets: ["mysqld-exporter:9104"]
+        labels:
+          tier: db
+          tier_role: mariadb
+
+  # ----- Redis tiers -------------------------------------------------------
+  # Cache + queue (commodity). redis_exporter against each (deployed as
+  # sibling containers in docker/observability.yml — see redis-cache-exporter
+  # and redis-queue-exporter services).
+  - job_name: flock_redis_cache
+    static_configs:
+      - targets: ["redis-cache-exporter:9121"]
+        labels:
+          tier: redis
+          tier_role: cache
+  - job_name: flock_redis_queue
+    static_configs:
+      - targets: ["redis-queue-exporter:9121"]
+        labels:
+          tier: redis
+          tier_role: queue
+
+  # Adapter Redis pubsub (gap G3 — custom probe).
+  - job_name: flock_redis_adapter_pubsub
+    static_configs:
+      - targets: ["redis-pubsub-exporter:9300"]
+        labels:
+          tier: redis
+          tier_role: adapter-pubsub
+
+  # ----- nginx LB (gap G5) -------------------------------------------------
+  - job_name: flock_nginx_lb
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+        labels:
+          tier: ws
+          tier_role: lb
+
+  # ----- Synthetic SLO probe (gap G4) --------------------------------------
+  # node-exporter's textfile collector surfaces the four synth-probe metrics
+  # under flock_synth_* (one scrape per host; here, the synth-probe container).
+  - job_name: flock_synth_probe
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          tier: ws
+          tier_role: synthetic-probe
+
+  # ----- WebSocket tier (gap G1 — per-worker prom-client /metrics) ---------
+  # N static targets — one per socketio worker. Rendered/extended when the
+  # worker count changes (FLOCK_SIO_WORKERS); see scripts/dev/docker-ws-tier.sh.
+  - job_name: flock_ws_workers
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "socketio-1:9100"
+          - "socketio-2:9100"
+          - "socketio-3:9100"
+          - "socketio-4:9100"
+          - "socketio-5:9100"
+          - "socketio-6:9100"
+          - "socketio-7:9100"
+          - "socketio-8:9100"
+        labels:
+          tier: ws
+          tier_role: socketio-worker
+
+  # ----- Prometheus self-monitoring ----------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -145,6 +145,12 @@ services:
       REDIS_SOCKETIO: redis://redis-cache:6379
       WEBSERVER_PORT: ${WEBSERVER_PORT:-8000}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      # FLO-922 / FLO-586 §6 gap G2: when STATSD_HOST is set (the
+      # statsd_exporter service in deploy/observability.yml), Frappe's built-in
+      # statsd client emits frappe.request_time etc. AND the gunicorn
+      # --statsd-host below emits worker-saturation gauges. Leave unset to keep
+      # a fresh tier clean (no statsd server to talk to).
+      STATSD_HOST: ${STATSD_HOST:-}
     # gunicorn serving the Frappe WSGI app. `bench serve` wraps this for dev;
     # the direct gunicorn invocation is the prod-equivalent shape. cwd MUST be
     # sites/ — frappe.init() defaults sites_path to cwd, so gunicorn run from
@@ -152,11 +158,16 @@ services:
     # convention). Binds the SAME port internally that k6 advertises in its
     # Origin header so the socketio worker's get_user_info callback resolves
     # back to THIS web container via the flock_os.localhost network alias.
+    # FLO-922 G2: --statsd-host wired only when $STATSD_HOST is set, so a
+    # monitor-less bench ignores the flag. The expansion is a single shell
+    # word so gunicorn never sees an empty arg.
     command:
       - bash
       - -lc
       - >
-        cd sites && ../env/bin/gunicorn -b 0.0.0.0:${WEBSERVER_PORT:-8000} -w ${GUNICORN_WORKERS:-4} -t 120
+        cd sites &&
+        ../env/bin/gunicorn -b 0.0.0.0:${WEBSERVER_PORT:-8000} -w ${GUNICORN_WORKERS:-4} -t 120
+        ${STATSD_HOST:+--statsd-host ${STATSD_HOST}}
         --access-logfile - --error-logfile - frappe.app:application
     ports:
       - "${WEBSERVER_HOST_PORT:-8000}:${WEBSERVER_PORT:-8000}"
@@ -183,6 +194,15 @@ services:
       - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
       - "${WS_LB_HOST_PORT:-9000}:9000"
+      - "${WS_LB_HTTP_HOST_PORT:-8100}:8100"
+    # FLO-922 / FLO-586 §6 gap G5: stub_status exposed to the docker network
+    # only (NOT published to the host — port 8090 on the host is taken by the
+    # FLO-889 cloudflared tunnel edge). Prometheus runs in a sibling container
+    # on flock-ws_backend, so it reaches ws-lb:8090 via docker DNS. The
+    # stub_status location is allow-listed to private subnets in
+    # scripts/dev/nginx-socketio.conf.template.
+    expose:
+      - "8090"
     # Each proxied WS connection is 2 fds on the LB (client + backend); 15k
     # gate = 30k+ fds. Raise nofile well above that so nginx never starves.
     ulimits:

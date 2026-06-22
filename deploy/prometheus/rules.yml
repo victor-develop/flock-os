@@ -1,0 +1,60 @@
+# Flock OS — Prometheus recording rules (FLO-922 / FLO-586 §3).
+#
+# Recording rules materialize the queries the dashboards + alerts reuse, so the
+# evaluation cost is paid once per evaluation_interval instead of per-panel /
+# per-alert. Names mirror the FLO-586 design + FLO-897 alerting.md taxonomy.
+#
+# The accompanying alerts.yml holds the alerting rules (different from the
+# recording rules) — they reference the series materialized here.
+
+groups:
+  - name: flock_ws_recording
+    interval: 15s
+    rules:
+      # Cluster-total active WS connections (sum across all socketio workers).
+      # Materializes design §1.4 `ws.connections.active`.
+      - record: flock_ws_connections_active_cluster
+        expr: sum(flock_ws_connections_active)
+
+      # Per-worker average + stddev (the FLO-121 round-robin distribution
+      # signature at a glance — a worker 2× the mean is sticky-hash skew).
+      - record: flock_ws_connections_per_worker:avg
+        expr: avg(flock_ws_connections_active)
+      - record: flock_ws_connections_per_worker:stddev
+        expr: stddev(flock_ws_connections_active)
+
+      # Cluster connect / disconnect rate (per second).
+      - record: flock_ws_connect_rate:cluster
+        expr: sum(rate(flock_ws_connects_total[1m]))
+      - record: flock_ws_disconnect_rate:cluster
+        expr: sum(rate(flock_ws_disconnects_total[1m]))
+
+      # Active room count cluster-wide (the §1.4 `ws.rooms.count` row).
+      - record: flock_ws_rooms:cluster
+        expr: sum(flock_ws_rooms)
+
+  - name: flock_redis_recording
+    interval: 15s
+    rules:
+      # Adapter pubsub channels + the live `events` channel subscriber count
+      # (design §1.3 — AdapterSubscribersLost alert basis).
+      - record: flock_redis_adapter_pubsub_numsub_socketio
+        expr: flock_redis_adapter_pubsub_numsub_socketio
+      # Adapter cluster-wide coordination subscribers (sum across the
+      # socket.io-adapter channels — a sudden drop = a worker unsubscribed).
+      - record: flock_redis_adapter_subscribers:sum
+        expr: flock_redis_adapter_pubsub_adapter_subscribers
+
+  - name: flock_synth_recording
+    interval: 15s
+    rules:
+      # The four synthetic SLO signals (S4–S7) — materialized so the alert
+      # expressions stay readable + the dashboards join against stable names.
+      - record: flock_ws_connect_duration_ms_p95:synth
+        expr: flock_synth_ws_connect_duration_ms_p95
+      - record: flock_ws_broadcast_latency_ms_p95:synth
+        expr: flock_synth_ws_broadcast_latency_ms_p95
+      - record: flock_ws_receive_errors:synth
+        expr: flock_synth_ws_receive_errors_total
+      - record: flock_ws_sessions_established_pct:synth
+        expr: flock_synth_ws_sessions_established_pct

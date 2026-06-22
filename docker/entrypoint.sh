@@ -39,6 +39,18 @@ REDIS_QUEUE="${REDIS_QUEUE:-redis://redis-queue:6379}"
 # with the adapter Redis. Defaults to the cache service.
 REDIS_SOCKETIO="${REDIS_SOCKETIO:-$REDIS_CACHE}"
 
+# FLO-922 / FLO-586 §6 gap G2: statsd_host. When STATSD_HOST is set (the
+# monitoring stack's statsd_exporter service), Frappe's built-in statsd client
+# emits the App-tier metrics (frappe.request_time, frappe.db.query_count, etc.)
+# and gunicorn's --statsd-host emits the worker-saturation gauges. The
+# statsd_exporter (deploy/observability.yml) translates statsd into Prometheus.
+# Leave the key absent when no monitor is wired so a fresh bench stays clean.
+STATSD_HOST="${STATSD_HOST:-}"
+STATSD_LINE=""
+if [[ -n "$STATSD_HOST" ]]; then
+	STATSD_LINE="\"statsd_host\": \"$STATSD_HOST\","
+fi
+
 cat > "$SITES_DIR/common_site_config.json" <<JSON
 {
  "db_host": "$DB_HOST",
@@ -46,6 +58,7 @@ cat > "$SITES_DIR/common_site_config.json" <<JSON
  "redis_cache": "$REDIS_CACHE",
  "redis_queue": "$REDIS_QUEUE",
  "redis_socketio": "$REDIS_SOCKETIO",
+ $STATSD_LINE
  "socketio_port": ${FRAPPE_SOCKETIO_PORT:-9000},
  "webserver_port": ${WEBSERVER_PORT:-8000},
  "default_site": "$SITE_NAME",
