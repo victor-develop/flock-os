@@ -71,7 +71,13 @@ function defaultAuthorize(socket, frappeRequest) {
 		return new Promise((resolve) => {
 			request(FLOCK_SCOPE_ENDPOINT, socket)
 				.type("form")
-				.query({ room })
+				// socket.id is the Socket.IO server-assigned connection id. Forwarding
+				// it lets the Frappe throttle key per-socket (FLO-815) so 15k distinct
+				// sockets sharing one session user (the §8 load-test bar) are NOT
+				// collapsed into a single 10/s bucket. The id is server-generated, not
+				// client-controlled, so the per-connection reconnection-storm bound is
+				// preserved.
+				.query({ room, socket_id: socket.id })
 				.end((err, res) => {
 					if (err || !res || res.status !== 200) return resolve(false);
 					resolve(Boolean(res.body && res.body.message));

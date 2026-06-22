@@ -116,7 +116,8 @@ function fakeFrappeRequest(outcome, captured = {}) {
 			type() {
 				return chain;
 			},
-			query() {
+			query(params) {
+				captured.query = params;
 				return chain;
 			},
 			end(cb) {
@@ -155,4 +156,16 @@ test("defaultAuthorize resolves false on 403 / message:false / network error", a
 		const auth = defaultAuthorize({}, fakeFrappeRequest(outcome));
 		assert.equal(await auth("flock_os:event:g1:broadcast"), false);
 	}
+});
+
+// --- FLO-815: per-socket throttle key passthrough ------------------------- #
+test("defaultAuthorize forwards socket.id as socket_id for per-socket throttle (FLO-815)", async () => {
+	const captured = {};
+	const socket = { id: "flock_os.localhost#abc-123-socket" };
+	const auth = defaultAuthorize(socket, fakeFrappeRequest({ status: 200, body: { message: true } }, captured));
+	await auth("flock_os:event:g1:broadcast");
+	assert.deepEqual(captured.query, {
+		room: "flock_os:event:g1:broadcast",
+		socket_id: "flock_os.localhost#abc-123-socket",
+	});
 });
