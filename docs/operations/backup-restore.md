@@ -14,14 +14,20 @@
 
 ```bash
 # 1. Back the site up (archive lands under $BENCH_DIR/backups/<site>-<timestamp>/):
-scripts/dev/backup.sh
+scripts/ops/backup.sh        # operator entry point (delegates to scripts/dev/backup.sh)
 
 # 2. Restore into a target site (non-destructive; needs --confirm, + --force over data):
-scripts/dev/restore.sh "<archive-dir>" --site <target>.localhost --confirm
+scripts/ops/restore.sh "<archive-dir>" --site <target>.localhost --confirm
 
 # 3. Run the full restore drill (backup → fresh drill site → row-count parity):
 scripts/dev/restore-drill.sh
 ```
+
+`scripts/ops/backup.sh` and `scripts/ops/restore.sh` are thin delegation
+wrappers that establish `scripts/ops/` as the operator-facing entry point
+([FLO-885](/FLO/issues/FLO-885) AC#1). The canonical implementation lives at
+`scripts/dev/backup.sh` / `scripts/dev/restore.sh` (referenced throughout this
+runbook); the wrappers pass every flag and env var through unchanged (DRY).
 
 The scripts auto-load `$REPO_ROOT/.env` for `BENCH_DIR` / `SITE_NAME` /
 `MARIADB_ROOT_PASSWORD` / `SITE_ADMIN_PASSWORD`; every value is overridable with a
@@ -99,6 +105,43 @@ What the drill checks:
 
 Exit code `0` = parity holds (drill site dropped automatically). Non-zero =
 divergence report printed; the drill site is dropped unless `--keep`.
+
+### Proven against the local prod-equivalent docker stack (FLO-885)
+
+The drill was run end-to-end against the [FLO-347](/FLO/issues/FLO-347)
+docker-compose prod-equivalent topology (gunicorn + socketio tier + nginx LB +
+dedicated adapter Redis + MariaDB) on a seeded **15k-fixture site** and passed
+on **2026-06-22** — de-risking Phase 6.2 AC#2 without cloud spend:
+
+| Metric | Value |
+|--------|-------|
+| Source site | `flock_os.localhost` (docker-compose) |
+| Fixture | 15k members + 15k group members + 15k attendance + 6k registrations ([FLO-454](/FLO/issues/FLO-454) `stress-15k.sh`) |
+| Flock DocTypes checked | 23 |
+| Total rows parity-verified | 51,274 |
+| Result | `DRILL: PASS` — equal row counts on every material DocType |
+
+The per-DocType parity table and drill log are attached to
+[FLO-885](/FLO/issues/FLO-885). Re-run the proven sequence:
+
+```bash
+# 0. Bring up the prod-equivalent tier (MariaDB + Redis + gunicorn + WS LB):
+scripts/dev/docker-ws-tier.sh up
+
+# 1. Seed the 15k fixture dataset (idempotent — stress-* namespace):
+scripts/dev/stress-15k.sh
+
+# 2. Run the drill INSIDE the web container (bench-in-container == prod shape).
+#    The docker MariaDB root user is `root`; the DB host is auto-resolved from
+#    common_site_config.json (db_host=mariadb), so no --db-host flag is needed:
+docker compose -f docker/docker-compose.yml exec web \
+  bash apps/flock_os/scripts/dev/restore-drill.sh \
+    --bench-dir /home/frappe/frappe-bench \
+    --source-site flock_os.localhost \
+    --db-root-username root \
+    --db-root-password "$MARIADB_ROOT_PASSWORD" \
+    --admin-password "$SITE_ADMIN_PASSWORD"
+```
 
 ### Rehearsing against the prod-equivalent docker-compose topology
 
