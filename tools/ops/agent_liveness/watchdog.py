@@ -32,6 +32,7 @@ inside the default HTTP callables, exactly like the sibling monitor module.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -94,10 +95,25 @@ class WatchdogConfig:
 	other agent the manager — resolved live from the chain — is the owner.
 	``watchdog_issue_id`` is the routine-execution issue this fire is running
 	on (the comment target). ``project_id`` / ``goal_id`` tag escalations.
+
+	Detection input: set **either** ``watched_routine_id`` (heartbeat-routine
+	agents — liveness read from the routine's run history) **or**
+	``watched_agent_name`` (assignment-driven agents — liveness read from the
+	platform's open ``Review silent active run for {name}`` issue). The decision
+	core (:func:`classify_run`) is agent-model-agnostic, so both paths feed the
+	same :class:`LivenessProbe`; only the reader adapter differs.
 	"""
 
 	watched_agent_id: str
-	watched_routine_id: str
+	# Detection input — exactly one of these two must be set (see ``build_config``):
+	#   * ``watched_routine_id`` — the heartbeat-routine path (CEO/Architect):
+	#     liveness is read from ``GET /api/routines/{id}/runs``.
+	#   * ``watched_agent_name`` — the assignment-driven path (everyone else):
+	#     liveness is read from the platform's open ``Review silent active run
+	#     for {name}`` issue (runbook §Step 1). These agents have no heartbeat
+	#     routine, so the stale-run review issue is the only liveness signal.
+	watched_routine_id: str | None = None
+	watched_agent_name: str | None = None
 	ceo_fallback_owner_id: str | None = None
 	watchdog_issue_id: str | None = None
 	project_id: str | None = None
@@ -721,17 +737,42 @@ def _parse_iso8601(value: str | None) -> float | None:
 
 _TERMINAL_ISSUE_STATUSES = frozenset({"done", "cancelled"})
 
+# The stale-run review issue body is a stable platform template, e.g.
+# "Started at: 2026-06-20T15:51:21.034Z" (runbook §Step 1). Capture the
+# timestamp token so assignment-driven detection can age the run.
+_STARTED_AT_RE = re.compile(r"Started at:\s*([^\n\r]+)", re.IGNORECASE)
+
+
+def _parse_started_at(description: str | None) -> str | None:
+	"""Extract the run's ``Started at`` timestamp from the review issue body.
+
+	Returns the raw token (e.g. ``2026-06-20T15:51:21.034Z``) for
+	:func:`_parse_iso8601`, or ``None`` when the body has no such line — the
+	caller then treats the run age as unknown (``classify_run`` -> healthy),
+	never raising on a malformed body.
+	"""
+	if not description:
+		return None
+	match = _STARTED_AT_RE.search(description)
+	return match.group(1).strip() if match else None
+
 
 class PaperclipLivenessReader:
 	"""Production :class:`LivenessReader` over the Paperclip REST API.
 
-	Reads:
+	Supports both detection paths from the runbook §Step 1. Set
+	``watched_routine_id`` for the heartbeat path (CEO/Architect): liveness is
+	read from ``GET /api/routines/{rid}/runs``, the latest non-coalesced base
+	run plus the recent window (zombie-supersession test). Set
+	``watched_agent_name`` for the assignment-driven path (everyone else): the
+	open ``Review silent active run for {name}`` issue (filtered to non-terminal)
+	is the only liveness signal — it carries the stuck run id (``originRunId``),
+	started-at, and source issue (``parentId``); no open issue means the agent is
+	healthy (the no-run case).
 
-	* ``GET /api/companies/{id}/agents`` — the chain of command (``reportsTo``).
-	* ``GET /api/routines/{rid}/runs?limit=N`` — the watched routine's run
-		history (the latest non-coalesced base run + the recent window).
-	* ``GET /api/issues/{linkedId}`` — the linked issue's status +
-		``activeRecoveryAction`` (terminal + missing-disposition flags).
+	Reads in common: ``GET /api/companies/{id}/agents`` (the chain of command,
+	``reportsTo``); ``GET /api/issues/{linkedId}`` (the linked issue's status +
+	``activeRecoveryAction`` — terminal + missing-disposition flags).
 	"""
 
 	def __init__(
@@ -741,15 +782,22 @@ class PaperclipLivenessReader:
 		api_key: str,
 		company_id: str,
 		watched_agent_id: str,
-		watched_routine_id: str,
+		watched_routine_id: str | None = None,
+		watched_agent_name: str | None = None,
 		http_get: HTTPGetter | None = None,
 		run_limit: int = 20,
 	) -> None:
+		if not watched_routine_id and not watched_agent_name:
+			raise ValueError(
+				"PaperclipLivenessReader needs a detection input: set watched_routine_id "
+				"(heartbeat path) or watched_agent_name (assignment-driven path)."
+			)
 		self.api_url = api_url.rstrip("/")
 		self.api_key = api_key
 		self.company_id = company_id
 		self.watched_agent_id = watched_agent_id
 		self.watched_routine_id = watched_routine_id
+		self.watched_agent_name = watched_agent_name
 		self.http_get = http_get or default_http_get
 		self.run_limit = run_limit
 
@@ -822,11 +870,58 @@ class PaperclipLivenessReader:
 		)
 		return is_terminal, missing
 
+	def _fetch_stale_run_issue(self) -> HeartbeatRun | None:
+		"""Assignment-driven detection (runbook §Step 1, alt path).
+
+		Search the platform's open ``Review silent active run for {name}`` issue
+		(the stale-run detector's signal for an agent with no heartbeat routine),
+		filter to non-terminal statuses, and reconstruct the :class:`HeartbeatRun`
+		the decision core consumes. ``None`` when no such issue is open — the
+		agent is healthy, mirroring the heartbeat path's no-run case exactly.
+
+		Field mapping: run id comes from the issue's ``originRunId`` (the silent
+		run); started-at from the ``Started at:`` line in the issue body (the
+		run's triggeredAt); the linked source issue from the issue's ``parentId``
+		(the stuck run's source issue — the Step 3 release/reassign target).
+		"""
+		from urllib.parse import quote
+
+		query = f"Review silent active run for {self.watched_agent_name}"
+		payload = self._get(f"/api/companies/{self.company_id}/issues?q={quote(query)}")
+		if isinstance(payload, dict):
+			issues = payload.get("items") or payload.get("issues") or []
+		else:
+			issues = payload if isinstance(payload, list) else []
+		open_issues = [
+			i for i in issues if isinstance(i, dict) and str(i.get("status")) not in _TERMINAL_ISSUE_STATUSES
+		]
+		if not open_issues:
+			return None
+		# The most recent open review issue is the current liveness signal.
+		review = max(open_issues, key=lambda i: i.get("createdAt") or "")
+		run_id = review.get("originRunId") or review.get("originId")
+		started = _parse_started_at(review.get("description"))
+		return HeartbeatRun(
+			id=str(run_id or "unknown"),
+			status="running",
+			triggered_at_epoch=_parse_iso8601(started) or 0.0,
+			completed_at_epoch=None,
+			linked_issue_id=review.get("parentId"),
+		)
+
 	def probe(self) -> LivenessProbe:
 		chain = self._fetch_chain()
-		runs = self._fetch_runs()
-		base_runs = tuple(r for r in runs if not r.coalesced_into_run_id)
-		latest = max(base_runs, key=lambda r: r.triggered_at_epoch) if base_runs else None
+		if self.watched_routine_id:
+			# Heartbeat-routine path (CEO/Architect): read the routine run history.
+			runs = self._fetch_runs()
+			base_runs = tuple(r for r in runs if not r.coalesced_into_run_id)
+			latest = max(base_runs, key=lambda r: r.triggered_at_epoch) if base_runs else None
+		else:
+			# Assignment-driven path (everyone else): the open stale-run review
+			# issue is the only liveness signal. No open issue => healthy noop,
+			# exactly like the heartbeat path's no-run case.
+			latest = self._fetch_stale_run_issue()
+			runs = (latest,) if latest is not None else ()
 		linked_id = latest.linked_issue_id if latest else None
 		is_terminal, missing = self._linked_flags(linked_id)
 		return LivenessProbe(

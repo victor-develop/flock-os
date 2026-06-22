@@ -56,8 +56,12 @@ Env (required for live recovery, ignored by ``--self-test``):
 
 Optional:
 
-    FLO_LIVENESS_WATCHED_AGENT_ID    watched agent id (else error)
-    FLO_LIVENESS_WATCHED_ROUTINE_ID  watched heartbeat routine id (else error)
+    FLO_LIVENESS_WATCHED_AGENT_ID    watched agent id (always required)
+    FLO_LIVENESS_WATCHED_ROUTINE_ID  watched heartbeat routine id (heartbeat path)
+    FLO_LIVENESS_WATCHED_AGENT_NAME  watched agent display name (assignment-driven
+                                     path — set this INSTEAD of the routine id for
+                                     agents with no heartbeat routine; the watchdog
+                                     then detects via the open stale-run review issue)
     FLO_LIVENESS_CEO_FALLBACK_OWNER  configured peer for the CEO (Architect id)
     FLO_LIVENESS_WATCHDOG_ISSUE_ID   override the comment target issue id
     FLO_LIVENESS_PROJECT_ID          tag board approvals with this project
@@ -98,25 +102,33 @@ from tools.ops.agent_liveness.watchdog import (  # noqa: E402
 
 
 def build_config() -> WatchdogConfig:
-	"""Resolve :class:`WatchdogConfig` from the environment."""
+	"""Resolve :class:`WatchdogConfig` from the environment.
+
+	``FLO_LIVENESS_WATCHED_AGENT_ID`` is always required. Exactly one detection
+	input is required on top of it: ``FLO_LIVENESS_WATCHED_ROUTINE_ID`` (the
+	heartbeat-routine path — CEO/Architect) **or**
+	``FLO_LIVENESS_WATCHED_AGENT_NAME`` (the assignment-driven path — everyone
+	else). Errors only when the agent id is missing, or when neither detection
+	input is set.
+	"""
 	watched_agent = os.environ.get("FLO_LIVENESS_WATCHED_AGENT_ID")
 	watched_routine = os.environ.get("FLO_LIVENESS_WATCHED_ROUTINE_ID")
-	missing = [
-		name
-		for name, val in (
-			("FLO_LIVENESS_WATCHED_AGENT_ID", watched_agent),
-			("FLO_LIVENESS_WATCHED_ROUTINE_ID", watched_routine),
-		)
-		if not val
-	]
-	if missing:
+	watched_name = os.environ.get("FLO_LIVENESS_WATCHED_AGENT_NAME")
+	if not watched_agent:
 		raise SystemExit(
-			"error: missing required env: " + ", ".join(missing) + "\n"
-			"  (set the watched agent + routine ids, or use --self-test / --dry-run for the logic check.)"
+			"error: missing required env: FLO_LIVENESS_WATCHED_AGENT_ID\n"
+			"  (set the watched agent id, or use --self-test / --dry-run for the logic check.)"
+		)
+	if not watched_routine and not watched_name:
+		raise SystemExit(
+			"error: a detection input is required — set FLO_LIVENESS_WATCHED_ROUTINE_ID "
+			"(heartbeat path) OR FLO_LIVENESS_WATCHED_AGENT_NAME (assignment-driven path).\n"
+			"  (or use --self-test / --dry-run for the logic check.)"
 		)
 	return WatchdogConfig(
-		watched_agent_id=watched_agent,  # type: ignore[arg-type]
-		watched_routine_id=watched_routine,  # type: ignore[arg-type]
+		watched_agent_id=watched_agent,
+		watched_routine_id=watched_routine or None,
+		watched_agent_name=watched_name or None,
 		ceo_fallback_owner_id=os.environ.get("FLO_LIVENESS_CEO_FALLBACK_OWNER"),
 		watchdog_issue_id=os.environ.get(
 			"FLO_LIVENESS_WATCHDOG_ISSUE_ID", os.environ.get("PAPERCLIP_TASK_ID")
@@ -147,6 +159,7 @@ def run_once(*, dry_run: bool) -> int:
 			company_id=os.environ["PAPERCLIP_COMPANY_ID"],
 			watched_agent_id=config.watched_agent_id,
 			watched_routine_id=config.watched_routine_id,
+			watched_agent_name=config.watched_agent_name,
 		)
 		actions = RecordingRecoveryActions(echo=lambda line: print(line))
 		outcome = run_watchdog(config, reader, actions, dry_run=True)
@@ -157,6 +170,7 @@ def run_once(*, dry_run: bool) -> int:
 			company_id=os.environ["PAPERCLIP_COMPANY_ID"],
 			watched_agent_id=config.watched_agent_id,
 			watched_routine_id=config.watched_routine_id,
+			watched_agent_name=config.watched_agent_name,
 		)
 		actions = PaperclipRecoveryActions(
 			api_url=os.environ["PAPERCLIP_API_URL"],
@@ -329,6 +343,103 @@ def self_test() -> int:
 	# release_restart action label surfaces when recovered path is mid-flight —
 	# sanity that the decision-core action constant is re-exported consistently.
 	cases.append(("release_restart constant", ACTION_RELEASE_RESTART, "release_restart"))
+
+	# ---- Assignment-driven detection (FLO-980) ------------------------------ #
+	# The decision core is agent-model-agnostic: an assignment-driven config
+	# (agent name, no heartbeat routine) feeds the same loop, and the reader
+	# adapter reconstructs the run from the platform's stale-run review issue.
+
+	# (1) the body parser over the real review-issue body template.
+	from tools.ops.agent_liveness.watchdog import _parse_started_at as _psa
+
+	_body = "## Run\n\n- Started at: 2026-06-20T15:51:21.034Z\n- Agent: x\n"
+	cases.append(("parse_started_at extracts token", _psa(_body), "2026-06-20T15:51:21.034Z"))
+	cases.append(("parse_started_at None when absent", _psa("no marker"), None))
+
+	# (2) the reader adapter over a fake API: open review issue -> run built;
+	# no open issue -> healthy (no run).
+	import json as _json
+
+	from tools.ops.agent_liveness.watchdog import PaperclipLivenessReader as _Reader
+
+	class _FakeHttp:
+		def __init__(self, issues_pages, linked_status="in_progress"):
+			self.pages = list(issues_pages)
+			self.linked_status = linked_status
+			self.i = 0
+
+		def __call__(self, url, headers):
+			if "/agents" in url:
+				return _json.dumps(
+					[
+						{"id": ceo, "name": "CEO", "reportsTo": None},
+						{"id": arch, "name": "Architect", "reportsTo": ceo},
+					]
+				)
+			if "/issues?" in url:
+				if self.i < len(self.pages):
+					page = self.pages[self.i]
+					self.i += 1
+				else:
+					page = self.pages[-1] if self.pages else []
+				return _json.dumps(page)
+			return _json.dumps({"status": self.linked_status})
+
+	def _review(*, run_id="run-x", source="src-1", status="in_progress"):
+		return {
+			"id": "rv",
+			"status": status,
+			"originRunId": run_id,
+			"parentId": source,
+			"createdAt": "2026-06-20T16:00:00.000Z",
+			"description": "- Started at: 2026-06-20T15:51:21.034Z\n",
+		}
+
+	_open_reader = _Reader(
+		api_url="x",
+		api_key="y",
+		company_id="c",
+		watched_agent_id=arch,
+		watched_agent_name="Architect",
+		http_get=_FakeHttp([[_review()]]),
+	)
+	_open_probe = _open_reader.probe()
+	cases.append(("ad reader builds run from open issue", _open_probe.run is not None, True))
+	cases.append(
+		("ad reader run id from originRunId", _open_probe.run.id if _open_probe.run else None, "run-x")
+	)
+	cases.append(
+		(
+			"ad reader linked = source issue (parentId)",
+			_open_probe.run.linked_issue_id if _open_probe.run else None,
+			"src-1",
+		)
+	)
+	_none_reader = _Reader(
+		api_url="x",
+		api_key="y",
+		company_id="c",
+		watched_agent_id=arch,
+		watched_agent_name="Architect",
+		http_get=_FakeHttp([[]]),
+	)
+	cases.append(("ad reader no open issue -> no run", _none_reader.probe().run, None))
+
+	# (3) decision loop with an assignment-driven config (watched = Architect,
+	# no routine id). Owner resolves to its manager (the CEO) — never the stuck
+	# agent. Stuck -> recovered; healthy (no in-flight run) -> noop.
+	cfg_ad = WatchdogConfig(
+		watched_agent_id=arch, watched_agent_name="Architect", watchdog_issue_id="watchdog-issue"
+	)
+	sink = _Sink()
+	out = run_watchdog(cfg_ad, _ScriptedReader([probe_stuck, probe_none]), sink, now_epoch=now, sleep=_noop)
+	cases.append(("assignment-driven stuck -> recovered", out.action, ACTION_RECOVERED))
+	cases.append(
+		("assignment-driven owner is manager (CEO)", sink.releases[0][1] if sink.releases else None, ceo)
+	)
+	sink = _Sink()
+	out = run_watchdog(cfg_ad, _ScriptedReader([probe_none]), sink, now_epoch=now, sleep=_noop)
+	cases.append(("assignment-driven healthy -> noop", out.action, ACTION_NOOP))
 
 	failures = 0
 	for name, got, want in cases:
