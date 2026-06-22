@@ -105,12 +105,15 @@ GET /api/issues/{linkedIssueId}
 **Verdict** (matches `classify_run()` in the library):
 
 - If the linked issue is terminal (`done`/`cancelled`) → **healthy**. Exit.
+- If the linked issue is under an active `missing_disposition` recovery action (cause `successful_run_missing_state`) → **healthy**. Exit. (See the FLO-771 note below.)
 - If `age < T_SUSPICIOUS` → **healthy**. Exit.
 - If `T_SUSPICIOUS ≤ age < T_STUCK` → **suspicious**. Log a watch comment. Exit.
 - If `age ≥ T_STUCK` and the linked issue is still active → **STUCK**. Proceed to Step 2.
 - If `age ≥ T_ABORT` → **abort** (skip Step 3, go to Step 4).
 
 > **Zombie run-records (FLO-419).** A strictly newer non-coalesced base run in the window supersedes an older in-flight run — under `coalesce_if_active` the platform only admits a fresh base run once the prior one is inactive, so the older record is stale, not stuck. Treat such a run as **healthy** (`is_superseded_by_newer_base_run()` in the library) and do not alert or recover it.
+
+> **Successful run, missing disposition (FLO-771).** A run may **succeed** (the run itself completed and produced output) yet leave the linked issue without a terminal status — the platform then opens an `activeRecoveryAction` with `kind: "missing_disposition"` and `cause: "successful_run_missing_state"`, routing the issue to the recovery owner for cleanup. This is **not** a silent/stuck process; a STUCK → release+restart would interrupt a healthy agent and not fix the disposition gap. Read the linked issue's `activeRecoveryAction`; when `kind == "missing_disposition"` and `cause == "successful_run_missing_state"`, set the `successful_run_missing_disposition` flag and treat the run as **healthy** (skip Step 2). The watchdog retains judgment: if the agent was *also* genuinely silent, escalate via the manual path — this flag only suppresses automated release+restart on a run whose own success is attested. (Observed during the 2026-06-22 [FLO-769](/FLO/issues/FLO-769) CEO watchdog fire.)
 
 > **Composability:** when FLO-266 lands, prefer its monitoring signal (or the webhook trigger) as the detection source and use the run-history / stale-run-issue check above as the fallback only.
 
@@ -233,7 +236,7 @@ One routine per watched agent. The Software Architect owns the watchdogs for its
 
 ## Verification
 
-The watchdog run is itself the verification loop: every fire either confirms healthy (no-op comment) or performs measurable recovery. The pure logic is pinned by `tools/ops/agent_liveness/tests/test_recovery.py` — including the canonical **negative test** (`test_simulated_silent_architect_run_self_heals`) that replays the FLO-365 incident shape and asserts the recovery owner resolves to the CEO (never the Architect) and that the release+restart loop escalates to the board once attempts are exhausted — and the **zombie-run** test (`test_zombie_run_does_not_trigger_recovery`, FLO-419) that asserts a superseded run is detected + classified healthy so a moved-on agent raises no false alert.
+The watchdog run is itself the verification loop: every fire either confirms healthy (no-op comment) or performs measurable recovery. The pure logic is pinned by `tools/ops/agent_liveness/tests/test_recovery.py` — including the canonical **negative test** (`test_simulated_silent_architect_run_self_heals`) that replays the FLO-365 incident shape and asserts the recovery owner resolves to the CEO (never the Architect) and that the release+restart loop escalates to the board once attempts are exhausted — the **zombie-run** test (`test_zombie_run_does_not_trigger_recovery`, FLO-419) that asserts a superseded run is detected + classified healthy so a moved-on agent raises no false alert — and the **missing-disposition** test (`test_successful_run_missing_disposition_does_not_trigger_recovery`, FLO-771) that asserts a run whose success is attested (but whose issue lacks a terminal status) classifies healthy so a producing agent is not interrupted.
 
 To exercise the live path safely:
 
@@ -249,3 +252,4 @@ To exercise the live path safely:
 | 2026-06-21 | Generalized beyond CEO; manager-as-recovery-owner; recovery library + negative test | [FLO-395](/FLO/issues/FLO-395) |
 | 2026-06-21 | Architect Liveness Watchdog provisioned + activated (CEO-owned); Coverage table records routine ids | [FLO-398](/FLO/issues/FLO-398) |
 | 2026-06-21 | Zombie run-record suppression — a newer non-coalesced base run supersedes an older in-flight run; detection + verdict agree a zombie is healthy | [FLO-419](/FLO/issues/FLO-419) |
+| 2026-06-22 | Successful-run-missing-disposition signal — a run that succeeded but left the issue without a terminal status (`missing_disposition` / `successful_run_missing_state`) is HEALTHY, avoiding a false-positive STUCK on a healthy agent | [FLO-771](/FLO/issues/FLO-771) |
