@@ -210,8 +210,10 @@ RUN chmod 0755 /usr/local/bin/flock-os-entrypoint \
     && chmod 0755 /usr/local/bin/flock-os-scale-socketio \
     && ln -sf /etc/nginx/sites-available/flock-os.conf /etc/nginx/sites-enabled/flock-os.conf \
     && rm -f /etc/nginx/sites-enabled/default \
-    && mkdir -p /var/log/nginx /var/lib/nginx /run/nginx \
-    && chown -R www-data:www-data /var/log/nginx /var/lib/nginx /run/nginx
+    && mkdir -p /var/log/nginx /var/lib/nginx /run/nginx /etc/nginx/flock-os \
+    && chown -R www-data:www-data /var/log/nginx /var/lib/nginx /run/nginx \
+    && printf 'ip_hash;\nserver 127.0.0.1:9001 max_fails=3 fail_timeout=10s;\n' \
+       > /etc/nginx/flock-os/socketio_upstream.conf
 
 # A sentinel site config so `bench` commands work pre-render. The real config
 # is written by the entrypoint at container start (overwriting this).

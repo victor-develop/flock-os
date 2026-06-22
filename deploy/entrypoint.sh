@@ -84,7 +84,25 @@ bench --site "$SITE_NAME" migrate || {
     exit 1
 }
 
-# --- 4. Clear stale bench proc state, then exec the supervisor ----------------
+# --- 4. Generate nginx socketio upstream from FLOCK_SIO_PROCESSES -------------
+# The prod nginx (deploy/nginx/prod.conf) includes /etc/nginx/flock-os/socketio_upstream.conf
+# for its sticky-L7 upstream. Generate it here so the upstream always matches the
+# live backend count (ports 9001..900N). This replaces the old hardcoded 4-backend
+# list that couldn't scale (architect fix FLO-246).
+SIO_PROCESSES="${FLOCK_SIO_PROCESSES:-4}"
+SIO_BASE_PORT="${FLOCK_SIO_BASE_PORT:-9001}"
+UPSTREAM_FILE="/etc/nginx/flock-os/socketio_upstream.conf"
+log "generating nginx socketio upstream ($SIO_PROCESSES backends from :$SIO_BASE_PORT)"
+mkdir -p /etc/nginx/flock-os
+{
+    echo "ip_hash;"
+    for ((i = 0; i < SIO_PROCESSES; i++)); do
+        echo "server 127.0.0.1:$((SIO_BASE_PORT + i)) max_fails=3 fail_timeout=10s;"
+    done
+} > "$UPSTREAM_FILE"
+log "wrote $UPSTREAM_FILE ($SIO_PROCESSES backends)"
+
+# --- 5. Clear stale bench proc state, then exec the supervisor ----------------
 # `bench start` writes a Procfile-based PID set; a restart after a crash can
 # leave stale PIDs that confuse supervisor. Clear them so the tier starts clean.
 rm -rf "$BENCH_DIR/logs/*.pid" 2>/dev/null || true

@@ -33,10 +33,13 @@
 #   FLOCK_SIO_BASE_PORT   first backend port (default 9001)
 #   FLOCK_SIO_LB_PORT     LB listen port (default 9000 — the smoke default)
 #   FLOCK_SIO_LB          LB kind: "node" (default — the dependency-free TCP
-#                         round-robin proxy scripts/dev/socketio-lb.js) or "nginx"
+#                         round-robin proxy scripts/dev/socketio-lb.js), "nginx"
 #                         (the production WS-upstream shape; see
-#                         scripts/dev/nginx-socketio.conf.template). `start --lb
-#                         nginx` overrides. nginx must be on PATH when selected.
+#                         scripts/dev/nginx-socketio.conf.template), or
+#                         "external" (start backends ONLY — the prod nginx in
+#                         deploy/nginx/prod.conf owns the LB; used by the
+#                         containerized bench supervisord so two nginx instances
+#                         don't fight over :9000). `start --lb X` overrides.
 #   FLOCK_SIO_ADAPTER_REDIS  optional `redis://` URL for a DEDICATED adapter Redis.
 #                         Backends inherit this process's env, so the redis-adapter
 #                         wiring binds to it instead of the shared `redis_socketio`
@@ -195,8 +198,8 @@ cmd_start() {
 		esac
 	done
 	case "$LB_KIND" in
-		node|nginx) ;;
-		*) err "invalid --lb '$LB_KIND' (expected: node | nginx)"; exit 2 ;;
+		node|nginx|external) ;;
+		*) err "invalid --lb '$LB_KIND' (expected: node | nginx | external)"; exit 2 ;;
 	esac
 	[[ -z "$N" ]] && N="${FLOCK_SIO_PROCESSES:-$DEFAULT_N}"
 	mkdir -p "$STATE_DIR"
@@ -247,13 +250,20 @@ cmd_start() {
 
 	if [[ "$LB_KIND" == "nginx" ]]; then
 		start_nginx_lb
+	elif [[ "$LB_KIND" == "external" ]]; then
+		echo "external" > "$STATE_DIR/lb-kind"
+		log "LB: external (prod nginx owns :$LB_PORT — no LB process started here)"
 	else
 		start_node_lb
 	fi
 
 	echo
 	log "scaled socketio tier is UP:"
-	log "  LB:          ws://flock_os.localhost:$LB_PORT  (kind: $LB_KIND; k6 default WS_BASE_URL — no override needed)"
+	if [[ "$LB_KIND" == "external" ]]; then
+		log "  LB:          external (prod nginx on :$LB_PORT — started separately by supervisor)"
+	else
+		log "  LB:          ws://flock_os.localhost:$LB_PORT  (kind: $LB_KIND; k6 default WS_BASE_URL — no override needed)"
+	fi
 	log "  backends:    $N  (:$BASE_PORT..$((BASE_PORT + N - 1)))"
 	if [[ -n "${FLOCK_SIO_ADAPTER_REDIS:-}" ]]; then
 		log "  adapter:     @socket.io/redis-adapter -> DEDICATED \$FLOCK_SIO_ADAPTER_REDIS (${FLOCK_SIO_ADAPTER_REDIS})"
@@ -287,6 +297,9 @@ cmd_stop() {
 			nginx -c "$STATE_DIR/nginx.conf" -p "$STATE_DIR/" -s stop >/dev/null 2>&1 || true
 		fi
 		rm -f "$ngx_pid"
+	elif [[ "$lb_kind" == "external" ]]; then
+		# External LB (prod nginx) is owned by supervisor — nothing to kill here.
+		log "LB is external (prod nginx) — not stopping it (supervisor owns it)."
 	else
 		if [[ -f "$LB_PID_FILE" ]] && kill -0 "$(cat "$LB_PID_FILE")" 2>/dev/null; then
 			kill "$(cat "$LB_PID_FILE")" 2>/dev/null || true
@@ -323,7 +336,9 @@ cmd_status() {
 	[[ -f "$STATE_DIR/lb-kind" ]] && lb_kind="$(cat "$STATE_DIR/lb-kind" 2>/dev/null || echo node)"
 	local lb_pid_file="$LB_PID_FILE"
 	[[ "$lb_kind" == "nginx" ]] && lb_pid_file="$STATE_DIR/nginx.pid"
-	if [[ -f "$lb_pid_file" ]] && kill -0 "$(cat "$lb_pid_file")" 2>/dev/null; then
+	if [[ "$lb_kind" == "external" ]]; then
+		echo "LB    kind=external :$LB_PORT  (owned by prod nginx / supervisor)"
+	elif [[ -f "$lb_pid_file" ]] && kill -0 "$(cat "$lb_pid_file")" 2>/dev/null; then
 		echo "LB    kind=$lb_kind pid=$(cat "$lb_pid_file") :$LB_PORT  UP"
 	else
 		echo "LB    kind=$lb_kind :$LB_PORT  DOWN"
