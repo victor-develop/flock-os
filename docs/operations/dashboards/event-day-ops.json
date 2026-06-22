@@ -136,7 +136,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 15, "y": 1 },
       "id": 4,
       "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value" },
-      "targets": [{ "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1m])) / clamp_min(sum(rate(flock_http_requests_total[1m])), 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
+      "targets": [{ "refId": "A", "expr": "sum(rate(flock_http_errors_total[1m])) / clamp_min(sum(rate(flock_http_requests_total[1m])), 1)", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }],
       "title": "HTTP 5xx rate (green = 0)",
       "type": "stat"
     },

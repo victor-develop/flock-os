@@ -95,7 +95,7 @@
       "id": 7,
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(flock_http_requests_total{status=~\"5..\"}[1h])) / clamp_min(sum(rate(flock_http_requests_total[1h])), 1)", "legendFormat": "5xx %", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
+        { "refId": "A", "expr": "sum(rate(flock_http_errors_total[1h])) / clamp_min(sum(rate(flock_http_requests_total[1h])), 1)", "legendFormat": "5xx %", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
         { "refId": "B", "expr": "sum(rate(flock_rq_failed_jobs_total[1h])) / clamp_min(sum(rate(flock_rq_jobs_total[1h])), 1)", "legendFormat": "RQ fail %", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } },
         { "refId": "C", "expr": "sum(rate(mysql_deadlocks_total[1h]))", "legendFormat": "deadlocks/h", "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" } }
       ],
