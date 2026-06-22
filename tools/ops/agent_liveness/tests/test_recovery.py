@@ -246,6 +246,46 @@ def test_classify_superseded_takes_precedence_over_abort_age():
 	assert verdict.verdict == "healthy"
 
 
+def test_classify_healthy_when_successful_run_missing_disposition():
+	"""FLO-771: a run that succeeded but left the issue missing a disposition is HEALTHY.
+
+	Replays the 2026-06-22 FLO-769 shape at the verdict layer: the CEO's
+	heartbeat run ``succeeded`` and produced output, but the linked heartbeat
+	issue (FLO-766) sat in ``blocked`` with an active ``missing_disposition``
+	recovery action (cause ``successful_run_missing_state``). At 25m (past
+	T_STUCK) with the issue non-terminal, the naive verdict would be STUCK — but
+	the run is benign staleness, not a silent process. The watchdog reads the
+	linked issue's ``activeRecoveryAction`` and sets the flag before calling
+	``classify_run``.
+	"""
+	verdict = classify_run(
+		SILENT_ARCHITECT_RUN,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		successful_run_missing_disposition=True,
+	)
+	assert verdict.verdict == "healthy"
+	assert verdict.recovery_owner_id == CEO_ID  # still resolved for the comment
+	assert "missing_disposition" in verdict.reason
+	assert "FLO-771" in verdict.reason
+
+
+def test_classify_missing_disposition_takes_precedence_over_abort_age():
+	"""A successful-but-dispositionless run is healthy even at T_ABORT age."""
+	old_run = _run(age_minutes=DEFAULT_T_ABORT_MINUTES + 5)  # 50m, would ABORT
+	verdict = classify_run(
+		old_run,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		successful_run_missing_disposition=True,
+	)
+	assert verdict.verdict == "healthy"
+
+
 def test_classify_abort_past_t_abort():
 	run = _run(age_minutes=DEFAULT_T_ABORT_MINUTES + 5)  # 50m
 	verdict = classify_run(
@@ -456,6 +496,67 @@ def test_zombie_run_does_not_trigger_recovery():
 	assert verdict.recovery_owner_id == CEO_ID
 
 	# 3. Plan — a healthy zombie is a NOOP; no release+restart, no escalation.
+	plan = plan_recovery(verdict, prior_attempts=0)
+	assert plan.action == ACTION_NOOP
+	assert plan.next_backoff_seconds is None
+
+
+# ---------------------------------------------------------------------------- #
+# Missing-disposition runs (FLO-771) — a succeeded run is healthy, not STUCK.
+# ---------------------------------------------------------------------------- #
+def test_successful_run_missing_disposition_does_not_trigger_recovery():
+	"""FLO-771 canonical path: a run that succeeded but left the issue without a
+	terminal status is classified HEALTHY -> NOOP.
+
+	The watchdog reads the linked issue's ``activeRecoveryAction``; when
+	``kind == "missing_disposition"`` and ``cause == "successful_run_missing_state"``
+	it sets the ``successful_run_missing_disposition`` flag before calling
+	``classify_run``. The verdict is HEALTHY -> NOOP — no release+restart, no
+	escalation — because the evidence says the run already succeeded. This
+	replays the 2026-06-22 FLO-769 shape: an issue_created CEO run (25m, past
+	T_STUCK) whose linked heartbeat issue was ``blocked`` only because the
+	platform routed it to the recovery owner for disposition cleanup.
+	"""
+	# The CEO heartbeat run: succeeded + produced output, but the run-record
+	# shape still looks in-flight (issue_created, no completedAt) and the linked
+	# issue is non-terminal (blocked) — a naive read would call it STUCK.
+	succeeded_missing_state_run = HeartbeatRun(
+		id="ceo-run-succeeded-missing-disposition",
+		status="issue_created",  # in-flight-looking
+		triggered_at_epoch=NOW_EPOCH - (25 * 60),  # 25m old — past T_STUCK
+		completed_at_epoch=None,
+		linked_issue_id="ceo-heartbeat-issue-id",
+		linked_issue_identifier="FLO-766",
+		linked_issue_title="CEO heartbeat",
+		linked_issue_status="blocked",  # non-terminal (platform routed to recovery)
+		coalesced_into_run_id=None,
+		failure_reason=None,
+	)
+
+	# Without the signal, this run would be STUCK (the false positive FLO-771
+	# fixes).
+	naive = classify_run(
+		succeeded_missing_state_run,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+	)
+	assert naive.verdict == "stuck"
+
+	# The watchdog reads the recovery action and passes the flag through.
+	verdict = classify_run(
+		succeeded_missing_state_run,
+		now_epoch=NOW_EPOCH,
+		stuck_agent_id=ARCHITECT_ID,
+		chain=CHAIN,
+		thresholds=THRESHOLDS,
+		successful_run_missing_disposition=True,
+	)
+	assert verdict.verdict == "healthy"
+	assert verdict.recovery_owner_id == CEO_ID
+
+	# Plan — a healthy run is a NOOP; no release+restart, no escalation.
 	plan = plan_recovery(verdict, prior_attempts=0)
 	assert plan.action == ACTION_NOOP
 	assert plan.next_backoff_seconds is None

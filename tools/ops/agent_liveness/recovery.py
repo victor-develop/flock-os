@@ -33,7 +33,10 @@ generic in shape — and layers three things on top:
 2. :func:`classify_run` — the HEALTHY / SUSPICIOUS / STUCK / ABORT verdict
    from the runbook's age thresholds + the linked-issue terminal state + the
    zombie-run supersession test (FLO-419: a run superseded by a strictly newer
-   non-coalesced base run is HEALTHY — the agent moved on).
+   non-coalesced base run is HEALTHY — the agent moved on) + the
+   missing-disposition signal (FLO-771: a run that succeeded but left the issue
+   without a terminal status — routed to the recovery owner for cleanup — is
+   HEALTHY, not stuck).
 3. :func:`plan_recovery` — the next action (NOOP / RELEASE_RESTART /
    ESCALATE_BOARD) given the verdict + prior attempt count, with exponential
    backoff and a max-attempts ceiling.
@@ -217,6 +220,7 @@ def classify_run(
 	thresholds: LivenessThresholds,
 	linked_issue_is_terminal: bool = False,
 	superseded_by_newer_base_run: bool = False,
+	successful_run_missing_disposition: bool = False,
 	ceo_fallback_owner_id: str | None = None,
 ) -> RunVerdict:
 	"""Classify one in-flight run into HEALTHY / SUSPICIOUS / STUCK / ABORT.
@@ -229,6 +233,12 @@ def classify_run(
 		(FLO-419: ``coalesce_if_active`` only admits a fresh base run once the
 		prior one is inactive, so a newer base run means the agent moved on and
 		this in-flight record is a zombie, not a stuck run).
+	* linked issue under an active ``missing_disposition`` recovery action whose
+		cause is ``successful_run_missing_state`` → **HEALTHY** (FLO-771: the run
+		itself succeeded but left the issue without a terminal status, so the
+		platform routed it to the recovery owner to clean up. This is benign
+		staleness, not a silent process — a STUCK → release+restart would be
+		harmful and would not fix the real disposition gap).
 	* ``age < T_SUSPICIOUS`` → **HEALTHY** (within normal bounds).
 	* ``T_SUSPICIOUS ≤ age < T_STUCK`` → **SUSPICIOUS** (log + watch).
 	* ``age ≥ T_STUCK`` and the linked issue is still active → **STUCK**
@@ -243,6 +253,15 @@ def classify_run(
 	:func:`tools.ops.ceo_heartbeat.monitor.is_superseded_by_newer_base_run`
 	(one owner for the rule — DRY) so this verdict and detection can never
 	disagree on a zombie.
+
+	``successful_run_missing_disposition`` is set by the caller from the linked
+	issue's ``activeRecoveryAction`` — ``True`` when ``kind ==
+	"missing_disposition"`` and ``cause == "successful_run_missing_state"``. It
+	suppresses the STUCK/ABORT verdict exactly like a zombie, because the
+	evidence says the run already succeeded. The watchdog retains judgment: if
+	the agent was *also* genuinely silent, the operator/runbook can still
+	escalate via the manual path — this flag only suppresses automated
+	release+restart on a run whose own success is attested.
 	"""
 	owner_id = resolve_recovery_owner(stuck_agent_id, chain, ceo_fallback_owner_id=ceo_fallback_owner_id)
 	age = _age_minutes(run.triggered_at_epoch, now_epoch)
@@ -274,6 +293,19 @@ def classify_run(
 			recovery_owner_id=owner_id,
 			linked_issue_id=run.linked_issue_id,
 			reason="superseded by a newer non-coalesced base run — agent moved on (FLO-419)",
+		)
+
+	if successful_run_missing_disposition:
+		return RunVerdict(
+			verdict=VERDICT_HEALTHY,
+			age_minutes=age,
+			stuck_agent_id=stuck_agent_id,
+			recovery_owner_id=owner_id,
+			linked_issue_id=run.linked_issue_id,
+			reason=(
+				"linked issue under a missing_disposition recovery "
+				"(successful_run_missing_state) — run succeeded, not stuck (FLO-771)"
+			),
 		)
 
 	if age >= thresholds.abort_minutes:
