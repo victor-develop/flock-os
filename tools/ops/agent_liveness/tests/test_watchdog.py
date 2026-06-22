@@ -28,6 +28,9 @@ canonical CI gate (it runs under ``git ls-files 'tools/**/tests/test_*.py'``).
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 from tools.ops.agent_liveness.recovery import (
 	AgentNode,
 	ChainOfCommand,
@@ -38,6 +41,7 @@ from tools.ops.agent_liveness.watchdog import (
 	ACTION_NOOP,
 	ACTION_RECOVERED,
 	LivenessProbe,
+	PaperclipLivenessReader,
 	RecordingRecoveryActions,
 	ScriptedLivenessReader,
 	WatchdogConfig,
@@ -366,3 +370,214 @@ def test_protocol_conformance_of_test_doubles():
 
 	assert isinstance(ScriptedLivenessReader([_probe(None)]), LivenessReader)
 	assert isinstance(RecordingRecoveryActions(), RecoveryActions)
+
+
+# --------------------------------------------------------------------------- #
+# Assignment-driven detection (FLO-980) — agents with no heartbeat routine.
+#
+# Liveness is read from the platform's open "Review silent active run for
+# {name}" issue instead of a routine's run history (runbook §Step 1). The
+# decision core is unchanged; this section pins the reader adapter, the config
+# gate, and that the full loop behaves identically to the heartbeat path.
+# --------------------------------------------------------------------------- #
+def _iso(epoch: float) -> str:
+	"""Epoch -> the ``...Z`` ISO token the review-issue body carries."""
+	return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.") + "000Z"
+
+
+def _review_issue(
+	*,
+	run_id: str = "run-stuck",
+	source: str = LINKED_ISSUE,
+	started_epoch: float,
+	status: str = "in_progress",
+	agent_name: str = "DevOpsEngineer",
+) -> dict:
+	"""A platform stale-run review issue, in the real FLO-477 body shape."""
+	return {
+		"id": "review-issue-id",
+		"identifier": "FLO-999",
+		"title": f"Review silent active run for {agent_name}",
+		"status": status,
+		"originKind": "stale_active_run_evaluation",
+		"originRunId": run_id,
+		"parentId": source,
+		"createdAt": "2026-06-20T16:00:00.000Z",
+		"description": (
+			"Paperclip detected critical output silence on an active run.\n\n"
+			"## Run\n\n"
+			f"- Run: {run_id}\n"
+			f"- Agent: {agent_name}\n"
+			f"- Source issue: {source}\n"
+			f"- Started at: {_iso(started_epoch)}\n"
+			"- Last output at: 2026-06-20T15:56:15.134Z\n"
+		),
+	}
+
+
+class _FakeAPI:
+	"""Route ``PaperclipLivenessReader`` GETs by URL to scripted JSON payloads.
+
+	``issues_pages`` is a queue (one search-result page per ``probe()``) so a
+	recovery loop can model "open issue, then cleared". Chain + linked-issue
+	responses are constant across probes.
+	"""
+
+	def __init__(self, *, agents, issues_pages, linked_status="in_progress", linked_action=None):
+		self.agents = agents
+		self.issues_pages = list(issues_pages)
+		self.linked_status = linked_status
+		self.linked_action = linked_action
+		self._i = 0
+
+	def __call__(self, url, headers):
+		if "/agents" in url:
+			return json.dumps(self.agents)
+		if "/issues?" in url:  # the stale-run-issue search
+			if self._i < len(self.issues_pages):
+				page = self.issues_pages[self._i]
+				self._i += 1
+			else:
+				page = self.issues_pages[-1] if self.issues_pages else []
+			return json.dumps(page)
+		# /api/issues/{id} — linked source-issue status lookup.
+		payload = {"status": self.linked_status}
+		if self.linked_action is not None:
+			payload["activeRecoveryAction"] = self.linked_action
+		return json.dumps(payload)
+
+
+_AGENTS = [
+	{"id": CEO_ID, "name": "CEO", "reportsTo": None},
+	{"id": ARCHITECT_ID, "name": "SoftwareArchitect", "reportsTo": CEO_ID},
+	{"id": DEVOPS_ID, "name": "DevOpsEngineer", "reportsTo": ARCHITECT_ID},
+]
+
+
+def _ad_reader(issues_pages, *, linked_status="in_progress", linked_action=None):
+	"""A live reader over a fake API, wired for the assignment-driven path."""
+	return PaperclipLivenessReader(
+		api_url="https://example.test",
+		api_key="token",
+		company_id="co",
+		watched_agent_id=DEVOPS_ID,
+		watched_agent_name="DevOpsEngineer",
+		http_get=_FakeAPI(
+			agents=_AGENTS,
+			issues_pages=issues_pages,
+			linked_status=linked_status,
+			linked_action=linked_action,
+		),
+	)
+
+
+def _ad_cfg(**kw) -> WatchdogConfig:
+	"""Assignment-driven config: agent name set, NO heartbeat routine."""
+	return _cfg(
+		watched=DEVOPS_ID,
+		fallback=None,
+		watched_routine_id=None,
+		watched_agent_name="DevOpsEngineer",
+		**kw,
+	)
+
+
+def _run_watchdog_with_reader(config, reader, actions=None, **kw):
+	"""Drive ``run_watchdog`` with a real reader + recording sink (no sleep)."""
+	actions = actions or RecordingRecoveryActions()
+	outcome = run_watchdog(config, reader, actions, now_epoch=NOW, sleep=lambda _s: None, **kw)
+	return outcome, actions
+
+
+def test_parse_started_at_extracts_timestamp_from_review_body():
+	from tools.ops.agent_liveness.watchdog import _parse_started_at
+
+	body = _review_issue(started_epoch=NOW - 25 * 60)["description"]
+	assert _parse_started_at(body) == _iso(NOW - 25 * 60)
+	assert _parse_started_at("no marker here") is None
+	assert _parse_started_at(None) is None
+
+
+def test_reader_requires_a_detection_input():
+	# Neither routine id nor agent name -> misconfiguration, surfaced not wedged.
+	import pytest
+
+	with pytest.raises(ValueError):
+		PaperclipLivenessReader(api_url="x", api_key="y", company_id="c", watched_agent_id=DEVOPS_ID)
+
+
+def test_assignment_driven_reader_returns_none_when_no_open_review_issue():
+	# A resolved (done) review issue must NOT count as a stuck signal.
+	reader = _ad_reader([[_review_issue(started_epoch=NOW - 25 * 60, status="done")]])
+	assert reader.probe().run is None  # healthy — no open issue
+
+
+def test_assignment_driven_reader_builds_run_from_open_review_issue():
+	reader = _ad_reader([[_review_issue(started_epoch=NOW - 25 * 60, run_id="run-9")]])
+	probe = reader.probe()
+	assert probe.run is not None
+	assert probe.run.id == "run-9"
+	# linked issue = the stuck run's SOURCE issue (parentId) — the Step 3 target.
+	assert probe.run.linked_issue_id == LINKED_ISSUE
+	# triggeredAt parsed from the body's "Started at" line.
+	assert probe.run.triggered_at_epoch == NOW - 25 * 60
+
+
+def test_assignment_driven_no_open_issue_is_healthy_noop():
+	outcome, actions = _run_watchdog_with_reader(_ad_cfg(), _ad_reader([[]]))
+	assert outcome.action == ACTION_NOOP
+	assert actions.releases == []
+	assert actions.invokes == []
+
+
+def test_assignment_driven_stuck_run_recovers_and_releases_source_issue():
+	cfg = _ad_cfg()
+	# Page 1: open stuck review issue (age 25m >= T_STUCK); page 2: cleared.
+	reader = _ad_reader(
+		[
+			[_review_issue(started_epoch=NOW - 25 * 60)],
+			[],
+		]
+	)
+	outcome, actions = _run_watchdog_with_reader(cfg, reader)
+	assert outcome.action == ACTION_RECOVERED
+	assert outcome.attempts_made == 1
+	# Recovery owner is DevOps's manager (Architect), never DevOps (FLO-395).
+	assert actions.releases[0] == (LINKED_ISSUE, ARCHITECT_ID)
+	assert actions.invokes == [DEVOPS_ID]
+
+
+def test_assignment_driven_stuck_run_escalates_when_never_recovers():
+	cfg = _ad_cfg()
+	# The review issue stays open across every re-detect -> 3 attempts -> board.
+	reader = _ad_reader([[_review_issue(started_epoch=NOW - 25 * 60)]])
+	outcome, actions = _run_watchdog_with_reader(cfg, reader)
+	assert outcome.action == ACTION_ESCALATE_BOARD
+	assert outcome.attempts_made == 3
+	assert len(actions.approvals) == 1
+
+
+def test_assignment_driven_missing_disposition_is_healthy():
+	# 40m-old open review issue, but the source run SUCCEEDED (missing
+	# disposition) -> HEALTHY, no release+restart (FLO-771 suppression).
+	cfg = _ad_cfg()
+	reader = _ad_reader(
+		[[_review_issue(started_epoch=NOW - 40 * 60)]],
+		linked_action={"kind": "missing_disposition", "cause": "successful_run_missing_state"},
+	)
+	outcome, actions = _run_watchdog_with_reader(cfg, reader)
+	assert outcome.action == ACTION_NOOP
+	assert outcome.verdict.verdict == "healthy"
+	assert actions.releases == []
+
+
+def test_assignment_driven_terminal_source_issue_is_healthy():
+	# Open review issue but the source issue is already done -> healthy.
+	cfg = _ad_cfg()
+	reader = _ad_reader(
+		[[_review_issue(started_epoch=NOW - 40 * 60)]],
+		linked_status="done",
+	)
+	outcome, actions = _run_watchdog_with_reader(cfg, reader)
+	assert outcome.action == ACTION_NOOP
+	assert actions.releases == []
