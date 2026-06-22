@@ -1,0 +1,2 @@
+URL: wss://personalized-throwing-reward-ronald.trycloudflare.com/socket.io/?EIO=4&transport=websocket
+engine.io OPEN frame: 0{"sid":"SnouHeVsZjwR4qhJABtm","upgrades":[],"pingInterval":25000,"pingTimeout":

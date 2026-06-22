@@ -125,7 +125,11 @@ echo "==> [3/4] WebSocket connect smoke ($WS_URL)"
 # engine.io polling→WS upgrade handshake against the LB, which is exactly the
 # real-browser path the sticky-L7 nginx exists to protect.
 ws_ok=0
-if command -v node >/dev/null 2>&1; then
+# Only take the node branch if `ws` actually resolves: a host with node on PATH
+# but without the `ws` module (e.g. a dev Mac using mise node, or a CI image
+# that ships node for build tooling) used to FAIL here instead of falling through
+# to the python websocket-client fallback (FLO-889 tunnel-staging drill finding).
+if command -v node >/dev/null 2>&1 && node -e 'require("ws")' 2>/dev/null; then
     # Minimal engine.io handshake: GET ?EIO=4&transport=polling opens the session,
     # then Upgrade: websocket on the same path with the sid completes it. node's
     # built-in `ws` is enough for a raw upgrade; we just prove the LB routes the
