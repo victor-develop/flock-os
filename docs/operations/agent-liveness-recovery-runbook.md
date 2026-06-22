@@ -54,10 +54,12 @@ The recovery owner is the **manager** of the watched agent, resolved from the ch
 |---------------|---------|--------------------------------------------|------------|
 | CEO (`d572935c`) | — (top of chain) | Software Architect (`f893dff0`) — configured peer; board is the escalation backstop | `1cf1540e-17b5-47c5-b0c7-64fc69edd441` — CEO Liveness Watchdog (FLO-267, active) |
 | SoftwareArchitect (`f893dff0`) | CEO | **CEO** (`d572935c`) — *the FLO-365 incident row* | `35d77d46-1faa-4724-95c8-a117398f681c` — Architect Liveness Watchdog (FLO-398, active) |
-| DevOpsEngineer (`e35458ca`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | *not yet provisioned* — follow-up after CEO blesses the pattern |
-| FrontendEngineer (`a95965d2`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | *not yet provisioned* |
-| QAEngineer (`ca835526`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | *not yet provisioned* |
-| BackendEngineer (`8eee3659`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | *not yet provisioned* |
+| DevOpsEngineer (`e35458ca`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | `8a16ea8f-6327-493d-894e-da9a9084a30d` — DevOps Liveness Watchdog (FLO-978, **paused** — assignment-driven detection pending) |
+| FrontendEngineer (`a95965d2`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | `252e3d3b-f4d3-48ce-aed8-f5e5b6489ee0` — Frontend Liveness Watchdog (FLO-978, **paused** — assignment-driven detection pending) |
+| QAEngineer (`ca835526`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | `6f105eb1-59c7-4e37-b3be-0409235d84e1` — QA Liveness Watchdog (FLO-978, **paused** — assignment-driven detection pending) |
+| BackendEngineer (`8eee3659`) | SoftwareArchitect | SoftwareArchitect (`f893dff0`) | `06a8dd36-dc60-4cd1-9fa0-92e86d9e58c2` — Backend Liveness Watchdog (FLO-978, **paused** — assignment-driven detection pending) |
+
+> **Report-agent watchdogs are paused (FLO-978).** The four report-agent routines above were provisioned `paused` with the 30-min backstop schedule (`10,40 * * * *`). They are **not yet active**: the blessed runner ([FLO-968](/FLO/issues/FLO-968)) only automates the heartbeat-routine detection path (CEO/Architect). These four agents are assignment-driven — detection must use the §Step 1 stale-run-issue search path (`Review silent active run for <Agent>`), which the runner does not implement yet. Activation is gated on (a) the runner gaining an assignment-driven detection branch + tests, and (b) the FLO-968 slice merging to master so run-issue workspaces contain `scripts/dev/agent-liveness-watchdog.py`. Tracked in the FLO-978 blocker child issue.
 
 > **Why the manager, not a peer.** A peer's heartbeats are independent of the stuck agent's, so a peer *can* run recovery. But a manager is the right owner: it has the authority to re-prioritise/reassign the stuck agent's work, it is the natural escalation point, and routing to the manager avoids the FLO-365 failure mode where the only available peer *is* the stuck agent. For the CEO (no manager), a configured peer is the fallback and the board is the backstop — the original FLO-267 design, preserved.
 
@@ -253,3 +255,4 @@ To exercise the live path safely:
 | 2026-06-21 | Architect Liveness Watchdog provisioned + activated (CEO-owned); Coverage table records routine ids | [FLO-398](/FLO/issues/FLO-398) |
 | 2026-06-21 | Zombie run-record suppression — a newer non-coalesced base run supersedes an older in-flight run; detection + verdict agree a zombie is healthy | [FLO-419](/FLO/issues/FLO-419) |
 | 2026-06-22 | Successful-run-missing-disposition signal — a run that succeeded but left the issue without a terminal status (`missing_disposition` / `successful_run_missing_state`) is HEALTHY, avoiding a false-positive STUCK on a healthy agent | [FLO-771](/FLO/issues/FLO-771) |
+| 2026-06-23 | Report-agent watchdogs provisioned (DevOps/Frontend/QA/Backend) `paused` with 30-min backstop; Coverage table records routine ids. Activation gated on the blessed runner (FLO-968) gaining assignment-driven stale-run-issue detection + merging to master — the runner today only automates the heartbeat-routine path | [FLO-978](/FLO/issues/FLO-978) |
