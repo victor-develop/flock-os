@@ -12,6 +12,10 @@
 # @socket.io/redis-adapter (self-healing wiring in the Flock-OS app) makes the
 # cluster behave as one logical io instance across workers.
 #
+# --lb external: the prod nginx (deploy/nginx/prod.conf) owns the sticky-L7 LB
+# on :9000; scale-socketio.sh only starts the N backends (no LB process). This
+# avoids two processes fighting over :9000 (architect fix FLO-246).
+#
 # The backend count N is controlled by FLOCK_SIO_PROCESSES (default 4 — the ADR
 # launch band). Each entry below is a single line (foreman/honcho portable).
 #
@@ -23,6 +27,6 @@ worker: bench worker --queue short,long,default
 
 schedule: bench schedule
 
-socketio: bash -lc 'flock-os-scale-socketio start "${FLOCK_SIO_PROCESSES:-4}" --lb nginx'
+socketio: bash -lc 'flock-os-scale-socketio start "${FLOCK_SIO_PROCESSES:-4}" --lb external'
 
 asset: bash -lc 'if [ -z "${SUPERVISOR_SKIP_ASSET_WATCH:-}" ]; then bench watch; fi'
