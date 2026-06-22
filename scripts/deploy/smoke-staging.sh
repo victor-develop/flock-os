@@ -68,6 +68,19 @@ if [[ -z "$WS_URL" ]]; then
     esac
 fi
 
+# Append the engine.io transport query so socket.io accepts the raw WS upgrade.
+# engine.io v4 requires ?EIO=4&transport=websocket — a bare ws://host/socket.io
+# opens the TCP socket but engine.io never sends the OPEN packet, so the WS
+# handshake hangs until timeout (FLO-882 drill finding against the docker tier).
+# Also normalize the path to /socket.io/ (trailing slash) — socket.io routes on
+# /socket.io/ and a bare /socket.io?EIO=4 silently hangs the same way.
+# Only append if the caller didn't already supply the query in STAGING_WS_URL.
+if [[ "$WS_URL" != *\?* ]]; then
+    WS_URL="${WS_URL%/}/?EIO=4&transport=websocket"
+elif [[ "$WS_URL" != *EIO=* ]]; then
+    WS_URL="${WS_URL}&EIO=4&transport=websocket"
+fi
+
 fail=0
 echo "Flock OS staging smoke (FLO-246)"
 echo "--------------------------------"
@@ -121,7 +134,7 @@ if command -v node >/dev/null 2>&1; then
     node -e '
         const WebSocket = require("ws");
         const url = process.argv[1];
-        const ws = new WebSocket(url, { handshakeTimeout: parseInt(process.env.WS_TIMEOUT || "15", 10) });
+        const ws = new WebSocket(url, { handshakeTimeout: parseInt(process.env.WS_TIMEOUT || "15", 10) * 1000 });
         const to = setTimeout(() => { console.error("WS_TIMEOUT"); process.exit(1); }, parseInt(process.env.WS_TIMEOUT || "15", 10) * 1000);
         ws.on("open", () => { clearTimeout(to); ws.close(); console.log("WS_OPEN_OK"); process.exit(0); });
         ws.on("error", (e) => { clearTimeout(to); console.error("WS_ERROR:", e.message); process.exit(1); });
@@ -173,7 +186,7 @@ for asset in $ASSET_PATHS; do
     else
         echo "      FAIL $asset ($code — expected 200)" >&2
         assets_fail=1
-    fi
+fi
 done
 if [[ $assets_fail -eq 0 ]]; then
     echo "[4/4] OK (engagement assets served — bench build ran + web worker restarted)"

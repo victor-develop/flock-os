@@ -181,8 +181,15 @@ services:
     image: nginx:alpine
     volumes:
       - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mount the sites volume (read-only) so the HTTP :8100 block can serve
+      # /assets/ directly from disk — the prod nginx-in-front-of-gunicorn pattern.
+      # gunicorn loading frappe.app:application does NOT wrap SharedDataMiddleware
+      # (that's bench-serve dev mode only), so without this the smoke gate 4
+      # (engagement assets) 404s on every docker-tier deploy. See FLO-882.
+      - sites:/home/frappe/frappe-bench/sites:ro
     ports:
       - "${WS_LB_HOST_PORT:-9000}:9000"
+      - "${WS_LB_HTTP_HOST_PORT:-8100}:8100"
     # Each proxied WS connection is 2 fds on the LB (client + backend); 15k
     # gate = 30k+ fds. Raise nofile well above that so nginx never starves.
     ulimits:

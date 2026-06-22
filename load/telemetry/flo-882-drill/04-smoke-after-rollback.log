@@ -1,0 +1,23 @@
+=== POST-ROLLBACK SMOKE (should PASS) ===
+Flock OS staging smoke (FLO-246)
+--------------------------------
+site: http://flock_os.localhost:8100
+ws:   ws://flock_os.localhost:9000/socket.io/?EIO=4&transport=websocket
+
+==> [1/4] HTTP reachability + TLS
+[1/4] OK (HTTP 200)
+==> [2/4] Frappe API liveness (/api/method/ping)
+[2/4] OK (/api/method/ping → pong)
+==> [3/4] WebSocket connect smoke (ws://flock_os.localhost:9000/socket.io/?EIO=4&transport=websocket)
+WS_OPEN_OK
+[3/4] OK (WS handshake completed — scaled-socketio tier is up + adapter armed)
+==> [4/4] Engagement asset smoke (bench build + web-worker restart)
+      OK   /assets/flock_os/js/engage.js (200)
+      OK   /assets/flock_os/js/engage-host.js (200)
+      OK   /assets/flock_os/js/engagement-core.js (200)
+      OK   /assets/flock_os/js/announce.js (200)
+      OK   /assets/flock_os/css/engage.css (200)
+[4/4] OK (engagement assets served — bench build ran + web worker restarted)
+--------------------------------
+SMOKE: PASS
+SMOKE_EXIT=

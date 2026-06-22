@@ -153,6 +153,18 @@ render_nginx() {
 	server {
 		listen 8100;
 		server_name flock_os.localhost;
+		# Serve static engagement assets directly from disk (the prod
+		# nginx-in-front-of-gunicorn pattern). gunicorn loading
+		# frappe.app:application does NOT include the SharedDataMiddleware that
+		# bench-serve dev mode adds, so without this /assets/ 404s on every
+		# docker-tier deploy — the smoke-staging.sh gate 4 catches it (FLO-882).
+		# `alias` (not `root`) because the URL path /assets/ maps to the
+		# sites/assets/ subdir, not sites//assets/.
+		location /assets/ {
+			alias /home/frappe/frappe-bench/sites/assets/;
+			expires 1h;
+			access_log off;
+		}
 		location / {
 			proxy_pass http://web:${web_port};
 			proxy_set_header Host ${site};
@@ -325,6 +337,7 @@ cmd_gate() {
 			"${FLOCK_K6_IMAGE:-grafana/k6:latest}" run \
 			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" -e WS_RAMP_UP_SEC="$ramp" \
 			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
+			-e SITE="$site" \
 			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
 			--out "json=/scripts/telemetry/$(basename "$outdir")/k6-summary.json" \
 			/scripts/ws_event_room.js 2>&1 | tee "$outdir/k6-run.log" || k6_status=$?
@@ -346,6 +359,7 @@ cmd_gate() {
 		k6 run \
 			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" -e WS_RAMP_UP_SEC="$ramp" \
 			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
+			-e SITE="$site" \
 			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
 			--out "json=$outdir/k6-summary.json" \
 			"$REPO_ROOT/load/ws_event_room.js" 2>&1 | tee "$outdir/k6-run.log" || k6_status=$?
