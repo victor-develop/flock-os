@@ -112,8 +112,8 @@ bench restart
 # — OR, under supervisor (the prod container shape) —
 supervisorctl restart gunicorn        # web only
 supervisorctl restart socketio-tier   # the scaled WS tier (N workers + nginx LB)
-supervisorctl restart workers         # bench worker (queues)
-supervisorctl restart schedule        # scheduler
+supervisorctl restart bench-worker    # bench worker (queues)
+supervisorctl restart bench-schedule  # scheduler
 ```
 
 **Verify the scaled-socketio tier** (the dominant scale axis — no-go #3 / S8):
