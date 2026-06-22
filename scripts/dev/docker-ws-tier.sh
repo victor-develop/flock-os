@@ -85,7 +85,7 @@ ensure_env() {
 # list is written to a temp file and read with getline — exactly like the host
 # script, for portability).
 render_nginx() {
-	local n="$1" lb_port="${WS_LB_HOST_PORT:-9000}"
+	local n="$1" lb_port="${WS_LB_HOST_PORT:-9000}" web_port="${WEBSERVER_PORT:-8000}" site="${SITE_NAME:-flock_os.localhost}"
 	[[ -f "$NGINX_TEMPLATE" ]] || { err "nginx template missing: $NGINX_TEMPLATE"; exit 1; }
 	mkdir -p "$DOCKER_DIR/.runtime"
 
@@ -121,21 +121,49 @@ render_nginx() {
 	# realtime auth middleware's Host==Origin hostname check passes because both
 	# sides resolve to `ws-lb`. (Host-based k6 on the Mac still works via the
 	# published :9000 + :8100 ports; this block is additive.)
-	cat >> "$NGINX_CONF" <<NGINX
+	#
+	# The block must land INSIDE the `http {}` stanza — a bare `cat >>` would
+	# place it after the closing brace (nginx: emerg "server directive is not
+	# allowed here"). Reopen the rendered conf, drop the last top-level `}`
+	# (the http close — events {} close sits above it and is not column-0 in the
+	# template's structure, so the LAST `^}` is unambiguously http's), splice in
+	# the new server block, then re-add the http close.
+	local http_close
+	http_close="$(awk '/^}$/ { n = NR } END { print n }' "$NGINX_CONF")"
+	if [[ -z "$http_close" ]]; then
+		err "rendered $NGINX_CONF has no top-level http close brace — refusing to splice HTTP proxy block"
+		exit 1
+	fi
+	head -n $((http_close - 1)) "$NGINX_CONF" > "$NGINX_CONF.tmp"
+	cat >> "$NGINX_CONF.tmp" <<NGINX
 
 	# HTTP proxy to web (FLO-347 in-container k6 path) — added by docker-ws-tier.sh.
+	# Listens on 8100 so the in-container k6 client (and the socketio worker's
+	# realtime auth get_user_info callback) can use ONE hostname (ws-lb) for BOTH
+	# the WS endpoint (:9000) and the HTTP auth/callback (:8100). The callback
+	# target is web on its INTERNAL listen port (WEBSERVER_PORT, default 8000),
+	# NOT 8100 — 8100 is nginx's own listen port, web doesn't bind it.
+	#
+	# proxy_set_header Host is set to the Frappe SITE name (not \$host = ws-lb)
+	# because Frappe is a multi-site WSGI: it dispatches by Host header to pick
+	# the site_config. From inside the docker network the inbound Host is
+	# ws-lb:8100, which matches no site -> 404. Forcing Host to flock_os.localhost
+	# (the provisioned site, SITE_NAME) makes web serve the right site for both
+	# the k6 /api/method/login and the socketio worker get_user_info callback.
 	server {
 		listen 8100;
 		server_name flock_os.localhost;
 		location / {
-			proxy_pass http://web:8100;
-			proxy_set_header Host \$host;
+			proxy_pass http://web:${web_port};
+			proxy_set_header Host ${site};
 			proxy_set_header X-Real-IP \$remote_addr;
 			proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
 		}
 	}
+}
 NGINX
-	log "rendered nginx LB conf -> $NGINX_CONF ($n upstream worker(s), LB host port $lb_port, +HTTP :8100 -> web)"
+	mv "$NGINX_CONF.tmp" "$NGINX_CONF"
+	log "rendered nginx LB conf -> $NGINX_CONF ($n upstream worker(s), LB host port $lb_port, +HTTP :8100 -> web:${web_port} [Host: ${site}])"
 }
 
 # Generate docker/.runtime/ws-workers.yml: one `socketio-i` service per worker,
@@ -240,48 +268,90 @@ cmd_logs() {
 # Run the k6 §8 gate against the live tier and capture the full evidence bundle
 # (k6 summary JSON + the stdout run) under load/telemetry/<timestamp>-docker/,
 # the same place the host runs land, so a clean run is a drop-in work product.
+#
+# By default the gate runs k6 INSIDE a container on the tier's backend network
+# (FLOCK_GATE_MODE=incontainer). This is the only path that clears the full 15k
+# bar without host-side ceilings: the k6 client reaches ws-lb over a real docker
+# network transit, so neither the client->LB hop nor the LB->backend hop consumes
+# host ephemeral ports or goes through Colima's docker-proxy (which saturates
+# around ~3-4k concurrent published-port connections and takes the whole tier
+# down with it). Set FLOCK_GATE_MODE=host for tiny smokes (< ~2k VUs) where the
+# host path is fine and a local k6 install is handier.
 cmd_gate() {
 	require_docker
 	ensure_env
-	command -v k6 >/dev/null 2>&1 || { err "k6 not found (brew install k6)."; exit 1; }
 	local vus="${1:-${FLOCK_GATE_VUS:-15000}}"
 	local dur="${FLOCK_GATE_DURATION_SEC:-120}"
 	local lb_port="${WS_LB_HOST_PORT:-9000}"
 	local web_port="${WEBSERVER_HOST_PORT:-8000}"
 	local site="${SITE_NAME:-flock_os.localhost}"
+	local mode="${FLOCK_GATE_MODE:-incontainer}"
 	local ts outdir
 	ts="$(date -u +%Y%m%dT%H%M%SZ)"
 	outdir="$REPO_ROOT/load/telemetry/${ts}-docker"
 	mkdir -p "$outdir"
 
-	log "running §8 gate: $vus VUs x ${dur}s -> ws://$site:$lb_port (web auth on :$web_port)"
-	if ! nc -z 127.0.0.1 "$lb_port" 2>/dev/null; then
-		err "ws-lb not reachable on :$lb_port — start the tier first: $PROG up"
-		exit 1
+	# Resolve the tier's compose project network name. The base compose `name:` is
+	# flock-ws and the network is `backend`, so the default is flock-ws_backend.
+	local network="${FLOCK_NETWORK:-flock-ws_backend}"
+
+	local base_url ws_origin ws_url k6_status=0
+	# Smoke leader creds: passed through to k6 (loginSid). The docker tier
+	# enforces Frappe's password policy, so FLOCK_PASSWORD in .env.docker is a
+	# STRONGER value than the host bench default "flock" — both must be set.
+	local flock_user="${FLOCK_USER:-leader@flock.os}"
+	local flock_pw="${FLOCK_PASSWORD:-flock}"
+	if [[ "$mode" == "incontainer" ]]; then
+		# In-container k6: ONE hostname (ws-lb) for both WS (:9000) and the HTTP
+		# auth/callback (:8100 -> web, via the nginx block render_nginx splices).
+		# The realtime auth middleware's get_hostname(Host)==get_hostname(Origin)
+		# check passes because both resolve to `ws-lb`. The get_user_info callback
+		# (Origin + path) hits ws-lb:8100 -> nginx -> web:WEBSERVER_PORT.
+		base_url="http://ws-lb:8100"
+		ws_origin="$base_url"
+		ws_url="ws://ws-lb:9000"
+		log "running §8 gate (in-container k6): $vus VUs x ${dur}s -> $ws_url (auth $base_url) on network $network"
+		# Pull the k6 image once (quiet), then run. The load/ dir is bind-mounted
+		# so k6 sees config.js + lib/. --network attaches the container to the
+		# tier's bridge so ws-lb/web resolve via docker DNS.
+		docker pull -q "${FLOCK_K6_IMAGE:-grafana/k6:latest}" >/dev/null 2>&1 || true
+		# Bind-mount load/ WRITABLE (not :ro) so k6 can drop the summary JSON
+		# alongside the host-side k6-run.log. The outdir already exists on the
+		# host (mkdir -p above) so it appears in-container at the matching path.
+		docker run --rm --name flock-ws-gate \
+			--network "$network" \
+			-v "$REPO_ROOT/load:/scripts" \
+			"${FLOCK_K6_IMAGE:-grafana/k6:latest}" run \
+			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
+			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
+			--out "json=/scripts/telemetry/$(basename "$outdir")/k6-summary.json" \
+			/scripts/ws_event_room.js 2>&1 | tee "$outdir/k6-run.log" || k6_status=$?
+		# grafana/k6 writes the JSON output relative to its CWD; the bind mount
+		# puts the file on the host at $outdir/k6-summary.json.
+	else
+		command -v k6 >/dev/null 2>&1 || { err "k6 not found (brew install k6)."; exit 1; }
+		if ! nc -z 127.0.0.1 "$lb_port" 2>/dev/null; then
+			err "ws-lb not reachable on :$lb_port — start the tier first: $PROG up"
+			exit 1
+		fi
+		# Host-based k6 (smoke path only): point at the published ports. Origin
+		# port MUST match the web container's internal listen port so the worker's
+		# get_user_info callback resolves back to web via flock_os.localhost.
+		base_url="http://$site:$web_port"
+		ws_origin="$base_url"
+		ws_url="ws://$site:$lb_port"
+		log "running §8 gate (host k6): $vus VUs x ${dur}s -> $ws_url (web auth on :$web_port)"
+		k6 run \
+			-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
+			-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
+			-e FLOCK_USER="$flock_user" -e FLOCK_PASSWORD="$flock_pw" \
+			--out "json=$outdir/k6-summary.json" \
+			"$REPO_ROOT/load/ws_event_room.js" 2>&1 | tee "$outdir/k6-run.log" || k6_status=$?
 	fi
 
-	# Point k6 at this tier's published ports: WS -> ws-lb, HTTP login + the
-	# realtime auth Origin -> web. The Origin port MUST match the web container's
-	# internal listen port (WEBSERVER_PORT == WEBSERVER_HOST_PORT in the default
-	# env) so the socketio worker's get_user_info callback resolves back to the
-	# web container via the flock_os.localhost network alias.
-	local base_url="http://$site:$web_port"
-	local ws_origin="$base_url"
-	local ws_url="ws://$site:$lb_port"
-
-	# The k6 smoke defaults (load/config.js) already target ws://<site>:9000;
-	# override the ports for a non-default web/LB mapping. The summary JSON +
-	# a full stdout capture are the gate evidence.
-	k6 run \
-		-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
-		-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
-		"$REPO_ROOT/load/ws_event_room.js" 2>&1 | tee "$outdir/k6-run.log" || true
-
-	k6 run \
-		-e WS_VUS="$vus" -e WS_DURATION_SEC="$dur" \
-		-e WS_BASE_URL="$ws_url" -e BASE_URL="$base_url" -e WS_ORIGIN="$ws_origin" \
-		--out "json=$outdir/k6-summary.json" \
-		"$REPO_ROOT/load/ws_event_room.js" >"$outdir/k6-summary-run.log" 2>&1 || true
+	# Persist the exit status for the runbook (0 = all thresholds passed).
+	echo "k6 exit status: $k6_status" > "$outdir/gate-status.txt"
 
 	log "gate evidence captured under $outdir"
 	log "key signals: flock_ws_connect_duration p(95), flock_ws_broadcast_latency p(95),"

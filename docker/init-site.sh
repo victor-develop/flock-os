@@ -72,7 +72,14 @@ fi
 # from the bench root (a setuptools editable-install namespace quirk under the
 # sites/ cwd). Also pre-create the log dirs frappe's rotating handler writes to.
 echo "init: seeding gathering-smoke runtime fixture ..."
-mkdir -p logs sites/flock_os.localhost/logs sites/logs
+# Frappe's rotating log handler resolves to $HOME/logs/<site>_database.log
+# (e.g. /home/frappe/logs/flock_os.localhost_database.log) — that is ONE level
+# above the bench root, NOT under it, so the relative `logs` dirs created below
+# do not cover it. Without this absolute mkdir the first frappe.connect() in the
+# fixture block throws FileNotFoundError on the database.log handler and the
+# smoke leader / gathering-smoke fixtures never seed (init then exits 0 with the
+# non-fatal WARN, leaving the gate with no leader@flock.os to authenticate).
+mkdir -p logs sites/flock_os.localhost/logs sites/logs "${HOME}/logs"
 env/bin/python - <<'PY' || echo "init: WARN: smoke fixtures skipped/failed (non-fatal for the WS connect gate; create the smoke leader manually if running the gate)."
 import os
 import frappe
@@ -82,6 +89,9 @@ frappe.init(os.environ.get("SITE_NAME", "flock_os.localhost"),
 for _d in ("logs", "flock_os.localhost/logs"):
     os.makedirs(os.path.join(os.getcwd(), "sites", _d), exist_ok=True)
     os.makedirs(os.path.join(os.getcwd(), _d), exist_ok=True)
+# Absolute $HOME/logs (see mkdir note above) — belt-and-braces in case CWD
+# differs from the bench root when this runs.
+os.makedirs(os.path.join(os.environ.get("HOME", "/home/frappe"), "logs"), exist_ok=True)
 frappe.connect()
 try:
     from flock_os.utils.smoke_fixtures import execute
